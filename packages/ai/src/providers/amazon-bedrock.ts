@@ -581,7 +581,7 @@ function isAnthropicClaudeModel(model: Model<"bedrock-converse-stream">): boolea
 
 /**
  * Check if the model supports prompt caching.
- * Supported: Claude 3.5 Haiku, Claude 3.7 Sonnet, Claude 4.x models
+ * Supported: Claude 3.5 Haiku, Claude 3.7 Sonnet, Claude 4.x models, and Claude Opus 5
  *
  * For base models and system-defined inference profiles the model ID / ARN
  * contains the model name, so we can decide locally.
@@ -601,8 +601,8 @@ function supportsPromptCaching(model: Model<"bedrock-converse-stream">): boolean
 		if (typeof process !== "undefined" && process.env.AWS_BEDROCK_FORCE_CACHE === "1") return true;
 		return false;
 	}
-	// Claude 4.x models (opus-4, sonnet-4, haiku-4)
-	if (candidates.some((s) => s.includes("-4-"))) return true;
+	// Claude 4.x models (opus-4, sonnet-4, haiku-4) and Claude Opus 5
+	if (candidates.some((s) => s.includes("-4-") || s.includes("claude-opus-5"))) return true;
 	// Claude 3.7 Sonnet
 	if (candidates.some((s) => s.includes("claude-3-7-sonnet"))) return true;
 	// Claude 3.5 Haiku

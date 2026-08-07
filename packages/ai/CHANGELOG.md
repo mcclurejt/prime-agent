@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed Bedrock Claude Opus 5 prompt caching for system-defined and application inference profiles.
+
 ## [0.7.0] - 2026-08-05
 
 ## [0.6.1] - 2026-08-05

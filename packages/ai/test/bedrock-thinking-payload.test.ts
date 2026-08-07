@@ -46,6 +46,51 @@ async function capturePayload(
 	return capturedPayload;
 }
 
+interface BedrockPromptCachingPayload {
+	system?: Array<Record<string, unknown>>;
+	messages?: Array<{ content: Array<Record<string, unknown>> }>;
+}
+
+async function capturePromptCachingPayload(
+	model: Model<"bedrock-converse-stream">,
+): Promise<BedrockPromptCachingPayload> {
+	let capturedPayload: BedrockPromptCachingPayload | undefined;
+	const s = streamBedrock(
+		model,
+		{
+			systemPrompt: "You are helpful.",
+			messages: [{ role: "user", content: "Hello", timestamp: Date.now() }],
+		},
+		{
+			signal: AbortSignal.abort(),
+			onPayload: (payload) => {
+				capturedPayload = payload as BedrockPromptCachingPayload;
+				return payload;
+			},
+		},
+	);
+
+	for await (const event of s) {
+		if (event.type === "error") {
+			break;
+		}
+	}
+
+	if (!capturedPayload) {
+		throw new Error("Expected Bedrock payload to be captured before request abort");
+	}
+
+	return capturedPayload;
+}
+
+function expectPromptCachePoints(payload: BedrockPromptCachingPayload): void {
+	expect(payload.system).toHaveLength(2);
+	expect(payload.system?.[1]).toEqual({ cachePoint: { type: "default" } });
+
+	const lastMessage = payload.messages?.at(-1);
+	expect(lastMessage?.content.at(-1)).toEqual({ cachePoint: { type: "default" } });
+}
+
 describe("Bedrock thinking payload", () => {
 	it("uses adaptive thinking for Claude Opus 4.7 when reasoning is enabled", async () => {
 		const baseModel = getModel("amazon-bedrock", "global.anthropic.claude-opus-4-6-v1");
@@ -137,6 +182,67 @@ describe("Bedrock thinking payload", () => {
 	});
 });
 
+describe("Bedrock prompt caching", () => {
+	it("adds both cache points for the Claude Opus 5 system-defined inference profile", async () => {
+		const baseModel = getModel("amazon-bedrock", "global.anthropic.claude-opus-5");
+		const model: Model<"bedrock-converse-stream"> = {
+			...baseModel,
+			name: "Neutral test model",
+		};
+
+		expectPromptCachePoints(await capturePromptCachingPayload(model));
+	});
+
+	it("adds both cache points when an application inference profile model.name identifies Claude Opus 5", async () => {
+		const baseModel = getModel("amazon-bedrock", "global.anthropic.claude-opus-5");
+		const model: Model<"bedrock-converse-stream"> = {
+			...baseModel,
+			id: "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/my-profile",
+			name: "Claude Opus 5",
+		};
+
+		expectPromptCachePoints(await capturePromptCachingPayload(model));
+	});
+
+	it("adds both cache points when an application inference profile model.name identifies Claude Sonnet 4.6", async () => {
+		const baseModel = getModel("amazon-bedrock", "global.anthropic.claude-opus-4-6-v1");
+		const model: Model<"bedrock-converse-stream"> = {
+			...baseModel,
+			id: "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/my-profile",
+			name: "Claude Sonnet 4.6",
+		};
+
+		expectPromptCachePoints(await capturePromptCachingPayload(model));
+	});
+
+	it("does not add cache points for non-Claude models", async () => {
+		const originalForceCache = process.env.AWS_BEDROCK_FORCE_CACHE;
+		delete process.env.AWS_BEDROCK_FORCE_CACHE;
+
+		try {
+			const baseModel = getModel("amazon-bedrock", "global.anthropic.claude-opus-5");
+			const model: Model<"bedrock-converse-stream"> = {
+				...baseModel,
+				id: "amazon.nova-pro-v1:0",
+				name: "Amazon Nova Pro",
+			};
+
+			const payload = await capturePromptCachingPayload(model);
+			expect(payload.system).toHaveLength(1);
+			expect(payload.system?.[0]).not.toHaveProperty("cachePoint");
+			expect(payload.messages).toHaveLength(1);
+			expect(payload.messages?.[0].content).toHaveLength(1);
+			expect(payload.messages?.[0].content[0]).not.toHaveProperty("cachePoint");
+		} finally {
+			if (originalForceCache === undefined) {
+				delete process.env.AWS_BEDROCK_FORCE_CACHE;
+			} else {
+				process.env.AWS_BEDROCK_FORCE_CACHE = originalForceCache;
+			}
+		}
+	});
+});
+
 describe("Application inference profile support", () => {
 	it("uses adaptive thinking when model.name contains the model name but ARN does not", async () => {
 		const baseModel = getModel("amazon-bedrock", "global.anthropic.claude-opus-4-6-v1");
@@ -150,44 +256,6 @@ describe("Application inference profile support", () => {
 
 		expect(payload.additionalModelRequestFields?.thinking).toEqual({ type: "adaptive", display: "summarized" });
 		expect(payload.additionalModelRequestFields?.output_config).toEqual({ effort: "high" });
-	});
-
-	it("injects cache points when model.name identifies a supported Claude model", async () => {
-		const baseModel = getModel("amazon-bedrock", "global.anthropic.claude-opus-4-6-v1");
-		const model: Model<"bedrock-converse-stream"> = {
-			...baseModel,
-			id: "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/my-profile",
-			name: "Claude Sonnet 4.6",
-		};
-
-		let capturedPayload: any;
-		const s = streamBedrock(
-			model,
-			{
-				systemPrompt: "You are helpful.",
-				messages: [{ role: "user", content: "Hello", timestamp: Date.now() }],
-			},
-			{
-				signal: AbortSignal.abort(),
-				onPayload: (payload) => {
-					capturedPayload = payload;
-					return payload;
-				},
-			},
-		);
-
-		for await (const event of s) {
-			if (event.type === "error") break;
-		}
-
-		// System prompt should have a cache point
-		expect(capturedPayload.system).toHaveLength(2);
-		expect(capturedPayload.system[1]).toHaveProperty("cachePoint");
-
-		// Last user message should have a cache point
-		const lastMsg = capturedPayload.messages[capturedPayload.messages.length - 1];
-		const lastContent = lastMsg.content[lastMsg.content.length - 1];
-		expect(lastContent).toHaveProperty("cachePoint");
 	});
 
 	it("falls back to fixed-budget thinking for non-adaptive Claude via model.name", async () => {
