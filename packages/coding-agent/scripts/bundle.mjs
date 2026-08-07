@@ -32,7 +32,14 @@ try {
 rmSync(outdir, { recursive: true, force: true });
 
 await build({
-	entryPoints: [join(packageDir, "dist", "cli.js")],
+	entryPoints: {
+		cli: join(packageDir, "dist", "cli.js"),
+		// register-builtins intentionally hides this Node-only provider from static
+		// analysis so browser builds do not pull in the AWS SDK. The CLI bundle
+		// still needs it as a lazy sibling entry because the runtime import resolves
+		// relative to dist/bundle/register-builtins' generated chunk.
+		"amazon-bedrock": join(packageDir, "..", "ai", "dist", "providers", "amazon-bedrock.js"),
+	},
 	outdir,
 	bundle: true,
 	splitting: true,
