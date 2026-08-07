@@ -1,5 +1,6 @@
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
+import { VERSION } from "../../../src/config.js";
 import type { HostRequestHandlers } from "../../../src/core/kernel/index.js";
 import { SessionManager } from "../../../src/core/session-manager.js";
 import { createHarness } from "../harness.js";
@@ -78,7 +79,7 @@ describe("ENG-4649 subagent model selection", () => {
 			models: [{ id: "parent-model" }, { id: "unsupported-model" }],
 		});
 		const fetchModels = vi.fn(
-			async () =>
+			async (_input: string | URL | Request) =>
 				new Response(JSON.stringify({ models: [{ slug: "parent-model" }] }), {
 					status: 200,
 					headers: { "content-type": "application/json" },
@@ -89,12 +90,19 @@ describe("ENG-4649 subagent model selection", () => {
 			harness.authStorage.setRuntimeApiKey(codexProvider, openAICodexToken("account-1"));
 			const discovered = await harness.session.findRlmModels("", 20);
 			expect(discovered.models.map((model) => model.selector)).toEqual([`${codexProvider}/parent-model`]);
+			// The endpoint must receive the dedicated Codex catalog version, not the
+			// Prime Agent package version (which returns 0 models from OpenAI).
 			expect(fetchModels).toHaveBeenCalledWith(
-				expect.stringMatching(/\/codex\/models\?client_version=/),
+				expect.stringMatching(/\/codex\/models\?client_version=0\.147\.0$/),
 				expect.objectContaining({
 					headers: expect.objectContaining({ "chatgpt-account-id": "account-1" }),
 				}),
 			);
+			const [catalogUrl] = fetchModels.mock.calls[0] ?? [];
+			if (typeof catalogUrl !== "string") throw new Error("Missing OpenAI Codex catalog URL");
+			const catalogClientVersion = new URL(catalogUrl).searchParams.get("client_version");
+			expect(catalogClientVersion).toBe("0.147.0");
+			expect(catalogClientVersion).not.toBe(VERSION);
 
 			await expect(
 				harness.session.runRlmChild("reject unsupported account model", {

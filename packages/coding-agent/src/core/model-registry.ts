@@ -27,7 +27,7 @@ import { dirname, join } from "path";
 import { type Static, type TProperties, Type } from "typebox";
 import type { Validator } from "typebox/compile";
 import type { TLocalizedValidationError } from "typebox/error";
-import { getAgentDir, VERSION } from "../config.js";
+import { getAgentDir } from "../config.js";
 import type { AuthSourceToken, AuthStatus, AuthStorage } from "./auth-storage.js";
 import { PRIME_INFERENCE_PROVIDER_ID } from "./prime-inference-auth.js";
 import {
@@ -372,6 +372,11 @@ function readOpenAICodexAccountId(token: string): string | undefined {
 	}
 }
 
+// The version string that the OpenAI Codex catalog endpoint interprets as a
+// Codex CLI compatibility version. This is intentionally independent of the
+// Prime Agent package version; sending the package version returns 0 models.
+const OPENAI_CODEX_CATALOG_CLIENT_VERSION = "0.147.0";
+
 function openAICodexModelsUrl(baseUrl: string): string {
 	const normalized = baseUrl.replace(/\/+$/, "");
 	let path: string;
@@ -383,7 +388,7 @@ function openAICodexModelsUrl(baseUrl: string): string {
 		path = `${normalized}/codex/models`;
 	}
 	const url = new URL(path);
-	url.searchParams.set("client_version", VERSION);
+	url.searchParams.set("client_version", OPENAI_CODEX_CATALOG_CLIENT_VERSION);
 	return url.toString();
 }
 
