@@ -126,9 +126,10 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 	if (allowRecursion && hasIpython) {
 		parts.push(
 			"",
-			"A callable `rlm` is already in your global namespace. `await rlm('sub-task')` spawns a child and returns immediately after task admission with `rlm_child_id`, `name`, `session_dir`, and `model`; it never waits for or returns the child's answer.",
+			"A callable `rlm` is already in your global namespace. `await rlm('sub-task')` spawns a child and returns immediately after task admission with `rlm_child_id`, `name`, `session_dir`, `model`, and `thinking_level`; it never waits for or returns the child's answer.",
 			"Choose a stable child name with `await rlm('sub-task', name='api-reviewer')`; names must be unique among siblings. If omitted, the host generates a readable unique name.",
 			"A child inherits your model. If a different model is explicitly requested, use `await rlm.find_models(...)` and an exact returned selector. An unavailable requested model fails spawn; decide whether to retry or omit `model`.",
+			"Set a child reasoning level with `await rlm('sub-task', thinking='high')`. Accepted values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`. If omitted, the child inherits your thinking level; either inherited or requested levels are clamped to the selected model, and the effective result is returned as `handle.thinking_level`.",
 		);
 		if (hasAgentMessage) {
 			parts.push(

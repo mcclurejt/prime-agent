@@ -254,6 +254,7 @@ describe("AgentSession rlm recursion", () => {
 			agentMessageController?: AgentSessionMessageController;
 			subagentRuntimeHost?: SubagentRuntimeHost;
 			customTools?: ConstructorParameters<typeof AgentSession>[0]["customTools"];
+			runtimeApiKeys?: Record<string, string>;
 			rlmSessionDir?: string;
 			sessionManager?: SessionManager;
 			settingsManager?: SettingsManager;
@@ -262,6 +263,9 @@ describe("AgentSession rlm recursion", () => {
 	): AgentSession {
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		for (const [provider, apiKey] of Object.entries(options.runtimeApiKeys ?? {})) {
+			authStorage.setRuntimeApiKey(provider, apiKey);
+		}
 		const sessionManager = options.sessionManager ?? SessionManager.create(tempDir, join(tempDir, "sessions"));
 		const settingsManager = options.settingsManager ?? SettingsManager.create(tempDir, tempDir);
 
@@ -442,6 +446,67 @@ describe("AgentSession rlm recursion", () => {
 		await expect(root.runRlmChild("reserved name", { name: "all" })).rejects.toThrow(
 			"Broadcast agent messaging is not supported",
 		);
+	});
+
+	it("validates child thinking before runtime admission", async () => {
+		const createRlmSubagentRuntime = vi.fn(async () => {
+			throw new Error("runtime creation should not run");
+		});
+		const root = createSession({
+			subagentRuntimeHost: {
+				createRlmSubagentRuntime,
+				deleteRlmSubagentRuntime: async () => {},
+			},
+		});
+
+		await expect(root.runRlmChild("bad type", { thinking: 1 })).rejects.toThrow("rlm.run thinking must be a string");
+		await expect(root.runRlmChild("empty", { thinking: "   " })).rejects.toThrow(
+			"rlm.run thinking must not be empty",
+		);
+		await expect(root.runRlmChild("unknown", { thinking: "ultra" })).rejects.toThrow(
+			"rlm.run thinking must be one of: off, minimal, low, medium, high, xhigh, max",
+		);
+		expect(createRlmSubagentRuntime).not.toHaveBeenCalled();
+	});
+
+	it("uses an explicit normalized thinking level for the child initial state and spawn handle", async () => {
+		const root = createSession();
+		root.setThinkingLevel("high");
+
+		const spawned = await root.runRlmChild("review with lower reasoning", { thinking: " minimal " });
+		expect(spawned.thinking_level).toBe("minimal");
+		await waitFor(() => root.getRlmChildSession(spawned.rlm_child_id) !== undefined);
+		const child = root.getRlmChildSession(spawned.rlm_child_id);
+		expect(child?.thinkingLevel).toBe("minimal");
+		expect(child?.sessionManager.getEntries()).toContainEqual(
+			expect.objectContaining({ type: "thinking_level_change", thinkingLevel: "minimal" }),
+		);
+	});
+
+	it("inherits the parent thinking level when a child omits thinking", async () => {
+		const root = createSession();
+		root.setThinkingLevel("high");
+
+		const spawned = await root.runRlmChild("inherit reasoning");
+		expect(spawned.thinking_level).toBe("high");
+		await waitFor(() => root.getRlmChildSession(spawned.rlm_child_id) !== undefined);
+		expect(root.getRlmChildSession(spawned.rlm_child_id)?.thinkingLevel).toBe("high");
+	});
+
+	it("clamps explicit child thinking for a selected non-reasoning model", async () => {
+		const root = createSession({ runtimeApiKeys: { openai: "test-key" } });
+		root.setThinkingLevel("high");
+
+		const spawned = await root.runRlmChild("use a non-reasoning model", {
+			model: " openai/gpt-4.1 ",
+			thinking: "max",
+		});
+		expect(spawned.model).toBe("openai/gpt-4.1");
+		expect(spawned.thinking_level).toBe("off");
+		await waitFor(() => root.getRlmChildSession(spawned.rlm_child_id) !== undefined);
+		const child = root.getRlmChildSession(spawned.rlm_child_id);
+		expect(child?.model?.reasoning).toBe(false);
+		expect(child?.thinkingLevel).toBe("off");
 	});
 
 	it("falls back to listed family metadata when a controller lacks name validation", async () => {
@@ -2163,7 +2228,7 @@ describe("AgentSession rlm recursion", () => {
 	it("rejects unsupported rlm.run kwargs loudly", async () => {
 		const root = createSession();
 
-		await expect(root.runRlmChild("nested", { temperature: 0 })).rejects.toThrow(
+		await expect(root.runRlmChild("nested", { thinking: "high", temperature: 0 })).rejects.toThrow(
 			"Unsupported rlm.run kwargs: temperature",
 		);
 	});
