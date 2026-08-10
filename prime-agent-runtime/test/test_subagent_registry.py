@@ -93,6 +93,45 @@ class RlmSubagentRegistryTest(unittest.TestCase):
         self.assertEqual(result.rlm_child_id, "sub-a1b2c3d4")
         self.assertEqual(result.name, "api-reviewer")
         self.assertEqual(result.model, "deepseek/deepseek-v4-flash")
+        self.assertIsNone(result.thinking_level)
+
+    def test_forwards_thinking_and_parses_effective_thinking_level(self) -> None:
+        host_request = AsyncMock(
+            return_value={
+                "rlm_child_id": "sub-a1b2c3d4",
+                "name": "reasoning-reviewer",
+                "session_dir": "/tmp/parent/sub-a1b2c3d4",
+                "model": "anthropic/claude-sonnet-4-5",
+                "thinking_level": "high",
+            }
+        )
+
+        with patch.object(rlm_module, "host_request", host_request):
+            result = asyncio.run(rlm_module.rlm("review the design", thinking="high"))
+
+        host_request.assert_awaited_once_with(
+            "rlm.run",
+            {
+                "prompt": "review the design",
+                "kwargs": {"thinking": "high"},
+            },
+        )
+        self.assertEqual(result.thinking_level, "high")
+
+    def test_rejects_invalid_thinking_level_in_spawn_handle(self) -> None:
+        host_request = AsyncMock(
+            return_value={
+                "rlm_child_id": "sub-a1b2c3d4",
+                "name": "reasoning-reviewer",
+                "session_dir": "/tmp/parent/sub-a1b2c3d4",
+                "model": "anthropic/claude-sonnet-4-5",
+                "thinking_level": 1,
+            }
+        )
+
+        with patch.object(rlm_module, "host_request", host_request):
+            with self.assertRaisesRegex(RuntimeError, "invalid spawn handle"):
+                asyncio.run(rlm_module.rlm("review the design", thinking="high"))
 
     def test_finds_authenticated_models_through_host(self) -> None:
         host_request = AsyncMock(

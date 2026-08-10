@@ -16,6 +16,7 @@ export interface RlmSpawnHandle {
 	name: string;
 	session_dir: string;
 	model: string;
+	thinking_level: ThinkingLevel;
 }
 
 export type RlmSubagentRegistryStatus = "running" | "completed" | "error";
@@ -57,6 +58,15 @@ export type RlmFindModelsHandler = (query: string, limit: number) => RlmFindMode
 const RLM_SUBAGENT_SESSION_NAME_MAX_LENGTH = 64;
 export const DEFAULT_RLM_MODEL_SEARCH_LIMIT = 8;
 export const MAX_RLM_MODEL_SEARCH_LIMIT = 20;
+export const RLM_THINKING_LEVELS = [
+	"off",
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+] as const satisfies readonly ThinkingLevel[];
 
 /** Validate and normalize an orchestrator-supplied subagent session name. */
 export function normalizeRequestedRlmSubagentSessionName(value: unknown): string | undefined {
@@ -89,6 +99,24 @@ export function normalizeRequestedRlmSubagentModel(value: unknown): string | und
 		throw new Error("rlm.run model must not be empty");
 	}
 	return model;
+}
+
+/** Validate and normalize an orchestrator-supplied child thinking level. */
+export function normalizeRequestedRlmSubagentThinkingLevel(value: unknown): ThinkingLevel | undefined {
+	if (value === undefined) {
+		return undefined;
+	}
+	if (typeof value !== "string") {
+		throw new Error("rlm.run thinking must be a string");
+	}
+	const thinkingLevel = value.trim();
+	if (!thinkingLevel) {
+		throw new Error("rlm.run thinking must not be empty");
+	}
+	if (!(RLM_THINKING_LEVELS as readonly string[]).includes(thinkingLevel)) {
+		throw new Error(`rlm.run thinking must be one of: ${RLM_THINKING_LEVELS.join(", ")}`);
+	}
+	return thinkingLevel as ThinkingLevel;
 }
 
 /** Create a readable, collision-resistant default name usable as an agent-message selector. */

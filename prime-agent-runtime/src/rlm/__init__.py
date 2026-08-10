@@ -30,6 +30,8 @@ class RLMSpawnHandle:
     name: str
     session_dir: Path
     model: str
+    # None preserves compatibility with a host that predates thinking_level.
+    thinking_level: str | None = None
 
 
 @dataclass(frozen=True)
@@ -71,13 +73,17 @@ def _spawn_handle_from_payload(payload: Any) -> RLMSpawnHandle:
     name = payload.get("name")
     session_dir = payload.get("session_dir")
     model = payload.get("model")
+    thinking_level = payload.get("thinking_level")
     if not all(isinstance(value, str) and value for value in (child_id, name, session_dir, model)):
+        raise RuntimeError("rlm.run returned an invalid spawn handle")
+    if thinking_level is not None and (not isinstance(thinking_level, str) or not thinking_level):
         raise RuntimeError("rlm.run returned an invalid spawn handle")
     return RLMSpawnHandle(
         rlm_child_id=child_id,
         name=name,
         session_dir=Path(session_dir),
         model=model,
+        thinking_level=thinking_level,
     )
 
 
@@ -144,6 +150,9 @@ async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
     """Spawn a recursive Prime Agent child and return once its task is admitted.
 
     ``model`` selects a child with an exact ``provider/model`` selector.
+    ``thinking`` accepts ``off``, ``minimal``, ``low``, ``medium``, ``high``,
+    ``xhigh``, or ``max``. When omitted, the child inherits the parent level;
+    the host clamps either choice for the selected model.
     """
     if not isinstance(prompt, str):
         raise TypeError(f"prompt must be str, got {type(prompt).__name__}")
