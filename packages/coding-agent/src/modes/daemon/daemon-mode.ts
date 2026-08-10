@@ -200,6 +200,7 @@ import {
 	SESSION_LEASE_OWNER_ID_ENV,
 	SESSION_LEASES_ENABLED_ENV,
 } from "./daemon-worker-protocol.js";
+import { WorkerUiClientsMirror } from "./daemon-worker-ui-clients.js";
 import { MutationDrainLatch } from "./mutation-drain-latch.js";
 import { serializeSavedSessionInfo } from "./saved-session-info.js";
 import {
@@ -442,6 +443,7 @@ export class AgentDaemon {
 	private ownsSocketPath = false;
 	private socketIdentity?: DaemonSocketIdentity;
 	private readonly clients = new Set<DaemonSocketClient>();
+	private readonly workerUiClients = new WorkerUiClientsMirror();
 	private readonly sessions = new Map<string, ActiveSessionState>();
 	private readonly openingSessions = new Map<string, Promise<ActiveSessionState>>();
 	/** Covers path resolution through publication in openingSessions, before the runtime promise exists. */
@@ -3353,6 +3355,14 @@ export class AgentDaemon {
 					this.write(client, success(command.id, "detach"));
 					return;
 				}
+				case "worker_ui_clients_sync":
+					this.workerUiClients.applySync(command);
+					this.writeWorkerSuccess(client, command);
+					return;
+				case "worker_ui_client_delta":
+					this.workerUiClients.applyDelta(command);
+					this.writeWorkerSuccess(client, command);
+					return;
 				case "worker_sync_agent_peers":
 					this.remoteAgentPeers.clear();
 					for (const peer of command.peers) {

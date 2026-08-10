@@ -38,6 +38,29 @@ export type DaemonWorkerFrameHeader =
 
 export type DaemonCreateCommand = Extract<DaemonCommand, { type: "create" }>;
 
+export interface WorkerUiClient {
+	logicalClientId: string;
+	connectionId: string;
+	activeSessionId: string;
+	capabilities: readonly DaemonClientCapability[];
+	presentable: boolean;
+}
+
+export interface WorkerUiClientsSync {
+	supervisorGeneration: string;
+	syncRevision: number;
+	clients: readonly WorkerUiClient[];
+	complete: true;
+}
+
+export interface WorkerUiClientDelta {
+	supervisorGeneration: string;
+	syncRevision: number;
+	change:
+		| { type: "upsert"; client: WorkerUiClient }
+		| { type: "detach"; connectionId: string; activeSessionId: string };
+}
+
 export type DaemonWorkerCommand =
 	| {
 			id?: string;
@@ -56,6 +79,8 @@ export type DaemonWorkerCommand =
 			supportsExtensionUi?: boolean;
 	  }
 	| { id?: string; type: "worker_unsubscribe"; activeSessionId: string }
+	| ({ id?: string; type: "worker_ui_clients_sync" } & WorkerUiClientsSync)
+	| ({ id?: string; type: "worker_ui_client_delta" } & WorkerUiClientDelta)
 	| { id?: string; type: "worker_sync_agent_peers"; peers: AgentSessionMessageAgentSummary[] }
 	| { id?: string; type: "worker_archive_and_shutdown" }
 	| {

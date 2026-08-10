@@ -115,7 +115,9 @@ import {
 	type DaemonWorkerFrameHeader,
 	SESSION_LEASE_OWNER_ID_ENV,
 	SESSION_LEASES_ENABLED_ENV,
+	type WorkerUiClient,
 } from "./daemon-worker-protocol.js";
+import { SupervisorWorkerUiClientsSync } from "./daemon-worker-ui-clients.js";
 import { MutationDrainLatch } from "./mutation-drain-latch.js";
 import { serializeSavedSessionInfo } from "./saved-session-info.js";
 import { SNAPSHOT_TARGET_CHUNK_BYTES, SnapshotTranscriptCache } from "./snapshot-transcript-cache.js";
@@ -262,6 +264,9 @@ interface ResidentWorker {
 	ownerCleanupTimer?: ReturnType<typeof setTimeout>;
 	promotedOwnerClientId?: string;
 	updateRestartPrepareClient?: DaemonWorkerClient;
+	uiClientsSync: SupervisorWorkerUiClientsSync;
+	uiClientsSyncQueue: Promise<void>;
+	uiClientsNeedsFullSync: boolean;
 }
 
 interface SnapshotDuplicateValidation {
@@ -391,6 +396,10 @@ function withoutSupervisorCreateFields(command: DaemonCreateCommand): DaemonCrea
 
 function responseWithId(response: DaemonResponse, id: string | undefined): DaemonResponse {
 	return { ...response, id };
+}
+
+export function isQuestionnaireClientPresentable(_client: DaemonSocketClient, _activeSessionId: string): boolean {
+	return false;
 }
 
 function isSessionSummary(value: unknown): value is SessionSummary {
@@ -924,6 +933,9 @@ export class DaemonSupervisor {
 					snapshotLoads: new Map(),
 					intentionalStop: descriptor.stopRequestedAt !== undefined,
 					stopRevision: 0,
+					uiClientsSync: new SupervisorWorkerUiClientsSync(this.generation),
+					uiClientsSyncQueue: Promise.resolve(),
+					uiClientsNeedsFullSync: true,
 				});
 			} catch (error) {
 				this.log(`Ignoring invalid worker descriptor ${path}: ${String(error)}`);
@@ -1069,6 +1081,15 @@ export class DaemonSupervisor {
 
 	private protocolClientId(client: DaemonSocketClient): string {
 		return client.protocolClientId ?? client.logicalClientId;
+	}
+
+	private scheduleWorkerUiClientsSyncForClient(client: DaemonSocketClient): void {
+		const workers = new Set<ResidentWorker>();
+		for (const activeSessionId of client.attachedActiveSessionIds) {
+			const match = this.matchWorkers(activeSessionId)[0];
+			if (match) workers.add(match.worker);
+		}
+		for (const worker of workers) this.scheduleWorkerUiClientsSync(worker);
 	}
 
 	private scheduleOwnedWorkerCleanupForClient(clientId: string): void {
@@ -1244,8 +1265,9 @@ export class DaemonSupervisor {
 		}
 		const envelopeClientId = preParsed.envelopeClientId;
 		client.protocolClientId ??= envelopeClientId ?? client.logicalClientId;
-		if (envelopeClientId) {
+		if (envelopeClientId && client.logicalClientId !== envelopeClientId) {
 			client.logicalClientId = envelopeClientId;
+			this.scheduleWorkerUiClientsSyncForClient(client);
 		}
 		this.cancelOwnedWorkerCleanup(this.protocolClientId(client));
 		if (!DAEMON_COMMAND_TYPES.has(command.type)) {
@@ -2180,6 +2202,9 @@ export class DaemonSupervisor {
 				intentionalStop: false,
 				stopRevision: 0,
 				launchEnv,
+				uiClientsSync: new SupervisorWorkerUiClientsSync(this.generation),
+				uiClientsSyncQueue: Promise.resolve(),
+				uiClientsNeedsFullSync: true,
 			};
 			await this.assertRecoveryAllowed();
 			worker.descriptor = descriptor;
@@ -2309,6 +2334,61 @@ export class DaemonSupervisor {
 		}
 	}
 
+	private workerUiClients(worker: ResidentWorker): WorkerUiClient[] {
+		const workerSessionIds = new Set([
+			worker.descriptor.rootActiveSessionId,
+			...[...worker.summaries.values()].map((summary) => summary.activeSessionId ?? summary.id),
+		]);
+		const mirrored: WorkerUiClient[] = [];
+		for (const client of this.clients) {
+			for (const activeSessionId of client.attachedActiveSessionIds) {
+				if (!workerSessionIds.has(activeSessionId)) continue;
+				mirrored.push({
+					logicalClientId: client.logicalClientId,
+					connectionId: client.connectionId,
+					activeSessionId,
+					capabilities: [...client.capabilities],
+					presentable: isQuestionnaireClientPresentable(client, activeSessionId),
+				});
+			}
+		}
+		return mirrored.sort(
+			(left, right) =>
+				left.connectionId.localeCompare(right.connectionId) ||
+				left.activeSessionId.localeCompare(right.activeSessionId),
+		);
+	}
+
+	private async synchronizeWorkerUiClientsFull(worker: ResidentWorker, client: DaemonWorkerClient): Promise<void> {
+		const sync = worker.uiClientsSync.full(this.workerUiClients(worker));
+		const response = await client.requestWorker({ type: "worker_ui_clients_sync", ...sync });
+		if (!response.success) throw new Error(response.error);
+		worker.uiClientsNeedsFullSync = false;
+	}
+
+	private scheduleWorkerUiClientsSync(worker: ResidentWorker): void {
+		const client = worker.client;
+		if (!client) return;
+		worker.uiClientsSyncQueue = worker.uiClientsSyncQueue
+			.catch(() => undefined)
+			.then(async () => {
+				if (worker.client !== client) return;
+				if (worker.uiClientsNeedsFullSync) {
+					await this.synchronizeWorkerUiClientsFull(worker, client);
+					return;
+				}
+				for (const delta of worker.uiClientsSync.reconcile(this.workerUiClients(worker))) {
+					const response = await client.requestWorker({ type: "worker_ui_client_delta", ...delta });
+					if (!response.success) throw new Error(response.error);
+				}
+			})
+			.catch((error: unknown) => {
+				if (worker.client !== client) return;
+				worker.uiClientsNeedsFullSync = true;
+				this.log(`Could not synchronize UI clients for worker ${worker.descriptor.workerId}: ${String(error)}`);
+			});
+	}
+
 	private async connectWorker(worker: ResidentWorker, timeoutMs: number): Promise<DaemonWorkerClient> {
 		const deadline = Date.now() + timeoutMs;
 		let lastError: unknown;
@@ -2328,6 +2408,9 @@ export class DaemonSupervisor {
 				client.onClose((error) => void this.handleWorkerClose(worker, client, error));
 				worker.client?.close();
 				worker.client = client;
+				worker.uiClientsSync = new SupervisorWorkerUiClientsSync(this.generation);
+				worker.uiClientsSyncQueue = Promise.resolve();
+				worker.uiClientsNeedsFullSync = true;
 				return client;
 			} catch (error) {
 				lastError = error;
@@ -2358,6 +2441,9 @@ export class DaemonSupervisor {
 		});
 		if (!response.success) {
 			throw new Error(response.error);
+		}
+		if (worker.uiClientsNeedsFullSync) {
+			await this.synchronizeWorkerUiClientsFull(worker, worker.client);
 		}
 	}
 
@@ -3276,6 +3362,7 @@ export class DaemonSupervisor {
 		}
 		client.capabilities = normalizeDaemonClientCapabilities(command.capabilities, command.supportsExtensionUi);
 		client.supportsExtensionUi = client.capabilities.has("extension_ui");
+		this.scheduleWorkerUiClientsSyncForClient(client);
 
 		let result = match.worker.snapshotCache.get(activeSessionId);
 		if (
@@ -3703,6 +3790,7 @@ export class DaemonSupervisor {
 		await this.subscribeWorker(match.worker, match.summary.activeSessionId ?? match.summary.id).catch(
 			() => undefined,
 		);
+		this.scheduleWorkerUiClientsSync(match.worker);
 	}
 
 	private handleWorkerFrame(worker: ResidentWorker, frame: PrivateFrame<DaemonWorkerFrameHeader>): void {
