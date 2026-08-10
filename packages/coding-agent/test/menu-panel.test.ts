@@ -3,6 +3,7 @@ import stripAnsi from "strip-ansi";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
 	getMenuListLayout,
+	getMenuScrollWindow,
 	MenuList,
 	MenuPanel,
 	MenuRow,
@@ -159,6 +160,19 @@ describe("MenuPanel", () => {
 		});
 
 		expect(layout).toEqual({ compact: true, visibleItems: 1 });
+	});
+
+	it.each([1, 2, 3, 4, 5])("reserves only supported scroll indicators within %i rows", (availableRows) => {
+		for (const desiredStart of [0, 1, 10, 19]) {
+			const window = getMenuScrollWindow({ totalRows: 20, availableRows, desiredStart });
+			const renderedRows =
+				window.contentRows + Number(window.showAboveIndicator) + Number(window.showBelowIndicator);
+			expect(renderedRows).toBeLessThanOrEqual(availableRows);
+			if (availableRows < 3) {
+				expect(window.showAboveIndicator).toBe(false);
+				expect(window.showBelowIndicator).toBe(false);
+			}
+		}
 	});
 
 	it("renders compact rows without vertical padding", () => {

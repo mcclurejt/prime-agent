@@ -18,7 +18,11 @@ import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.js";
 import { formatNoModelsAvailableMessage } from "../src/core/auth-guidance.js";
 import { type AuthStatus, AuthStorage } from "../src/core/auth-storage.js";
 import type { AgentCronJob } from "../src/core/cron-jobs.js";
-import type { AutocompleteProviderFactory } from "../src/core/extensions/types.js";
+import type {
+	AutocompleteProviderFactory,
+	ExtensionQuestionnaireRequestV1,
+	ExtensionUIContext,
+} from "../src/core/extensions/types.js";
 import { emptyGoalState, type GoalState } from "../src/core/goals.js";
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import type { ModelRegistry } from "../src/core/model-registry.js";
@@ -4261,6 +4265,32 @@ describe("InteractiveMode.createExtensionUIContext setTheme", () => {
 		expect(result.success).toBe(false);
 		expect(settingsManager.setTheme).not.toHaveBeenCalled();
 		expect(fakeThis.ui.requestRender).not.toHaveBeenCalled();
+	});
+});
+
+describe("InteractiveMode.createExtensionUIContext questionnaire", () => {
+	test("constructs the host lazily and forwards to its request method", async () => {
+		const requestQuestionnaire = vi.fn((_request: ExtensionQuestionnaireRequestV1) =>
+			Promise.resolve({ status: "dismissed" as const }),
+		);
+		const fakeThis = {
+			getExtensionQuestionnaireHost: vi.fn(() => ({ request: requestQuestionnaire })),
+		};
+		type CreateContext = (this: typeof fakeThis) => ExtensionUIContext;
+		const createContext = (InteractiveMode.prototype as unknown as { createExtensionUIContext: CreateContext })
+			.createExtensionUIContext;
+
+		const uiContext = createContext.call(fakeThis);
+		expect(fakeThis.getExtensionQuestionnaireHost).not.toHaveBeenCalled();
+		const questionnaireRequest: ExtensionQuestionnaireRequestV1 = {
+			version: 1,
+			questions: [{ id: "confirm", kind: "confirm", prompt: "Continue?" }],
+		};
+		const outcome = uiContext.questionnaire?.(questionnaireRequest);
+
+		expect(fakeThis.getExtensionQuestionnaireHost).toHaveBeenCalledOnce();
+		expect(requestQuestionnaire).toHaveBeenCalledWith(questionnaireRequest, undefined);
+		await expect(outcome).resolves.toEqual({ status: "dismissed" });
 	});
 });
 

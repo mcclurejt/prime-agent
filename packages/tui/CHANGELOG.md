@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added cursor placement options to `Input.setValue()` for safely restoring controlled input values.
+
 ## [0.7.0] - 2026-08-05
 
 ## [0.6.1] - 2026-08-05

@@ -124,6 +124,15 @@ Use `tab` to cycle forward and `shift+tab` to cycle backward through Providers, 
 |--------|---------|-------------|
 | `app.configuration.previousTab` | `shift+tab` | Select the previous configuration tab |
 
+### Questionnaire
+
+These actions move between questionnaire questions and switch the Review page between Edit and Submit. They are context-scoped, so their Tab defaults intentionally overlap generic input and configuration-menu bindings while a questionnaire owns focus.
+
+| Keybinding id | Default | Description |
+|--------|---------|-------------|
+| `app.questionnaire.next` | `tab` | Move to the next questionnaire page or select Submit on Review |
+| `app.questionnaire.previous` | `shift+tab` | Move to the previous questionnaire page or select Edit on Review |
+
 ### Display and Message Queue
 
 | Keybinding id | Default | Description |

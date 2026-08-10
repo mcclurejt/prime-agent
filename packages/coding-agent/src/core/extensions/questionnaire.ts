@@ -15,6 +15,7 @@ export const QUESTIONNAIRE_TEXT_FIELD_MAX_BYTES = 128 * 1024;
 
 const ID_PATTERN = /^[A-Za-z0-9._-]{1,128}$/u;
 const DISALLOWED_CONTROL_PATTERN = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/u;
+const BIDIRECTIONAL_CONTROL_PATTERN = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u;
 const encoder = new TextEncoder();
 
 type JsonPrimitive = string | number | boolean | null;
@@ -59,6 +60,7 @@ function stringValue(
 		fail(path, `must contain at most ${options.maxLength} characters`);
 	}
 	if (DISALLOWED_CONTROL_PATTERN.test(value)) fail(path, "contains a disallowed control character");
+	if (BIDIRECTIONAL_CONTROL_PATTERN.test(value)) fail(path, "contains a disallowed bidirectional control character");
 	if (options.editable) assertQuestionnaireTextFieldBudget(value, path);
 	return value;
 }
@@ -337,12 +339,10 @@ function normalizeDraftState(
 	}
 }
 
-/** Validate a complete draft against its request and return its canonical state ordering. */
-export function normalizeExtensionQuestionnaireDraft(
-	requestValue: ExtensionQuestionnaireRequestV1,
+function normalizeDraftForRequest(
+	request: ExtensionQuestionnaireRequestV1,
 	draftValue: unknown,
 ): ExtensionQuestionnaireDraftV1 {
-	const request = normalizeExtensionQuestionnaireRequest(requestValue);
 	const input = record(draftValue, "draft");
 	assertKnownKeys(input, ["version", "currentStep", "states"], "draft");
 	if (input.version !== 1) fail("draft.version", "must equal 1");
@@ -350,13 +350,33 @@ export function normalizeExtensionQuestionnaireDraft(
 	if (!Array.isArray(states) || states.length !== request.questions.length) {
 		fail("draft.states", "must contain exactly one state per request question");
 	}
-	const normalized: ExtensionQuestionnaireDraftV1 = {
+	return {
 		version: 1,
 		currentStep: normalizeDraftStep(input.currentStep, request),
 		states: request.questions.map((question, index) => normalizeDraftState(states[index], question, index)),
 	};
+}
+
+/** Validate a complete draft against its request and return its canonical state ordering. */
+export function normalizeExtensionQuestionnaireDraft(
+	requestValue: ExtensionQuestionnaireRequestV1,
+	draftValue: unknown,
+): ExtensionQuestionnaireDraftV1 {
+	const request = normalizeExtensionQuestionnaireRequest(requestValue);
+	const normalized = normalizeDraftForRequest(request, draftValue);
 	assertQuestionnaireEnvelopeBudget(normalized);
 	return normalized;
+}
+
+/**
+ * Normalize a draft against a request already returned by `normalizeExtensionQuestionnaireRequest`.
+ * The caller must perform its own complete-envelope budget check on the returned draft.
+ */
+export function normalizeExtensionQuestionnaireDraftForValidatedRequest(
+	request: ExtensionQuestionnaireRequestV1,
+	draftValue: unknown,
+): ExtensionQuestionnaireDraftV1 {
+	return normalizeDraftForRequest(request, draftValue);
 }
 
 /** Use questionnaire when available while preserving compatibility with older structural UI contexts. */

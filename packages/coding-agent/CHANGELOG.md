@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Added typed questionnaire contracts, validation and canonical byte-budget helpers for extensions.
+- Added a responsive interactive questionnaire UI for in-process extensions.
 
 ## [0.7.0] - 2026-08-05
 

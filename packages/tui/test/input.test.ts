@@ -25,6 +25,15 @@ describe("Input component", () => {
 		assert.strictEqual(submitted, "hello\\");
 	});
 
+	it("can place the cursor at the end when synchronizing a controlled value", () => {
+		const input = new Input();
+		input.setValue("alpha", { cursor: "end" });
+		input.handleInput("X");
+
+		assert.strictEqual(input.getValue(), "alphaX");
+		assert.strictEqual(input.getCursor(), 6);
+	});
+
 	it("inserts backslash as regular character", () => {
 		const input = new Input();
 

@@ -129,6 +129,7 @@ describe("questionnaire request validation", () => {
 			/choices/i,
 		],
 		["terminal control sequences", { ...request, title: "safe\u001b[2J" }, /control/i],
+		["bidirectional controls", { ...request, title: "Approve\u202Espoofed" }, /bidirectional/i],
 		["unknown fields", { ...request, extra: true }, /unknown/i],
 	] as const)("rejects %s", (_name, value, message) => {
 		expect(() => normalizeExtensionQuestionnaireRequest(value)).toThrow(message);
