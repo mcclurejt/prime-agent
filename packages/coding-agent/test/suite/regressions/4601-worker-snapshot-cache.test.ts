@@ -85,7 +85,8 @@ function socketClient(id: string): { client: DaemonSocketClient; socket: PassThr
 	return {
 		socket,
 		client: {
-			id,
+			connectionId: `connection-${id}`,
+			logicalClientId: id,
 			socket: socket as unknown as Socket,
 			transport: "private-framed",
 			attachedActiveSessionIds: new Set([activeSessionId]),

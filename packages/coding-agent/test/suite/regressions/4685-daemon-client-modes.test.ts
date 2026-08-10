@@ -148,9 +148,22 @@ async function runRpc(
 	};
 }
 
+function socketClient(): DaemonSocketClient {
+	return {
+		connectionId: "connection-client-1",
+		logicalClientId: "client-1",
+		protocolClientId: "protocol-client",
+		socket: { destroyed: false } as DaemonSocketClient["socket"],
+		attachedActiveSessionIds: new Set(),
+		detachInput: vi.fn(),
+		supportsExtensionUi: false,
+		capabilities: new Set(),
+	};
+}
+
 describe("ENG-4685 daemon-backed client modes", () => {
 	it("commits owned-worker promotion before best-effort peer synchronization", async () => {
-		const client = { id: "client-1" } as DaemonSocketClient;
+		const client = socketClient();
 		const worker = {
 			descriptor: { ownerClientId: "protocol-client" },
 			launchEnv: { TEST: "value" },
@@ -180,7 +193,7 @@ describe("ENG-4685 daemon-backed client modes", () => {
 	});
 
 	it("rolls back owned-worker promotion when persistence fails", async () => {
-		const client = { id: "client-1" } as DaemonSocketClient;
+		const client = socketClient();
 		const descriptor = { ownerClientId: "protocol-client" };
 		const timer = setTimeout(() => {}, 60_000);
 		const worker = {

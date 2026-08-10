@@ -56,8 +56,9 @@ export const DAEMON_COMMAND_ENVELOPE_MIN_PROTOCOL_VERSION = 7;
 // Revision 11 adds immediate get/set commands for active-session RLM max depth.
 // Revision 12 publishes idle-residency metadata on session summary rows.
 // Revision 13 narrows agent-origin reach and roster wire shapes to the nuclear family.
-export const DAEMON_SCHEMA_REVISION = 13;
-export const DAEMON_SCHEMA_ID = "protocol-7-schema-13-816309b1cd50";
+// Revision 14 adds additive public-socket connection incarnation metadata.
+export const DAEMON_SCHEMA_REVISION = 14;
+export const DAEMON_SCHEMA_ID = "protocol-7-schema-14-5a680475d2cf";
 
 export type DaemonProtocolName = typeof DAEMON_PROTOCOL_NAME;
 export type DaemonProtocolVersion = number;
@@ -69,10 +70,13 @@ export interface DaemonEventCursor {
 	sequence: DaemonEventSequence;
 }
 export type DaemonClientId = string;
+/** Daemon/supervisor-owned socket incarnation, distinct from the caller-supplied logical client ID. */
+export type DaemonConnectionId = string;
 export type DaemonClientCapability =
 	| "attach_snapshot"
 	| "event_sequence"
 	| "extension_ui"
+	| "questionnaire_v1"
 	| "slim_attach"
 	| "chunked_snapshot"
 	| "client_owned_sessions";
@@ -118,13 +122,23 @@ export const DAEMON_SUPPORTED_CLIENT_CAPABILITIES: readonly DaemonClientCapabili
 	"attach_snapshot",
 	"event_sequence",
 	"extension_ui",
+	"questionnaire_v1",
 	"slim_attach",
 	"chunked_snapshot",
 	"client_owned_sessions",
 ];
 
+export const DAEMON_DORMANT_CLIENT_CAPABILITIES: readonly DaemonClientCapability[] = ["questionnaire_v1"];
+
+const DAEMON_DORMANT_CLIENT_CAPABILITY_SET: ReadonlySet<DaemonClientCapability> = new Set(
+	DAEMON_DORMANT_CLIENT_CAPABILITIES,
+);
+
+export const DAEMON_ADVERTISED_CLIENT_CAPABILITIES: readonly DaemonClientCapability[] =
+	DAEMON_SUPPORTED_CLIENT_CAPABILITIES.filter((capability) => !DAEMON_DORMANT_CLIENT_CAPABILITY_SET.has(capability));
+
 export const DAEMON_DEFAULT_SERVER_CAPABILITIES: readonly DaemonServerCapability[] = [
-	...DAEMON_SUPPORTED_CLIENT_CAPABILITIES,
+	...DAEMON_ADVERTISED_CLIENT_CAPABILITIES,
 	"delete_rlm_subagent",
 	"heartbeat_catalog",
 	"heartbeat_management",
@@ -134,6 +148,48 @@ export const DAEMON_DEFAULT_SERVER_CAPABILITIES: readonly DaemonServerCapability
 	"session_input_admission",
 	"prompt_admission_cancellation",
 ];
+
+const DAEMON_SUPPORTED_CLIENT_CAPABILITY_SET: ReadonlySet<string> = new Set(DAEMON_SUPPORTED_CLIENT_CAPABILITIES);
+const DAEMON_DEFAULT_SERVER_CAPABILITY_SET: ReadonlySet<DaemonServerCapability> = new Set(
+	DAEMON_DEFAULT_SERVER_CAPABILITIES,
+);
+const DAEMON_CLIENT_CAPABILITY_REQUIREMENTS: Partial<
+	Record<DaemonClientCapability, readonly DaemonClientCapability[]>
+> = {
+	questionnaire_v1: ["extension_ui"],
+};
+
+/**
+ * Normalizes untrusted client capability metadata against both the recognized
+ * schema and the semantic surface exposed by this server connection.
+ */
+export function normalizeDaemonClientCapabilities(
+	capabilities: readonly DaemonClientCapability[] | undefined,
+	supportsExtensionUi: boolean | undefined,
+	serverCapabilities: ReadonlySet<DaemonServerCapability> = DAEMON_DEFAULT_SERVER_CAPABILITY_SET,
+): Set<DaemonClientCapability> {
+	const requested = new Set<DaemonClientCapability>();
+	for (const capability of capabilities ?? DAEMON_DEFAULT_CLIENT_CAPABILITIES) {
+		if (DAEMON_SUPPORTED_CLIENT_CAPABILITY_SET.has(capability)) {
+			requested.add(capability);
+		}
+	}
+	if (supportsExtensionUi) {
+		requested.add("extension_ui");
+	}
+
+	const normalized = new Set<DaemonClientCapability>();
+	for (const capability of requested) {
+		const requirements = DAEMON_CLIENT_CAPABILITY_REQUIREMENTS[capability] ?? [];
+		if (
+			serverCapabilities.has(capability) &&
+			requirements.every((required) => requested.has(required) && serverCapabilities.has(required))
+		) {
+			normalized.add(capability);
+		}
+	}
+	return normalized;
+}
 
 export interface DaemonRuntimeIdentity {
 	buildId: string;
@@ -291,7 +347,10 @@ export interface DaemonAttachResult {
 		targetChunkBytes: number;
 	};
 	client: {
+		/** Logical client identity retained for compatibility. */
 		id: DaemonClientId;
+		/** Public socket incarnation when the attach passed through a capable supervisor/daemon. */
+		connectionId?: DaemonConnectionId;
 		capabilities: DaemonClientCapability[];
 	};
 }
@@ -637,6 +696,7 @@ export const DAEMON_COMMAND_COMPATIBILITY = {
 	list: LEGACY_DAEMON_COMMAND,
 	list_saved_sessions: LEGACY_DAEMON_COMMAND,
 	create: LEGACY_DAEMON_COMMAND,
+	// Additive optional attach-result metadata remains safe for old clients to ignore.
 	attach: LEGACY_DAEMON_COMMAND,
 	reattach: LEGACY_DAEMON_COMMAND,
 	detach: LEGACY_DAEMON_COMMAND,
@@ -842,7 +902,10 @@ export type DaemonOutbound =
 			supervisorProcessStartId?: string;
 			/** Normalized socket identity stored in the durable owner record. */
 			supervisorSocketPath?: string;
+			/** Logical client identity retained for compatibility with older clients. */
 			clientId: DaemonClientId;
+			/** Immutable public socket incarnation; absent on older daemons. */
+			connectionId?: DaemonConnectionId;
 			serverCapabilities: readonly DaemonServerCapability[];
 	  }
 	| { type: "daemon_closing"; reason: DaemonClosingReason }
@@ -926,6 +989,7 @@ export const DAEMON_OUTBOUND_COMPATIBILITY = {
 	response: LEGACY_DAEMON_COMMAND,
 	session_list_progress: LEGACY_DAEMON_COMMAND,
 	session_list_item: LEGACY_DAEMON_COMMAND,
+	// Additive optional hello metadata remains safe for old clients to ignore.
 	daemon_hello: LEGACY_DAEMON_COMMAND,
 	daemon_closing: LEGACY_DAEMON_COMMAND,
 	heartbeats_changed: { minProtocol: 7, capability: "heartbeat_catalog" },

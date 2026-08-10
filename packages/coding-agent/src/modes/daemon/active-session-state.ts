@@ -2,11 +2,22 @@ import { randomUUID } from "node:crypto";
 import type { Socket } from "node:net";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.js";
 import type { AgentStatus } from "../../core/session-manager.js";
-import type { DaemonClientCapability, DaemonEventSequence, DaemonExtensionUIResponse } from "./daemon-protocol.js";
+import type {
+	DaemonClientCapability,
+	DaemonClientId,
+	DaemonConnectionId,
+	DaemonEventSequence,
+	DaemonExtensionUIResponse,
+} from "./daemon-protocol.js";
 import { formatSessionDisplayId, matchesSessionIdSuffix } from "./daemon-session-id.js";
 
 export interface DaemonSocketClient {
-	id: string;
+	/** Daemon/supervisor-owned socket incarnation. Never changes for the lifetime of this socket. */
+	readonly connectionId: DaemonConnectionId;
+	/** Caller-visible logical identity. Legacy clientId metadata may update this value. */
+	logicalClientId: DaemonClientId;
+	/** First authenticated command-envelope identity, stable across attach-level logical identity changes. */
+	protocolClientId?: DaemonClientId;
 	socket: Socket;
 	attachedActiveSessionIds: Set<string>;
 	/** Session events are dropped while the socket is blocked and replaced with one catch-up snapshot on drain. */

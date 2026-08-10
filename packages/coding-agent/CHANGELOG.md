@@ -4,6 +4,7 @@
 
 - Added typed questionnaire contracts, validation and canonical byte-budget helpers for extensions.
 - Added a responsive interactive questionnaire UI for in-process extensions.
+- Added additive daemon connection-incarnation metadata and a dormant questionnaire capability foundation without advertising questionnaire semantics.
 
 ## [0.7.0] - 2026-08-05
 

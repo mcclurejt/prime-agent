@@ -76,6 +76,7 @@ export type {
 	DaemonCommand,
 	DaemonCommandEnvelope,
 	DaemonCommandId,
+	DaemonConnectionId,
 	DaemonEventEnvelope,
 	DaemonEventId,
 	DaemonEventMeta,

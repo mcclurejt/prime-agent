@@ -64,7 +64,6 @@ import {
 	DAEMON_SCHEMA_REVISION,
 	DAEMON_UPDATE_RESTART_FORMAT_VERSION,
 	type DaemonAttachResult,
-	type DaemonClientCapability,
 	type DaemonClosingReason,
 	type DaemonCommand,
 	type DaemonOutbound,
@@ -73,6 +72,7 @@ import {
 	failure,
 	isDaemonCommandEnvelope,
 	isDaemonMutatingCommand,
+	normalizeDaemonClientCapabilities,
 	salvageDaemonCommandId,
 	success,
 	UPDATE_RESTART_DRAIN_COMMANDS,
@@ -527,17 +527,6 @@ function isFinalizedTranscriptEvent(eventType: string | undefined): boolean {
 	);
 }
 
-function normalizeCapabilities(
-	capabilities: readonly DaemonClientCapability[] | undefined,
-	supportsExtensionUi: boolean | undefined,
-): Set<DaemonClientCapability> {
-	const normalized = new Set(capabilities ?? DAEMON_DEFAULT_CLIENT_CAPABILITIES);
-	if (supportsExtensionUi) {
-		normalized.add("extension_ui");
-	}
-	return normalized;
-}
-
 function mergeSessionLists(active: readonly SessionSummary[], saved: readonly SessionInfo[]): SessionSummary[] {
 	const activeByFile = new Map<string, SessionSummary>();
 	for (const summary of active) {
@@ -590,7 +579,6 @@ export class DaemonSupervisor {
 	private updateRestartPhase?: "draining" | "fencing" | "prepared";
 	private readonly mutationDrain = new MutationDrainLatch();
 	private readonly clients = new Set<DaemonSocketClient>();
-	private readonly protocolClientIds = new WeakMap<DaemonSocketClient, string>();
 	private readonly workers = new Map<string, ResidentWorker>();
 	private readonly openingWorkers = new Map<string, Promise<ResidentWorker>>();
 	/** Public admission ids are scoped to the socket that registered them. */
@@ -1003,7 +991,8 @@ export class DaemonSupervisor {
 
 	private handleConnection(socket: Socket): void {
 		const client: DaemonSocketClient = {
-			id: createActiveSessionId(),
+			connectionId: randomUUID(),
+			logicalClientId: createActiveSessionId(),
 			socket,
 			attachedActiveSessionIds: new Set(),
 			catchupActiveSessionIds: new Set(),
@@ -1031,7 +1020,8 @@ export class DaemonSupervisor {
 						supervisorPid: process.pid,
 						supervisorProcessStartId: this.ownership?.record.processStartId,
 						supervisorSocketPath: this.ownership?.record.socketPath,
-						clientId: client.id,
+						clientId: client.logicalClientId,
+						connectionId: client.connectionId,
 						serverCapabilities: DAEMON_DEFAULT_SERVER_CAPABILITIES,
 					});
 				}
@@ -1061,7 +1051,7 @@ export class DaemonSupervisor {
 			client.backpressured = false;
 			if (!client.snapshotStreaming) {
 				void this.catchUpClient(client).catch((error) =>
-					this.log(`Failed to catch up client ${client.id}: ${String(error)}`),
+					this.log(`Failed to catch up client ${client.logicalClientId}: ${String(error)}`),
 				);
 			}
 		});
@@ -1078,7 +1068,7 @@ export class DaemonSupervisor {
 	}
 
 	private protocolClientId(client: DaemonSocketClient): string {
-		return this.protocolClientIds.get(client) ?? client.id;
+		return client.protocolClientId ?? client.logicalClientId;
 	}
 
 	private scheduleOwnedWorkerCleanupForClient(clientId: string): void {
@@ -1217,7 +1207,7 @@ export class DaemonSupervisor {
 		}
 		return {
 			command,
-			envelopeClientId: envelope.clientId ?? client.id,
+			envelopeClientId: envelope.clientId,
 			protocolVersion: envelope.protocol.version,
 			admission,
 		};
@@ -1253,11 +1243,11 @@ export class DaemonSupervisor {
 			return;
 		}
 		const envelopeClientId = preParsed.envelopeClientId;
+		client.protocolClientId ??= envelopeClientId ?? client.logicalClientId;
 		if (envelopeClientId) {
-			this.protocolClientIds.set(client, envelopeClientId);
-			client.id = envelopeClientId;
+			client.logicalClientId = envelopeClientId;
 		}
-		this.cancelOwnedWorkerCleanup(client.id);
+		this.cancelOwnedWorkerCleanup(this.protocolClientId(client));
 		if (!DAEMON_COMMAND_TYPES.has(command.type)) {
 			this.write(client, failure(command.id, command.type, `Unknown daemon command: ${command.type}`));
 			return;
@@ -1286,8 +1276,8 @@ export class DaemonSupervisor {
 		}
 
 		const mutation = isDaemonMutatingCommand(command);
-		const journalIdentity =
-			envelopeClientId && command.id && mutation ? { clientId: envelopeClientId, commandId: command.id } : undefined;
+		const journalClientId = envelopeClientId ?? this.protocolClientId(client);
+		const journalIdentity = command.id && mutation ? { clientId: journalClientId, commandId: command.id } : undefined;
 		const existing = journalIdentity
 			? this.commandJournal.lookup(journalIdentity.clientId, journalIdentity.commandId)
 			: undefined;
@@ -1409,7 +1399,7 @@ export class DaemonSupervisor {
 				return { ...response, id: command.id };
 			}
 			case "ack_result":
-				this.commandJournal.acknowledge(client.id, command.commandId);
+				this.commandJournal.acknowledge(this.protocolClientId(client), command.commandId);
 				return undefined;
 			case "list":
 				return this.handleList(client, command);
@@ -1843,7 +1833,7 @@ export class DaemonSupervisor {
 							sessionId: source.summary.sessionId,
 							...(source.summary.sessionName ? { sessionName: source.summary.sessionName } : {}),
 							runtimeKind: source.summary.runtimeKind ?? "top-level",
-							clientId: client.id,
+							clientId: client.logicalClientId,
 						},
 					},
 					WORKER_REQUEST_TIMEOUT_MS,
@@ -3282,9 +3272,9 @@ export class DaemonSupervisor {
 			await duplicateValidation.promise;
 		}
 		if (command.clientId) {
-			client.id = command.clientId;
+			client.logicalClientId = command.clientId;
 		}
-		client.capabilities = normalizeCapabilities(command.capabilities, command.supportsExtensionUi);
+		client.capabilities = normalizeDaemonClientCapabilities(command.capabilities, command.supportsExtensionUi);
 		client.supportsExtensionUi = client.capabilities.has("extension_ui");
 
 		let result = match.worker.snapshotCache.get(activeSessionId);
@@ -3398,7 +3388,11 @@ export class DaemonSupervisor {
 				...result,
 				state: result.state ? publicSummary : undefined,
 				snapshot: { ...result.snapshot, summary: publicSummary },
-				client: { id: client.id, capabilities: [...client.capabilities] },
+				client: {
+					id: client.logicalClientId,
+					connectionId: client.connectionId,
+					capabilities: [...client.capabilities],
+				},
 			};
 			if (publicResult.state && publicResult.messages) {
 				this.write(client, {
@@ -3649,7 +3643,7 @@ export class DaemonSupervisor {
 			}
 			if (!client.snapshotStreaming && client.catchupActiveSessionIds?.size) {
 				void this.catchUpClient(client).catch((error) =>
-					this.log(`Failed to catch up client ${client.id}: ${String(error)}`),
+					this.log(`Failed to catch up client ${client.logicalClientId}: ${String(error)}`),
 				);
 			}
 		};
@@ -3984,7 +3978,7 @@ export class DaemonSupervisor {
 					if (!client.attachedActiveSessionIds.has(activeSessionId)) continue;
 					this.queueCatchup(client, activeSessionId, snapshotPurpose === "replacement" ? "replacement" : "resync");
 					void this.catchUpClient(client).catch((error) =>
-						this.log(`Failed to catch up client ${client.id}: ${String(error)}`),
+						this.log(`Failed to catch up client ${client.logicalClientId}: ${String(error)}`),
 					);
 				}
 			}
@@ -4023,7 +4017,7 @@ export class DaemonSupervisor {
 							snapshotPurpose === "replacement" ? "replacement" : "resync",
 						);
 						void this.catchUpClient(client).catch((error) =>
-							this.log(`Failed to catch up client ${client.id}: ${String(error)}`),
+							this.log(`Failed to catch up client ${client.logicalClientId}: ${String(error)}`),
 						);
 					}
 				}
@@ -4290,7 +4284,7 @@ export class DaemonSupervisor {
 				}
 			} catch (error) {
 				releaseTranscript?.();
-				this.log(`Failed to catch up client ${client.id} for ${activeSessionId}: ${String(error)}`);
+				this.log(`Failed to catch up client ${client.logicalClientId} for ${activeSessionId}: ${String(error)}`);
 			}
 		}
 	}
@@ -4717,8 +4711,8 @@ export class DaemonSupervisor {
 		});
 		for (const client of this.clients) {
 			client.attachedActiveSessionIds.clear();
-			await this.runCleanupStep(`daemon client input ${client.id}`, () => client.detachInput());
-			await this.runCleanupStep(`daemon client socket ${client.id}`, () => {
+			await this.runCleanupStep(`daemon client input ${client.logicalClientId}`, () => client.detachInput());
+			await this.runCleanupStep(`daemon client socket ${client.logicalClientId}`, () => {
 				client.socket.destroy();
 			});
 		}

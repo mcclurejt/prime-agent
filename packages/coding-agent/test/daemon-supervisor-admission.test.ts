@@ -4,6 +4,9 @@ import { describe, expect, it, vi } from "vitest";
 import type { DaemonSocketClient } from "../src/modes/daemon/active-session-state.js";
 import {
 	createDaemonCommandEnvelope,
+	DAEMON_PROTOCOL_INFO,
+	type DaemonAttachResult,
+	type DaemonClientCapability,
 	type DaemonCommand,
 	type DaemonResponse,
 	success,
@@ -27,11 +30,25 @@ interface SupervisorHarness {
 	handleConnection(socket: Socket): void;
 	handleLine(client: DaemonSocketClient, line: string): Promise<void>;
 	clients: Set<DaemonSocketClient>;
+	workers: Map<string, unknown>;
 	promptAdmissions: Map<DaemonSocketClient, Map<string, AdmissionRecord>>;
+	commandJournal: { acknowledge: ReturnType<typeof vi.fn> };
+	protocolClientId(client: DaemonSocketClient): string;
+	handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<DaemonResponse | undefined>;
+	attachClient(client: DaemonSocketClient, command: Extract<DaemonCommand, { type: "attach" }>): Promise<unknown>;
 }
 
-function client(id: string): DaemonSocketClient {
-	return { id, attachedActiveSessionIds: new Set(), capabilities: new Set() } as DaemonSocketClient;
+function client(logicalClientId: string): DaemonSocketClient {
+	return {
+		connectionId: `connection-${logicalClientId}`,
+		logicalClientId,
+		protocolClientId: logicalClientId,
+		socket: { destroyed: false } as DaemonSocketClient["socket"],
+		attachedActiveSessionIds: new Set(),
+		detachInput: vi.fn(),
+		supportsExtensionUi: false,
+		capabilities: new Set(),
+	};
 }
 
 function commandLine(command: DaemonCommand & { id: string }, clientId?: string): string {
@@ -85,14 +102,282 @@ function createHarness(
 			acknowledge: vi.fn(),
 		},
 		updateRestartPhase: options.updateRestartPhase,
-		findWorkerForClient: options.findWorker,
-		forwardToWorker: options.forwardToWorker,
+		...(options.findWorker ? { findWorkerForClient: options.findWorker } : {}),
+		...(options.forwardToWorker ? { forwardToWorker: options.forwardToWorker } : {}),
+		streamReconstructor: { seed: vi.fn() },
+		syncWorkerExtensionUi: vi.fn(async () => undefined),
 		write: vi.fn(),
 		log: vi.fn(),
 	}) as SupervisorHarness;
 }
 
+function createOwnedIdentityWorker(ownerClientId: string) {
+	const summary = (activeSessionId: string) => ({
+		id: activeSessionId,
+		activeSessionId,
+		lifecycle: "live" as const,
+		activity: "idle" as const,
+		isSessionActive: false,
+		sessionId: `${activeSessionId}-session`,
+		cwd: "/tmp/project",
+		isStreaming: false,
+		isCompacting: false,
+		attachedClients: 0,
+		messageCount: 0,
+		sessionActions: { queuedCount: 0, steering: [], followUps: [] },
+	});
+	const root = summary("owned-root");
+	const target = summary("owned-target");
+	const attachResult = (sessionSummary: typeof root) =>
+		({
+			protocol: DAEMON_PROTOCOL_INFO,
+			activeSessionId: sessionSummary.activeSessionId,
+			snapshot: { summary: sessionSummary, messages: [] },
+			replay: { status: "complete", toSequence: 0 },
+			lastEventSequence: 0,
+			client: { id: ownerClientId, capabilities: [] },
+		}) as unknown as DaemonAttachResult;
+	const worker = {
+		client: {},
+		descriptor: {
+			workerId: "owned-worker",
+			lifecycle: "ready",
+			rootActiveSessionId: root.activeSessionId,
+			rootSessionId: root.sessionId,
+			ownerClientId,
+			pid: 1,
+		},
+		summaries: new Map([
+			[root.activeSessionId, root],
+			[target.activeSessionId, target],
+		]),
+		snapshotCache: new Map([
+			[root.activeSessionId, attachResult(root)],
+			[target.activeSessionId, attachResult(target)],
+		]),
+		snapshotLoads: new Map(),
+		transcriptCaches: new Map(),
+		snapshotTransferFrames: new Map(),
+	};
+	return { worker, root, target };
+}
+
 describe("daemon supervisor prompt admission ownership", () => {
+	it("owns an immutable connection incarnation separately from caller-supplied logical identity", async () => {
+		const supervisor = createHarness();
+		const socket = new PassThrough() as unknown as Socket;
+		Object.assign(socket, { destroyed: false });
+
+		supervisor.handleConnection(socket);
+		await Promise.resolve();
+
+		const connected = [...supervisor.clients][0]!;
+		const connectionId = connected.connectionId;
+		expect(connectionId).toEqual(expect.any(String));
+		expect((supervisor as unknown as { write: ReturnType<typeof vi.fn> }).write).toHaveBeenCalledWith(
+			connected,
+			expect.objectContaining({
+				type: "daemon_hello",
+				clientId: connected.logicalClientId,
+				connectionId,
+			}),
+		);
+
+		await supervisor.handleLine(
+			connected,
+			JSON.stringify(
+				createDaemonCommandEnvelope(
+					{ type: "future_command" } as unknown as DaemonCommand,
+					"future-1",
+					"logical-2",
+				),
+			),
+		);
+
+		expect(connected.logicalClientId).toBe("logical-2");
+		expect(connected.connectionId).toBe(connectionId);
+	});
+
+	it("keeps duplicate logical clients as distinct socket incarnations", async () => {
+		const supervisor = createHarness();
+		const firstSocket = new PassThrough() as unknown as Socket;
+		const secondSocket = new PassThrough() as unknown as Socket;
+		Object.assign(firstSocket, { destroyed: false });
+		Object.assign(secondSocket, { destroyed: false });
+		supervisor.handleConnection(firstSocket);
+		supervisor.handleConnection(secondSocket);
+
+		const [first, second] = [...supervisor.clients];
+		for (const [index, connected] of [first, second].entries()) {
+			await supervisor.handleLine(
+				connected!,
+				JSON.stringify(
+					createDaemonCommandEnvelope(
+						{ type: "future_command" } as unknown as DaemonCommand,
+						`future-${index}`,
+						"shared-logical-client",
+					),
+				),
+			);
+		}
+
+		expect(first!.logicalClientId).toBe("shared-logical-client");
+		expect(second!.logicalClientId).toBe("shared-logical-client");
+		expect(first!.connectionId).toEqual(expect.any(String));
+		expect(second!.connectionId).toEqual(expect.any(String));
+		expect(first!.connectionId).not.toBe(second!.connectionId);
+	});
+
+	it("keeps the envelope protocol owner stable across attach, reattach, and catch-up attachment", async () => {
+		const supervisor = createHarness();
+		const { worker, root, target } = createOwnedIdentityWorker("protocol-owner");
+		(supervisor.workers as Map<string, typeof worker>).set(worker.descriptor.workerId, worker);
+		const connected = client("protocol-owner");
+		connected.protocolClientId = "protocol-owner";
+
+		await supervisor.attachClient(connected, {
+			type: "attach",
+			activeSessionId: root.activeSessionId,
+			clientId: "logical-after-attach",
+		});
+		expect(connected.logicalClientId).toBe("logical-after-attach");
+		expect(supervisor.protocolClientId(connected)).toBe("protocol-owner");
+
+		await supervisor.handleCommand(connected, {
+			type: "reattach",
+			activeSessionId: root.activeSessionId,
+			targetActiveSessionId: target.activeSessionId,
+			clientId: "logical-after-reattach",
+		});
+		expect(connected.logicalClientId).toBe("logical-after-reattach");
+		expect(supervisor.protocolClientId(connected)).toBe("protocol-owner");
+
+		await supervisor.handleCommand(connected, { type: "ack_result", commandId: "owned-result" });
+		expect(supervisor.commandJournal.acknowledge).toHaveBeenCalledWith("protocol-owner", "owned-result");
+
+		await expect(
+			supervisor.attachClient(connected, { type: "attach", activeSessionId: target.activeSessionId }),
+		).resolves.toBeDefined();
+		expect(supervisor.protocolClientId(connected)).toBe("protocol-owner");
+	});
+
+	it("allowlists unknown capabilities at the public supervisor attach boundary", async () => {
+		const supervisor = createHarness();
+		const { worker, root } = createOwnedIdentityWorker("protocol-owner");
+		(supervisor.workers as Map<string, typeof worker>).set(worker.descriptor.workerId, worker);
+		const connected = client("protocol-owner");
+		connected.protocolClientId = "protocol-owner";
+
+		await supervisor.attachClient(connected, {
+			type: "attach",
+			activeSessionId: root.activeSessionId,
+			capabilities: ["extension_ui", "unknown_capability"] as unknown as DaemonClientCapability[],
+		});
+
+		expect([...connected.capabilities]).toEqual(["extension_ui"]);
+	});
+
+	it("pins a clientId-less envelope owner before attach changes logical identity and socket close", async () => {
+		const supervisor = createHarness();
+		const createOrReuseWorker = vi.fn();
+		const scheduleOwnedWorkerCleanup = vi.fn();
+		Object.assign(supervisor, { createOrReuseWorker, scheduleOwnedWorkerCleanup });
+		const socket = new PassThrough() as unknown as Socket;
+		Object.assign(socket, { destroyed: false });
+		supervisor.handleConnection(socket);
+		const connected = [...supervisor.clients][0]!;
+		const ownerClientId = connected.logicalClientId;
+		const { worker, root } = createOwnedIdentityWorker(ownerClientId);
+		(supervisor.workers as Map<string, typeof worker>).set(worker.descriptor.workerId, worker);
+		createOrReuseWorker.mockResolvedValue(worker);
+
+		await supervisor.handleLine(
+			connected,
+			JSON.stringify(createDaemonCommandEnvelope({ type: "create", lifecycle: "client_owned" }, "create-owned")),
+		);
+		expect(createOrReuseWorker).toHaveBeenCalledWith(
+			ownerClientId,
+			expect.objectContaining({ type: "create", lifecycle: "client_owned" }),
+		);
+
+		await supervisor.handleLine(
+			connected,
+			JSON.stringify(
+				createDaemonCommandEnvelope(
+					{ type: "attach", activeSessionId: root.activeSessionId, clientId: "logical-presenter" },
+					"attach-owned",
+				),
+			),
+		);
+		expect(connected.logicalClientId).toBe("logical-presenter");
+
+		socket.emit("close");
+		expect(connected.protocolClientId).toBe(ownerClientId);
+		expect(scheduleOwnedWorkerCleanup).toHaveBeenCalledWith(worker);
+	});
+
+	it("cleans up the envelope-owned worker after attach changes logical identity and the socket closes", async () => {
+		const supervisor = createHarness();
+		const { worker, root } = createOwnedIdentityWorker("protocol-owner");
+		(supervisor.workers as Map<string, typeof worker>).set(worker.descriptor.workerId, worker);
+		const createOrReuseWorker = vi.fn(async () => worker);
+		const scheduleOwnedWorkerCleanup = vi.fn();
+		Object.assign(supervisor, { createOrReuseWorker, scheduleOwnedWorkerCleanup });
+		const socket = new PassThrough() as unknown as Socket;
+		Object.assign(socket, { destroyed: false });
+		supervisor.handleConnection(socket);
+		const connected = [...supervisor.clients][0]!;
+		const connectionId = connected.connectionId;
+		expect(connected.protocolClientId).toBeUndefined();
+
+		await supervisor.handleLine(
+			connected,
+			JSON.stringify(
+				createDaemonCommandEnvelope(
+					{ type: "create", lifecycle: "client_owned" },
+					"create-owned",
+					"protocol-owner",
+				),
+			),
+		);
+		expect(createOrReuseWorker).toHaveBeenCalledWith(
+			"protocol-owner",
+			expect.objectContaining({ type: "create", lifecycle: "client_owned" }),
+		);
+
+		await supervisor.handleLine(
+			connected,
+			JSON.stringify({
+				...createDaemonCommandEnvelope(
+					{
+						type: "attach",
+						activeSessionId: root.activeSessionId,
+						clientId: "logical-presenter",
+					} as Extract<DaemonCommand, { type: "attach" }>,
+					"attach-owned",
+					"protocol-owner",
+				),
+				connectionId: "forged-envelope-connection",
+				command: {
+					type: "attach",
+					activeSessionId: root.activeSessionId,
+					clientId: "logical-presenter",
+					connectionId: "forged-attach-connection",
+				},
+			}),
+		);
+
+		expect(connected.logicalClientId).toBe("logical-presenter");
+		expect(connected.protocolClientId).toBe("protocol-owner");
+		expect(supervisor.protocolClientId(connected)).toBe("protocol-owner");
+		expect(connected.connectionId).toBe(connectionId);
+		expect(connected.connectionId).not.toBe("forged-envelope-connection");
+		expect(connected.connectionId).not.toBe("forged-attach-connection");
+
+		socket.emit("close");
+		expect(scheduleOwnedWorkerCleanup).toHaveBeenCalledWith(worker);
+	});
+
 	it("registers a prompt synchronously before readiness and ownership awaits", async () => {
 		const ready = deferred<void>();
 		const ownership = deferred<void>();
@@ -404,7 +689,7 @@ describe("daemon supervisor prompt admission ownership", () => {
 		} as const satisfies DaemonCommand;
 		await supervisor.handleLine(
 			attacker,
-			JSON.stringify(createDaemonCommandEnvelope(spoofedCancel, spoofedCancel.id, ownerA.id)),
+			JSON.stringify(createDaemonCommandEnvelope(spoofedCancel, spoofedCancel.id, ownerA.logicalClientId)),
 		);
 		expect(cancelResponses.size).toBe(0);
 		expect(admissionFor(supervisor, ownerA)).toBe(admissionA);

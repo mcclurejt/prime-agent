@@ -148,7 +148,6 @@ import {
 	DAEMON_PROTOCOL_INFO,
 	DAEMON_SCHEMA_ID,
 	DAEMON_SCHEMA_REVISION,
-	DAEMON_SUPPORTED_CLIENT_CAPABILITIES,
 	DAEMON_UPDATE_RESTART_FORMAT_VERSION,
 	type DaemonAttachResult,
 	type DaemonClientCapability,
@@ -164,6 +163,7 @@ import {
 	isDaemonCommandEnvelope,
 	isDaemonDialogExtensionUiRequest,
 	isDaemonMutatingCommand,
+	normalizeDaemonClientCapabilities,
 	salvageDaemonCommandId,
 	success,
 	UPDATE_RESTART_DRAIN_COMMANDS,
@@ -333,7 +333,6 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"shutdown",
 ]);
 
-const DAEMON_CLIENT_CAPABILITY_SET: ReadonlySet<string> = new Set(DAEMON_SUPPORTED_CLIENT_CAPABILITIES);
 const CLIENT_CATCHUP_RETRY_MS = 250;
 const UPDATE_RESTART_ABORT_BASH_TIMEOUT_MS = 5000;
 const SUPERVISOR_FENCE_POLL_MS = 250;
@@ -2985,7 +2984,8 @@ export class AgentDaemon {
 
 	private handleConnection(socket: Socket): void {
 		const client: DaemonSocketClient = {
-			id: createActiveSessionId(),
+			connectionId: randomUUID(),
+			logicalClientId: createActiveSessionId(),
 			socket,
 			attachedActiveSessionIds: new Set(),
 			catchupActiveSessionIds: new Set(),
@@ -3005,7 +3005,8 @@ export class AgentDaemon {
 			schemaRevision: DAEMON_SCHEMA_REVISION,
 			appVersion: VERSION,
 			runtime: getDaemonRuntimeIdentity(),
-			clientId: client.id,
+			clientId: client.logicalClientId,
+			connectionId: client.connectionId,
 			serverCapabilities: DAEMON_DEFAULT_SERVER_CAPABILITIES,
 		});
 
@@ -3066,7 +3067,7 @@ export class AgentDaemon {
 			client.backpressured = false;
 			if (!client.snapshotStreaming) {
 				void this.catchUpBackpressuredClient(client).catch((error) =>
-					this.log(`could not catch up snapshot client ${client.id}: ${String(error)}`),
+					this.log(`could not catch up snapshot client ${client.logicalClientId}: ${String(error)}`),
 				);
 			}
 		});
@@ -3082,7 +3083,7 @@ export class AgentDaemon {
 	 */
 	private parseCommandAndRegisterPromptAdmission(client: DaemonSocketClient, line: string): unknown {
 		const wireValue = JSON.parse(line) as unknown;
-		if (isDaemonCommandEnvelope(wireValue) && wireValue.clientId) client.id = wireValue.clientId;
+		if (isDaemonCommandEnvelope(wireValue) && wireValue.clientId) client.logicalClientId = wireValue.clientId;
 		const parsed = (isDaemonCommandEnvelope(wireValue) ? { ...wireValue.command, id: wireValue.id } : wireValue) as {
 			type?: unknown;
 			activeSessionId?: unknown;
@@ -3339,7 +3340,7 @@ export class AgentDaemon {
 					setDaemonClientSessionCapabilities(
 						client,
 						state.activeSessionId,
-						normalizeClientCapabilities(command.capabilities, command.supportsExtensionUi),
+						normalizeDaemonClientCapabilities(command.capabilities, command.supportsExtensionUi),
 					);
 					state.clients.add(client);
 					client.attachedActiveSessionIds.add(state.activeSessionId);
@@ -3544,12 +3545,12 @@ export class AgentDaemon {
 			case "attach": {
 				const state = await this.getOrHydrateBoundSessionState(command.activeSessionId);
 				if (command.clientId) {
-					client.id = command.clientId;
+					client.logicalClientId = command.clientId;
 				}
 				setDaemonClientSessionCapabilities(
 					client,
 					state.activeSessionId,
-					normalizeClientCapabilities(command.capabilities, command.supportsExtensionUi),
+					normalizeDaemonClientCapabilities(command.capabilities, command.supportsExtensionUi),
 				);
 				const streamsSnapshot =
 					client.transport === "private-framed" &&
@@ -3940,7 +3941,7 @@ export class AgentDaemon {
 					targetSelector: command.targetActiveSessionId,
 					message: command.message,
 					fromState,
-					clientId: client.id,
+					clientId: client.logicalClientId,
 					senderKey: this.createCliAgentMessageSenderKey(),
 					origin: command.agentOrigin === true ? "agent" : "cli",
 				});
@@ -4583,7 +4584,8 @@ export class AgentDaemon {
 				sequence: state.lastEventSequence,
 			},
 			client: {
-				id: client.id,
+				id: client.logicalClientId,
+				connectionId: client.connectionId,
 				capabilities: [...capabilities],
 			},
 		};
@@ -4781,7 +4783,7 @@ export class AgentDaemon {
 			transcript.dispose?.();
 			if (!client.snapshotStreaming && client.catchupActiveSessionIds?.size) {
 				void this.catchUpBackpressuredClient(client).catch((error) =>
-					this.log(`could not catch up snapshot client ${client.id}: ${String(error)}`),
+					this.log(`could not catch up snapshot client ${client.logicalClientId}: ${String(error)}`),
 				);
 			}
 		}
@@ -6324,7 +6326,7 @@ export class AgentDaemon {
 				return;
 			}
 			void this.catchUpBackpressuredClient(client).catch((error) =>
-				this.log(`could not retry catch-up for client ${client.id}: ${String(error)}`),
+				this.log(`could not retry catch-up for client ${client.logicalClientId}: ${String(error)}`),
 			);
 		}, CLIENT_CATCHUP_RETRY_MS);
 	}
@@ -6445,7 +6447,7 @@ export class AgentDaemon {
 				for (const remaining of pending.slice(index)) {
 					this.queueClientCatchup(client, remaining.activeSessionId, remaining.purpose);
 				}
-				this.log(`could not catch up client ${client.id} for ${activeSessionId}: ${String(error)}`);
+				this.log(`could not catch up client ${client.logicalClientId} for ${activeSessionId}: ${String(error)}`);
 				this.scheduleClientCatchupRetry(client);
 				return "retry-later";
 			}
@@ -6736,22 +6738,6 @@ export function cancelPendingExtensionUiRequests(state: ActiveSessionState): voi
 	for (const pending of pendingRequests) {
 		pending.resolve({ cancelled: true });
 	}
-}
-
-function normalizeClientCapabilities(
-	capabilities: readonly DaemonClientCapability[] | undefined,
-	supportsExtensionUi: boolean | undefined,
-): Set<DaemonClientCapability> {
-	const normalized = new Set<DaemonClientCapability>();
-	for (const capability of capabilities ?? DAEMON_DEFAULT_CLIENT_CAPABILITIES) {
-		if (DAEMON_CLIENT_CAPABILITY_SET.has(capability)) {
-			normalized.add(capability);
-		}
-	}
-	if (supportsExtensionUi) {
-		normalized.add("extension_ui");
-	}
-	return normalized;
 }
 
 type SequencedDaemonOutbound = Extract<

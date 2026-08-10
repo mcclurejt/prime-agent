@@ -320,6 +320,7 @@ export {
 	type DaemonCommand,
 	type DaemonCommandEnvelope,
 	type DaemonCommandId,
+	type DaemonConnectionId,
 	type DaemonEventEnvelope,
 	type DaemonEventId,
 	type DaemonEventMeta,

@@ -714,7 +714,17 @@ interface StateOptions {
 function makeState(options: StateOptions): ActiveSessionState {
 	const clients = new Set<DaemonSocketClient>();
 	for (let index = 0; index < (options.clients ?? 0); index++) {
-		clients.add({ id: `client-${index}` } as unknown as DaemonSocketClient);
+		const logicalClientId = `client-${index}`;
+		clients.add({
+			connectionId: `connection-${logicalClientId}`,
+			logicalClientId,
+			protocolClientId: logicalClientId,
+			socket: { destroyed: false } as DaemonSocketClient["socket"],
+			attachedActiveSessionIds: new Set([options.activeSessionId]),
+			detachInput: () => undefined,
+			supportsExtensionUi: false,
+			capabilities: new Set(),
+		});
 	}
 
 	return {

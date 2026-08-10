@@ -55,7 +55,7 @@ describe("daemon mode helpers", () => {
 		const parse = Reflect.get(daemon, "parseCommandAndRegisterPromptAdmission").bind(daemon);
 
 		parse(client, JSON.stringify(createDaemonCommandEnvelope({ type: "list" }, "request-1", "public-client")));
-		expect(client.id).toBe("public-client");
+		expect(client.logicalClientId).toBe("public-client");
 	});
 
 	it("normalizes daemon session names before validation and persistence", async () => {
@@ -4034,6 +4034,71 @@ describe("daemon mode helpers", () => {
 			}),
 		).rejects.toThrow("Agent messaging cannot target the sending session");
 		expect(state.runtime.session.prompt).not.toHaveBeenCalled();
+	});
+
+	it("keeps the socket incarnation immutable when attach changes the logical client id", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const state = makeState("active");
+		const connected = makeClient("initial-logical-client", state.activeSessionId);
+		const connectionId = connected.connectionId;
+		const internals = daemon as unknown as {
+			getOrHydrateBoundSessionState(activeSessionId: string): Promise<ActiveSessionState>;
+			createAttachResult(): Promise<never>;
+			handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+		};
+		internals.getOrHydrateBoundSessionState = vi.fn(async () => state);
+		internals.createAttachResult = vi.fn(async () => {
+			throw new Error("stop after identity update");
+		});
+
+		expect(connectionId).toEqual(expect.any(String));
+		await expect(
+			internals.handleCommand(connected, {
+				id: "attach-1",
+				type: "attach",
+				activeSessionId: state.activeSessionId,
+				clientId: "attached-logical-client",
+			}),
+		).rejects.toThrow("stop after identity update");
+		expect(connected.logicalClientId).toBe("attached-logical-client");
+		expect(connected.connectionId).toBe(connectionId);
+	});
+
+	it("stamps attach metadata with both logical and connection identities", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const state = makeState("active");
+		state.eventGeneration = "generation-1";
+		const connected = makeClient("logical-client", state.activeSessionId);
+		const snapshot = { summary: {}, messages: [] } as unknown as DaemonAttachResult["snapshot"];
+		const internals = daemon as unknown as {
+			createSessionSnapshot(state: ActiveSessionState): Promise<DaemonAttachResult["snapshot"]>;
+			createAttachResult(
+				client: DaemonSocketClient,
+				state: ActiveSessionState,
+				command: Extract<DaemonCommand, { type: "attach" }>,
+			): Promise<DaemonAttachResult>;
+		};
+		internals.createSessionSnapshot = vi.fn(async () => snapshot);
+
+		const result = await internals.createAttachResult(connected, state, {
+			type: "attach",
+			activeSessionId: state.activeSessionId,
+		});
+
+		expect(result.client).toMatchObject({
+			id: connected.logicalClientId,
+			connectionId: connected.connectionId,
+		});
 	});
 
 	it("sends dialog extension UI requests only to UI-capable clients", () => {
@@ -9898,9 +9963,10 @@ function makeState(activeSessionId: string, parentActiveSessionId?: string): Act
 	} as unknown as ActiveSessionState;
 }
 
-function makeClient(id: string, activeSessionId: string, supportsExtensionUi = false): DaemonSocketClient {
+function makeClient(logicalClientId: string, activeSessionId: string, supportsExtensionUi = false): DaemonSocketClient {
 	return {
-		id,
+		connectionId: `connection-${logicalClientId}`,
+		logicalClientId,
 		socket: { destroyed: false } as Socket,
 		attachedActiveSessionIds: new Set([activeSessionId]),
 		detachInput: vi.fn(),

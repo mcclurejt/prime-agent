@@ -593,6 +593,7 @@ function createConnectionState(activeSessionId: string, sessionId: string): Agen
 }
 
 interface CreateAttachResultOptions {
+	connectionId?: string;
 	state?: AgentConnectionState;
 	messages?: AgentMessage[];
 	streamingMessage?: AgentMessage;
@@ -664,6 +665,7 @@ function createAttachResult(
 		lastEventCursor,
 		client: {
 			id: clientId ?? "client-1",
+			...(options.connectionId ? { connectionId: options.connectionId } : {}),
 			capabilities: (capabilities ?? ["attach_snapshot", "event_sequence"]).filter(
 				(capability): capability is DaemonAttachResult["client"]["capabilities"][number] =>
 					capability === "attach_snapshot" ||
@@ -696,6 +698,28 @@ function emitSequencedQueueUpdate(client: FakeDaemonClient, activeSessionId: str
 }
 
 describe("DaemonAgentConnection", () => {
+	it("starts normally against an old daemon without connection incarnation metadata", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-old-daemon");
+
+		await expect(connection.attach()).resolves.toBeUndefined();
+		expect(fakeClient.hello).not.toHaveProperty("connectionId");
+		expect(fakeClient.requests.at(-1)).toMatchObject({ type: "attach", activeSessionId: "active-old-daemon" });
+	});
+
+	it("keeps attaching when a new daemon adds connection incarnation metadata", async () => {
+		const fakeClient = new FakeDaemonClient();
+		fakeClient.hello = { ...fakeClient.hello!, connectionId: "connection-new-daemon" };
+		fakeClient.attachResultFactory = (command) =>
+			createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 0, {
+				connectionId: "connection-new-daemon",
+			});
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-new-daemon");
+
+		await expect(connection.attach()).resolves.toBeUndefined();
+		expect(fakeClient.requests.at(-1)).toMatchObject({ type: "attach", activeSessionId: "active-new-daemon" });
+	});
+
 	it("forwards queueIfBusy for prompt admission", async () => {
 		const fakeClient = new FakeDaemonClient();
 		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");

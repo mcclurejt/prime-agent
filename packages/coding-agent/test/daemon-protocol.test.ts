@@ -7,17 +7,21 @@ import {
 	createDaemonEventEnvelope,
 	createDaemonEventMeta,
 	createDaemonReplayInfo,
+	DAEMON_ADVERTISED_CLIENT_CAPABILITIES,
 	DAEMON_COMMAND_COMPATIBILITY,
 	DAEMON_DEFAULT_SERVER_CAPABILITIES,
+	DAEMON_DORMANT_CLIENT_CAPABILITIES,
 	DAEMON_OUTBOUND_COMPATIBILITY,
 	DAEMON_PROTOCOL_INFO,
 	DAEMON_PROTOCOL_VERSION,
 	DAEMON_SCHEMA_ID,
 	DAEMON_SCHEMA_REVISION,
+	DAEMON_SUPPORTED_CLIENT_CAPABILITIES,
 	type DaemonCommand,
 	type DaemonOutbound,
 	isDaemonCommandEnvelope,
 	isDaemonMutatingCommand,
+	normalizeDaemonClientCapabilities,
 	salvageDaemonCommandId,
 } from "../src/modes/daemon/daemon-protocol.js";
 
@@ -28,6 +32,10 @@ describe("daemon protocol helpers", () => {
 			source.indexOf("export type DaemonCommand ="),
 			source.indexOf("type DaemonCommandName"),
 		);
+		const attachResultSource = source.slice(
+			source.indexOf("export interface DaemonAttachResult"),
+			source.indexOf("export const DAEMON_UPDATE_RESTART_FORMAT_VERSION"),
+		);
 		const savedSessionSource = source.slice(
 			source.indexOf("export interface DaemonSavedSessionInfo"),
 			source.indexOf("export type DaemonDeleteSavedSessionResult"),
@@ -37,10 +45,60 @@ describe("daemon protocol helpers", () => {
 			source.indexOf("export const DAEMON_OUTBOUND_COMPATIBILITY"),
 		);
 		const digest = createHash("sha256")
-			.update(`${commandSource}\n${savedSessionSource}\n${outboundSource}`)
+			.update(`${commandSource}\n${attachResultSource}\n${savedSessionSource}\n${outboundSource}`)
 			.digest("hex")
 			.slice(0, 12);
 		expect(DAEMON_SCHEMA_ID).toBe(`protocol-${DAEMON_PROTOCOL_VERSION}-schema-${DAEMON_SCHEMA_REVISION}-${digest}`);
+	});
+
+	it("recognizes dormant client capabilities without advertising unfinished server semantics", () => {
+		const supportedWithoutDormant = DAEMON_SUPPORTED_CLIENT_CAPABILITIES.filter(
+			(capability) => !DAEMON_DORMANT_CLIENT_CAPABILITIES.includes(capability),
+		);
+
+		expect(DAEMON_DORMANT_CLIENT_CAPABILITIES).toEqual(["questionnaire_v1"]);
+		expect(DAEMON_ADVERTISED_CLIENT_CAPABILITIES).toEqual(supportedWithoutDormant);
+		expect(DAEMON_DEFAULT_SERVER_CAPABILITIES).toEqual(expect.arrayContaining(supportedWithoutDormant));
+		for (const dormant of DAEMON_DORMANT_CLIENT_CAPABILITIES) {
+			expect(DAEMON_DEFAULT_SERVER_CAPABILITIES).not.toContain(dormant);
+		}
+	});
+
+	it("normalizes malformed or semantically unsupported questionnaire capability to non-rich", () => {
+		const questionnaireServer = new Set(["extension_ui", "questionnaire_v1"] as const);
+
+		expect(normalizeDaemonClientCapabilities(["questionnaire_v1"], false, questionnaireServer)).not.toContain(
+			"questionnaire_v1",
+		);
+		expect(
+			normalizeDaemonClientCapabilities(
+				["extension_ui", "questionnaire_v1"],
+				false,
+				new Set(DAEMON_DEFAULT_SERVER_CAPABILITIES),
+			),
+		).not.toContain("questionnaire_v1");
+		expect(
+			normalizeDaemonClientCapabilities(
+				["extension_ui", "questionnaire_v1"],
+				false,
+				new Set(["questionnaire_v1"] as const),
+			),
+		).not.toContain("questionnaire_v1");
+	});
+
+	it("round-trips questionnaire capability only against matching test server semantics", () => {
+		const normalized = normalizeDaemonClientCapabilities(
+			["extension_ui", "questionnaire_v1"],
+			false,
+			new Set(["extension_ui", "questionnaire_v1"] as const),
+		);
+
+		expect([...normalized]).toEqual(["extension_ui", "questionnaire_v1"]);
+	});
+
+	it("keeps additive connection metadata on legacy-compatible hello and attach surfaces", () => {
+		expect(DAEMON_OUTBOUND_COMPATIBILITY.daemon_hello).toEqual({ minProtocol: 7 });
+		expect(DAEMON_COMMAND_COMPATIBILITY.attach).toEqual({ minProtocol: 7 });
 	});
 
 	it("requires compatibility metadata for the heartbeat protocol surface", () => {
