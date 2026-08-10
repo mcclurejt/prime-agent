@@ -16,6 +16,16 @@ export {
 	loadExtensionFromFactory,
 	loadExtensions,
 } from "./loader.js";
+export {
+	assertQuestionnaireEnvelopeBudget,
+	assertQuestionnaireTextFieldBudget,
+	canonicalQuestionnaireJsonBytes,
+	normalizeExtensionQuestionnaireDraft,
+	normalizeExtensionQuestionnaireRequest,
+	QUESTIONNAIRE_ENVELOPE_MAX_BYTES,
+	QUESTIONNAIRE_TEXT_FIELD_MAX_BYTES,
+	requestQuestionnaire,
+} from "./questionnaire.js";
 export type {
 	ExtensionErrorListener,
 	ForkHandler,
@@ -72,6 +82,16 @@ export type {
 	ExtensionFactory,
 	ExtensionFlag,
 	ExtensionHandler,
+	ExtensionQuestionnaireChoice,
+	ExtensionQuestionnaireDraftQuestionState,
+	ExtensionQuestionnaireDraftStep,
+	ExtensionQuestionnaireDraftV1,
+	ExtensionQuestionnaireOptions,
+	ExtensionQuestionnaireOutcome,
+	ExtensionQuestionnaireQuestion,
+	ExtensionQuestionnaireQuestionBase,
+	ExtensionQuestionnaireRequestV1,
+	ExtensionQuestionnaireResponse,
 	// Runtime
 	ExtensionRuntime,
 	ExtensionShortcut,

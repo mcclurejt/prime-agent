@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added typed questionnaire contracts, validation and canonical byte-budget helpers for extensions.
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes
