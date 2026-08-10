@@ -17,7 +17,11 @@ async function runSelfUpdateInstallChild(args: string[]): Promise<void> {
 	const previousValue = process.env[SELF_UPDATE_INTERACTIVE_CHILD_ENV];
 	process.env[SELF_UPDATE_INTERACTIVE_CHILD_ENV] = "1";
 	try {
-		await main(args);
+		await main([
+			...args,
+			"--daemon-socket",
+			join(tmpdir(), `prime-agent-isolated-daemon-${process.pid}-${Date.now()}.sock`),
+		]);
 	} finally {
 		restoreEnv(SELF_UPDATE_INTERACTIVE_CHILD_ENV, previousValue);
 	}
@@ -467,7 +471,7 @@ if(args.includes("install")) process.exit(23);
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
 		try {
-			await expect(main(["update"])).resolves.toBeUndefined();
+			await expect(runSelfUpdateInstallChild(["update", "--force"])).resolves.toBeUndefined();
 
 			expect(process.exitCode).toBe(1);
 			const stdout = logSpy.mock.calls.map(([message]) => String(message)).join("\n");
@@ -506,6 +510,28 @@ if(args.includes("install")) process.exit(23);
 		} finally {
 			errorSpy.mockRestore();
 			logSpy.mockRestore();
+		}
+	});
+	it("documents the checkout update option", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		try {
+			await expect(main(["update", "--help"])).resolves.toBeUndefined();
+			expect(logSpy.mock.calls.map(([message]) => String(message)).join("\n")).toContain("--checkout <path>");
+		} finally {
+			logSpy.mockRestore();
+		}
+	});
+
+	it("rejects a checkout update with no checkout path", async () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			await expect(main(["update", "--checkout"])).resolves.toBeUndefined();
+			expect(errorSpy.mock.calls.map(([message]) => String(message)).join("\n")).toContain(
+				"Missing value for --checkout",
+			);
+			expect(process.exitCode).toBe(1);
+		} finally {
+			errorSpy.mockRestore();
 		}
 	});
 });

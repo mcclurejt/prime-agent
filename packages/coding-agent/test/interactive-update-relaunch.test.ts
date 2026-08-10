@@ -44,6 +44,17 @@ describe("buildUpdateChildArgs", () => {
 		]);
 	});
 
+	it("treats checkout updates as self updates and preserves the checkout path", () => {
+		const args = ["--checkout", "/tmp/prime-agent"];
+		expect(updateArgsIncludeSelf(args)).toBe(true);
+		expect(buildUpdateChildArgs(args, "/tmp/active.sock")).toEqual([
+			"--checkout",
+			"/tmp/prime-agent",
+			"--daemon-socket",
+			"/tmp/active.sock",
+		]);
+	});
+
 	it("keeps an explicitly selected update socket", () => {
 		expect(buildUpdateChildArgs(["--self", "--daemon-socket", "/tmp/explicit.sock"], "/tmp/active.sock")).toEqual([
 			"--self",

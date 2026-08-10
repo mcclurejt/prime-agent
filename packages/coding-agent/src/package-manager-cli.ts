@@ -3,6 +3,11 @@ import chalk from "chalk";
 import { spawn } from "child_process";
 import { readFileSync, rmSync, statSync } from "fs";
 import { resolve, sep } from "path";
+import {
+	buildCheckoutUpdateArtifact,
+	type CheckoutUpdateArtifact,
+	validatePrimeAgentCheckout,
+} from "./checkout-update.js";
 import { selectConfig } from "./cli/config-selector.js";
 import {
 	ensureInteractiveDaemonRunning,
@@ -80,10 +85,11 @@ export function isSelfUpdateSource(source: string): boolean {
 	return source === "self" || source === "pi" || source === APP_NAME;
 }
 
-interface PackageCommandOptions {
+export interface PackageCommandOptions {
 	command: PackageCommand;
 	source?: string;
 	updateTarget?: UpdateTarget;
+	checkout?: string;
 	local: boolean;
 	force: boolean;
 	help: boolean;
@@ -114,7 +120,7 @@ function getPackageCommandUsage(command: PackageCommand): string {
 		case "remove":
 			return `${APP_NAME} package remove <source> [--local]`;
 		case "update":
-			return `${APP_NAME} update [--force] or ${APP_NAME} package update [source]`;
+			return `${APP_NAME} update [--force] [--checkout <path>] or ${APP_NAME} package update [source]`;
 		case "list":
 			return `${APP_NAME} package list`;
 	}
@@ -166,6 +172,7 @@ Options:
   --extensions            Update installed packages only
   --extension <source>    Update one package only
   --force                 Reinstall ${APP_NAME} even if the current version is latest
+  --checkout <path>       Build and install Prime Agent from a clean local Git checkout
   --daemon-socket <path>  Restart the daemon listening on this exact socket
 
 Commands:
@@ -185,7 +192,7 @@ List installed packages from user and project settings.
 	}
 }
 
-function parsePackageCommand(args: string[]): PackageCommandOptions | undefined {
+export function parsePackageCommand(args: string[]): PackageCommandOptions | undefined {
 	const [rawCommand, ...rest] = args;
 	let command: PackageCommand | undefined;
 	if (rawCommand === "uninstall") {
@@ -208,6 +215,7 @@ function parsePackageCommand(args: string[]): PackageCommandOptions | undefined 
 	let selfFlag = false;
 	let extensionsFlag = false;
 	let extensionFlagSource: string | undefined;
+	let checkout: string | undefined;
 	let daemonSocketPath: string | undefined;
 	let restartCoordinator = false;
 	let restartStatusPath: string | undefined;
@@ -252,6 +260,24 @@ function parsePackageCommand(args: string[]): PackageCommandOptions | undefined 
 				force = true;
 			} else {
 				invalidOption = invalidOption ?? arg;
+			}
+			continue;
+		}
+
+		if (arg === "--checkout") {
+			if (command !== "update") {
+				invalidOption = invalidOption ?? arg;
+				continue;
+			}
+			const value = rest[index + 1];
+			if (!value || value.startsWith("-")) {
+				missingOptionValue = missingOptionValue ?? arg;
+			} else if (checkout) {
+				conflictingOptions = conflictingOptions ?? "--checkout can only be provided once";
+				index++;
+			} else {
+				checkout = value;
+				index++;
 			}
 			continue;
 		}
@@ -365,10 +391,19 @@ function parsePackageCommand(args: string[]): PackageCommandOptions | undefined 
 		}
 	}
 
+	if (checkout && command === "update") {
+		if (updateTarget && !updateTargetIncludesSelf(updateTarget)) {
+			conflictingOptions = conflictingOptions ?? "--checkout can only be used when updating Prime Agent";
+		} else if (!source && !selfFlag && !extensionsFlag && !extensionFlagSource) {
+			updateTarget = { type: "self" };
+		}
+	}
+
 	return {
 		command,
 		source,
 		updateTarget,
+		checkout,
 		local,
 		force,
 		help,
@@ -1567,44 +1602,64 @@ export async function handlePackageCommand(args: string[]): Promise<boolean> {
 					}
 				}
 				if (updateTargetIncludesSelf(target)) {
-					const selfUpdatePlan = await getSelfUpdatePlan(options.force);
-					if (!selfUpdatePlan.shouldRun) {
+					// Validate eligibility and obtain consent before a checkout build touches the network.
+					if (options.checkout) await validatePrimeAgentCheckout(options.checkout);
+					let checkoutArtifact: CheckoutUpdateArtifact | undefined;
+					const initialPlan = options.checkout
+						? { installSpec: PACKAGE_NAME, packageName: PACKAGE_NAME, shouldRun: true }
+						: await getSelfUpdatePlan(options.force);
+					if (!initialPlan.shouldRun) {
 						setSelfUpdateNoChangeExitCode();
 						return true;
 					}
-					const selfUpdateCommand = getSelfUpdateCommand(
+					const eligibilityCommand = getSelfUpdateCommand(
 						PACKAGE_NAME,
 						selfUpdateNpmCommand,
-						selfUpdatePlan.installSpec,
-						selfUpdatePlan.packageName,
+						initialPlan.installSpec,
+						initialPlan.packageName,
 					);
-					if (!selfUpdateCommand) {
-						printSelfUpdateUnavailable(
-							selfUpdateNpmCommand,
-							selfUpdatePlan.installSpec,
-							selfUpdatePlan.packageName,
-						);
+					if (!eligibilityCommand) {
+						printSelfUpdateUnavailable(selfUpdateNpmCommand, initialPlan.installSpec, initialPlan.packageName);
 						process.exitCode = 1;
 						return true;
 					}
-					// Confirm before the install, since upgrading the daemon afterward stops and resumes busy work.
 					const daemonSocketPath = resolveUpdateDaemonSocketPath(options.daemonSocketPath);
 					const daemonProbe = await probeRunningDaemonSessions(daemonSocketPath);
 					if (!(await confirmDaemonSessionLossBeforeUpdate(daemonProbe, options.force))) {
-						if (process.stdin.isTTY) {
-							console.log(chalk.dim("Update cancelled."));
-						}
+						if (process.stdin.isTTY) console.log(chalk.dim("Update cancelled."));
 						process.exitCode = 1;
 						return true;
 					}
+					if (options.checkout) checkoutArtifact = await buildCheckoutUpdateArtifact(options.checkout);
+					const selfUpdatePlan = checkoutArtifact
+						? {
+								installSpec: checkoutArtifact.artifactPath,
+								packageName: PACKAGE_NAME,
+								shouldRun: true,
+								targetVersion: checkoutArtifact.version,
+							}
+						: initialPlan;
 					try {
-						await runSelfUpdate(selfUpdateCommand);
-					} catch (error: unknown) {
-						const message = error instanceof Error ? error.message : "Unknown package command error";
-						console.error(chalk.red(`Error: ${message}`));
-						printSelfUpdateFallback(selfUpdateCommand);
-						process.exitCode = 1;
-						return true;
+						const selfUpdateCommand = checkoutArtifact
+							? getSelfUpdateCommand(
+									PACKAGE_NAME,
+									selfUpdateNpmCommand,
+									selfUpdatePlan.installSpec,
+									selfUpdatePlan.packageName,
+								)
+							: eligibilityCommand;
+						if (!selfUpdateCommand) throw new Error("Self-update became unavailable after checkout build");
+						try {
+							await runSelfUpdate(selfUpdateCommand);
+						} catch (error: unknown) {
+							const message = error instanceof Error ? error.message : "Unknown package command error";
+							console.error(chalk.red(`Error: ${message}`));
+							printSelfUpdateFallback(selfUpdateCommand);
+							process.exitCode = 1;
+							return true;
+						}
+					} finally {
+						checkoutArtifact?.cleanup();
 					}
 					const versionChange = selfUpdatePlan.targetVersion
 						? ` from v${VERSION} to v${selfUpdatePlan.targetVersion}`

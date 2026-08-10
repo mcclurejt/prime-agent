@@ -133,6 +133,37 @@ describe("public command routing", () => {
 		]);
 	});
 
+	it("forwards a checkout path through the public self-update command", async () => {
+		await handlePublicCommand(["update", "--checkout", "/tmp/prime-agent"]);
+
+		expect(mocks.packageCommands).toEqual([["update", "--self", "--checkout", "/tmp/prime-agent"]]);
+	});
+
+	it("accepts checkout values named like legacy self-update aliases", async () => {
+		for (const checkout of ["prime-agent", "pi", "self"]) {
+			await handlePublicCommand(["update", "--checkout", checkout]);
+		}
+		expect(mocks.packageCommands).toEqual([
+			["update", "--self", "--checkout", "prime-agent"],
+			["update", "--self", "--checkout", "pi"],
+			["update", "--self", "--checkout", "self"],
+		]);
+	});
+
+	it("rejects checkout updates combined with package targets", async () => {
+		await handlePublicCommand(["update", "--checkout", "/tmp/prime-agent", "--extensions"]);
+
+		expect(mocks.packageCommands).toEqual([]);
+		expect(console.error).toHaveBeenCalledWith(expect.stringContaining("--checkout cannot be combined"));
+	});
+
+	it("rejects checkout paths on the package update command", async () => {
+		await handlePublicCommand(["package", "update", "--checkout", "/tmp/prime-agent"]);
+
+		expect(mocks.packageCommands).toEqual([]);
+		expect(console.error).toHaveBeenCalledWith(expect.stringContaining("prime-agent update --checkout"));
+	});
+
 	it("forwards hidden update restart coordinator invocations", async () => {
 		const args = ["update", DAEMON_UPDATE_RESTART_COORDINATOR_FLAG, "--daemon-socket", "custom-daemon.sock"];
 

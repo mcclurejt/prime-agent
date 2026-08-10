@@ -420,6 +420,7 @@ prime-agent package update                                  # update packages, e
 prime-agent package update npm:@foo/prime-agent-tools       # update one package
 prime-agent update                                          # update Prime Agent
 prime-agent update --force                                  # reinstall Prime Agent even if current
+prime-agent update --checkout /path/to/prime-agent          # build and install a clean local checkout
 prime-agent config                                          # enable/disable package resources
 ```
 

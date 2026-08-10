@@ -111,11 +111,26 @@ async function runPublicCommand(args: string[]): Promise<PublicCommandResult> {
 			return runPackage(args.slice(1));
 		case "update": {
 			const rest = args.slice(1);
-			const hasLegacySelfTarget = rest.some((arg) => arg === "--self" || isSelfUpdateSource(arg));
-			const hasLegacyPackageTarget = rest.some(
-				(arg) =>
-					arg === "--extensions" || arg === "--extension" || (!arg.startsWith("-") && !isSelfUpdateSource(arg)),
+			const checkoutValues = new Set<number>();
+			for (let index = 0; index < rest.length; index++) {
+				if (rest[index] === "--checkout") checkoutValues.add(index + 1);
+			}
+			const hasCheckout = checkoutValues.size > 0;
+			const hasLegacySelfTarget = rest.some(
+				(arg, index) => arg === "--self" || (isSelfUpdateSource(arg) && !checkoutValues.has(index)),
 			);
+			const hasLegacyPackageTarget = rest.some(
+				(arg, index) =>
+					arg === "--extensions" ||
+					arg === "--extension" ||
+					(!arg.startsWith("-") && !isSelfUpdateSource(arg) && !checkoutValues.has(index)),
+			);
+			if (hasCheckout && hasLegacyPackageTarget) {
+				return fail(
+					"--checkout cannot be combined with package update targets.",
+					`Use "${APP_NAME} update --checkout <path>".`,
+				);
+			}
 			if (hasLegacySelfTarget && hasLegacyPackageTarget) {
 				return fail(
 					"Prime Agent and package updates are now separate.",
@@ -128,7 +143,7 @@ async function runPublicCommand(args: string[]): Promise<PublicCommandResult> {
 			if (hasLegacyPackageTarget) {
 				return fail("Package updates moved to the package command.", `Use "${APP_NAME} package update [source]".`);
 			}
-			const options = parseBooleanOptions(rest, new Set(["--force"]), "update");
+			const options = parseUpdateOptions(rest);
 			if (!options) return HANDLED;
 			await handlePackageCommand(["update", "--self", ...options]);
 			return HANDLED;
@@ -283,6 +298,9 @@ async function runPackage(args: string[]): Promise<PublicCommandResult> {
 		return fail(`Usage: ${APP_NAME} package list`);
 	}
 	if (subcommand === "update") {
+		if (rest.includes("--checkout")) {
+			return fail('Use "prime-agent update --checkout <path>" to update Prime Agent from a checkout.');
+		}
 		if (
 			rest.some((arg) => arg === "--self" || arg === "--extensions" || arg === "--extension" || arg === "--force")
 		) {
@@ -324,6 +342,30 @@ function rewriteNestedCommand(parent: string, subcommand: string, flag: string, 
 		return fail(`Usage: ${APP_NAME} ${getCommandSpec([parent, subcommand])?.usage ?? `${parent} ${subcommand}`}`);
 	}
 	return continueWith([INTERNAL_RUNTIME_COMMAND_MARKER, flag, ...operands, ...options]);
+}
+
+function parseUpdateOptions(args: string[]): string[] | undefined {
+	const options: string[] = [];
+	for (let index = 0; index < args.length; index++) {
+		const arg = args[index]!;
+		if (arg === "--force") {
+			options.push(arg);
+			continue;
+		}
+		if (arg === "--checkout") {
+			const path = args[index + 1];
+			if (!path || path.startsWith("-")) {
+				fail("Missing value for --checkout.", `Run "${APP_NAME} help update" for usage.`);
+				return undefined;
+			}
+			options.push(arg, path);
+			index++;
+			continue;
+		}
+		fail(`Unknown option for update: ${arg}`, `Run "${APP_NAME} help update" for usage.`);
+		return undefined;
+	}
+	return options;
 }
 
 function parseBooleanOptions(args: string[], allowed: ReadonlySet<string>, command: string): Set<string> | undefined {

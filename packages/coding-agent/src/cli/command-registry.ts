@@ -122,8 +122,12 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
 	},
 	{
 		path: ["update"],
-		usage: "update [--force]",
+		usage: "update [--force] [--checkout <path>]",
 		summary: "Update Prime Agent",
+		options: [
+			"--force            Reinstall even if current",
+			"--checkout <path>  Build and install from a clean local Git checkout",
+		],
 	},
 	{
 		path: ["model"],

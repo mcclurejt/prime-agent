@@ -684,7 +684,7 @@ export function updateArgsIncludeSelf(args: readonly string[]): boolean {
 		} else if (arg === "--extension") {
 			extensionsOnlyFlag = true;
 			index++;
-		} else if (arg === "--daemon-socket") {
+		} else if (arg === "--daemon-socket" || arg === "--checkout") {
 			index++;
 		} else if (arg && !arg.startsWith("-") && positional === undefined) {
 			positional = arg;
