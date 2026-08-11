@@ -1,3 +1,4 @@
+import { stripVTControlCharacters } from "node:util";
 import type { AutocompleteProvider, EditorTheme, OverlayHandle, TUI } from "@earendil-works/pi-tui";
 import { CURSOR_MARKER, setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -261,6 +262,108 @@ describe("CustomEditor", () => {
 
 		editor.getHeaderLine = () => undefined;
 
+		expect(editor.render(40)).toEqual(withoutCallback);
+	});
+
+	it("renders a surface-backed top-right label inside the editor inset without adding height", () => {
+		const backgroundColor = (text: string) => `\x1b[48;5;234m${text}\x1b[49m`;
+		const editor = new CustomEditor(fakeTui, { ...editorTheme, backgroundColor }, new KeybindingsManager(), {
+			paddingX: 2,
+		});
+		const withoutLabel = editor.render(40);
+
+		editor.getTopRightLabel = () => "session-name";
+		const lines = editor.render(40);
+		const topLine = lines[0]!;
+		const visibleTopLine = stripVTControlCharacters(topLine);
+
+		expect(lines).toHaveLength(withoutLabel.length);
+		expect(visibleWidth(topLine)).toBe(40);
+		expect(visibleTopLine.endsWith("session-name  ")).toBe(true);
+		expect(topLine.indexOf("session-name")).toBeLessThan(topLine.lastIndexOf("\x1b[49m"));
+	});
+
+	it("truncates ANSI-styled top-right labels before the inset", () => {
+		const backgroundColor = (text: string) => `\x1b[48;5;234m${text}\x1b[49m`;
+		const editor = new CustomEditor(fakeTui, { ...editorTheme, backgroundColor }, new KeybindingsManager(), {
+			paddingX: 2,
+		});
+		editor.getTopRightLabel = () => `\x1b[2m${"x".repeat(100)}\x1b[22m`;
+
+		const topLine = editor.render(20)[0]!;
+		const visibleTopLine = stripVTControlCharacters(topLine);
+
+		expect(visibleWidth(topLine)).toBe(20);
+		expect(visibleTopLine.endsWith("...  ")).toBe(true);
+		expect(visibleTopLine.trimEnd()).toHaveLength(18);
+	});
+
+	it("keeps the reply header and prompt caret when a top-right label is present", () => {
+		const backgroundColor = (text: string) => `\x1b[48;5;234m${text}\x1b[49m`;
+		const editor = new CustomEditor(fakeTui, { ...editorTheme, backgroundColor }, new KeybindingsManager(), {
+			paddingX: 2,
+			placeholder: "reply to agent",
+		});
+		editor.focused = true;
+		editor.getTopRightLabel = () => "session-name";
+		editor.getHeaderLine = () => "6h last agent response";
+
+		const lines = editor.render(40);
+
+		expect(stripVTControlCharacters(lines[0]!)).toContain("session-name");
+		expect(lines[1]).toContain("6h last agent response");
+		expect(lines[3]).toContain(CURSOR_MARKER);
+	});
+
+	it("preserves the upward-scroll indicator and omits a colliding label below its minimum width", () => {
+		const backgroundColor = (text: string) => `\x1b[48;5;234m${text}\x1b[49m`;
+		const shortTui = {
+			...fakeTui,
+			terminal: { rows: 5, columns: 80 },
+		} as unknown as TUI;
+		const editor = new CustomEditor(shortTui, { ...editorTheme, backgroundColor }, new KeybindingsManager(), {
+			paddingX: 2,
+		});
+		editor.setText(Array.from({ length: 9 }, (_, index) => `line ${index}`).join("\n"));
+		editor.getTopRightLabel = () => "session-name";
+
+		const wideTopLine = stripVTControlCharacters(editor.render(40)[0]!);
+		const truncatedTopLine = stripVTControlCharacters(editor.render(20)[0]!);
+		const omittedTopLine = stripVTControlCharacters(editor.render(19)[0]!);
+
+		expect(wideTopLine).toMatch(/↑ \d+ more .*session-name {2}$/);
+		expect(truncatedTopLine).toMatch(/↑ \d+ more sessi\.{3} {2}$/);
+		expect(omittedTopLine.trimEnd()).toMatch(/^ ↑ \d+ more$/);
+		expect(omittedTopLine).not.toContain("...");
+	});
+
+	it("preserves the surface background across resets in a truncated top-right label", () => {
+		const backgroundColor = (text: string) => `<bg>${text}</bg>`;
+		const editor = new CustomEditor(fakeTui, { ...editorTheme, backgroundColor }, new KeybindingsManager(), {
+			paddingX: 2,
+		});
+		editor.getTopRightLabel = () => `\x1b[2m${"x".repeat(100)}`;
+
+		const segments = editor.render(20)[0]!.split("\x1b[0m");
+
+		expect(segments.length).toBeGreaterThan(1);
+		for (const segment of segments) {
+			expect(segment.startsWith("<bg>")).toBe(true);
+			expect(segment.endsWith("</bg>")).toBe(true);
+		}
+	});
+
+	it("leaves editor rendering unchanged when the top-right callback is absent or empty", () => {
+		const backgroundColor = (text: string) => `\x1b[48;5;234m${text}\x1b[49m`;
+		const editor = new CustomEditor(fakeTui, { ...editorTheme, backgroundColor }, new KeybindingsManager(), {
+			paddingX: 2,
+		});
+		const withoutCallback = editor.render(40);
+
+		editor.getTopRightLabel = () => undefined;
+		expect(editor.render(40)).toEqual(withoutCallback);
+
+		editor.getTopRightLabel = () => "";
 		expect(editor.render(40)).toEqual(withoutCallback);
 	});
 });

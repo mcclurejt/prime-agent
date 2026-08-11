@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added the active session name to the top right of the interactive editor.
+
 ### Fixed
 
 - Fixed root session replacements dropping agent messaging, observation, and RLM heartbeat controllers, and kept saved depth-zero forks top-level in the agents view.

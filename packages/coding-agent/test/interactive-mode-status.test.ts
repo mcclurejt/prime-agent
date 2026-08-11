@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import * as path from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
 	type AutocompleteProvider,
@@ -5022,5 +5023,40 @@ describe("InteractiveMode.showLoadedResources", () => {
     indented detail"
 `);
 		expect(output).not.toContain("[Skill conflicts]");
+	});
+});
+
+describe("InteractiveMode editor session-name label", () => {
+	beforeAll(() => {
+		initTheme("dark");
+	});
+
+	test("binds a pull-based label that follows live names and clears unnamed replacements", () => {
+		type SessionLabelHarness = {
+			defaultEditor: { getTopRightLabel?: () => string | undefined };
+			connectionState: AgentConnectionState | undefined;
+			uiServices: { getInitialSessionName(): string | undefined };
+			pulseTimer: NodeJS.Timeout | undefined;
+			bindDefaultEditorSessionNameLabel(): void;
+			updateConnectionStateFromEvent(event: AgentConnectionSessionEvent): void;
+		};
+		const mode = Object.assign(Object.create(InteractiveMode.prototype), {
+			defaultEditor: {},
+			connectionState: undefined,
+			uiServices: { getInitialSessionName: () => "initial-session" },
+			pulseTimer: undefined,
+		}) as SessionLabelHarness;
+
+		mode.bindDefaultEditorSessionNameLabel();
+		expect(stripVTControlCharacters(mode.defaultEditor.getTopRightLabel?.() ?? "")).toBe("initial-session");
+
+		mode.connectionState = createConnectionState({ sessionName: "attached-session" });
+		expect(stripVTControlCharacters(mode.defaultEditor.getTopRightLabel?.() ?? "")).toBe("attached-session");
+
+		mode.updateConnectionStateFromEvent({ type: "session_info_changed", name: "renamed-session" });
+		expect(stripVTControlCharacters(mode.defaultEditor.getTopRightLabel?.() ?? "")).toBe("renamed-session");
+
+		mode.connectionState = createConnectionState({ sessionName: undefined });
+		expect(mode.defaultEditor.getTopRightLabel?.()).toBeUndefined();
 	});
 });

@@ -1080,6 +1080,7 @@ export class InteractiveMode {
 			placeholder: this.startHint,
 			placeholderColor: (text) => theme.fg("dim", text),
 		});
+		this.bindDefaultEditorSessionNameLabel();
 		this.editor = this.defaultEditor;
 		this.mainContainer = new Container();
 		this.mainViewContainer = new Container();
@@ -2659,6 +2660,13 @@ export class InteractiveMode {
 
 	private getCurrentSessionName(): string | undefined {
 		return this.connectionState?.sessionName ?? this.uiServices.getInitialSessionName();
+	}
+
+	private bindDefaultEditorSessionNameLabel(): void {
+		this.defaultEditor.getTopRightLabel = () => {
+			const name = this.connectionState ? this.connectionState.sessionName : this.uiServices.getInitialSessionName();
+			return name ? theme.fg("dim", name) : undefined;
+		};
 	}
 
 	private applyAuthStaleEvent(event: Extract<AgentConnectionSessionEvent, { type: "auth_stale" }>): void {

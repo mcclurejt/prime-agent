@@ -35,6 +35,8 @@ export class CustomEditor extends Editor {
 	public onAgentsBack?: () => boolean;
 	/** When set, the returned line is rendered inside the top of the editor box. */
 	public getHeaderLine?: () => string | undefined;
+	/** When set, the returned label is right-aligned on the editor's top row. */
+	public getTopRightLabel?: () => string | undefined;
 	/** Handler for extension-registered shortcuts. Returns true if handled. */
 	public onExtensionShortcut?: (data: string) => boolean;
 
@@ -51,6 +53,10 @@ export class CustomEditor extends Editor {
 
 	protected override getPromptPrefix(): string {
 		return this.getBashPromptInfo(this.getLines()[0] ?? "")?.promptPrefix ?? this.defaultPromptPrefix;
+	}
+
+	protected override getTopRightLabelText(): string | undefined {
+		return this.getTopRightLabel?.();
 	}
 
 	protected override formatPromptPrefix(prefix: string): string {

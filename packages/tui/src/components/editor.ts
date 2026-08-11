@@ -544,6 +544,10 @@ export class Editor implements Component, Focusable {
 		return this.autocompleteOverlay && this.focused ? this.autocompleteAnchorMarker : "";
 	}
 
+	protected getTopRightLabelText(): string | undefined {
+		return undefined;
+	}
+
 	render(width: number): string[] {
 		const { useBackgroundSurface, paddingX, promptPrefixText, promptPrefixWidth, inputWidth } =
 			this.getRenderMetrics(width);
@@ -591,15 +595,33 @@ export class Editor implements Component, Focusable {
 		const promptLeadingPadding = " ".repeat(promptPrefixInset);
 		const promptTrailingPadding = " ".repeat(Math.max(0, paddingX - promptPrefixInset));
 		const cursorReset = useBackgroundSurface ? "\x1b[27m" : "\x1b[0m";
-		const renderSurfaceLine = (line: string): string => {
+		const renderSurfaceLine = (line: string, preserveBackgroundAcrossResets = false): string => {
 			const padded = line + " ".repeat(Math.max(0, width - visibleWidth(line)));
-			return this.backgroundColor ? this.backgroundColor(padded) : padded;
+			const backgroundColor = this.backgroundColor;
+			if (!backgroundColor) return padded;
+			if (!preserveBackgroundAcrossResets) return backgroundColor(padded);
+			return padded
+				.split("\x1b[0m")
+				.map((segment) => backgroundColor(segment))
+				.join("\x1b[0m");
 		};
+		const requestedTopRightLabel = this.getTopRightLabelText();
+		const topRightLabel =
+			requestedTopRightLabel && visibleWidth(requestedTopRightLabel) > 0 ? requestedTopRightLabel : undefined;
 
 		if (!useBackgroundSurface) {
 			// Render top border (with scroll indicator if scrolled down)
-			if (this.scrollOffset > 0) {
-				const indicator = `─── ↑ ${this.scrollOffset} more `;
+			const indicator = this.scrollOffset > 0 ? `─── ↑ ${this.scrollOffset} more ` : "";
+			const gapWidth = indicator ? 1 : 0;
+			const availableLabelWidth = width - paddingX - visibleWidth(indicator) - gapWidth;
+			const label =
+				topRightLabel && availableLabelWidth >= 8 ? truncateToWidth(topRightLabel, availableLabelWidth) : undefined;
+			if (label) {
+				const fillWidth = Math.max(gapWidth, width - paddingX - visibleWidth(indicator) - visibleWidth(label));
+				result.push(
+					this.borderColor(indicator + "─".repeat(fillWidth)) + label + this.borderColor("─".repeat(paddingX)),
+				);
+			} else if (this.scrollOffset > 0) {
 				const remaining = width - visibleWidth(indicator);
 				if (remaining >= 0) {
 					result.push(this.borderColor(indicator + "─".repeat(remaining)));
@@ -610,8 +632,19 @@ export class Editor implements Component, Focusable {
 				result.push(horizontal.repeat(width));
 			}
 		} else {
-			const line = this.scrollOffset > 0 ? this.borderColor(` ↑ ${this.scrollOffset} more`) : "";
-			result.push(renderSurfaceLine(truncateToWidth(line, width)));
+			const indicator = this.scrollOffset > 0 ? this.borderColor(` ↑ ${this.scrollOffset} more`) : "";
+			const gapWidth = indicator ? 1 : 0;
+			const availableLabelWidth = width - paddingX - visibleWidth(indicator) - gapWidth;
+			const label =
+				topRightLabel && availableLabelWidth >= 8 ? truncateToWidth(topRightLabel, availableLabelWidth) : undefined;
+			if (label) {
+				const middlePadding = " ".repeat(
+					Math.max(gapWidth, width - paddingX - visibleWidth(indicator) - visibleWidth(label)),
+				);
+				result.push(renderSurfaceLine(`${indicator}${middlePadding}${label}${" ".repeat(paddingX)}`, true));
+			} else {
+				result.push(renderSurfaceLine(truncateToWidth(indicator, width)));
+			}
 		}
 		// Render each visible layout line
 		// Emit hardware cursor marker only when focused and not showing autocomplete
