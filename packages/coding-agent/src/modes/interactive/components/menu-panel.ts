@@ -189,6 +189,56 @@ export function getMenuListLayout(options: MenuListLayoutOptions): MenuListLayou
 		: { compact: false, visibleItems: comfortableLayout.visibleItems };
 }
 
+export interface MenuScrollWindow {
+	start: number;
+	contentRows: number;
+	rowsAbove: number;
+	rowsBelow: number;
+	showAboveIndicator: boolean;
+	showBelowIndicator: boolean;
+}
+
+/** Calculate a scroll window while reserving dedicated rows for visible above/below indicators. */
+export function getMenuScrollWindow(options: {
+	totalRows: number;
+	availableRows: number;
+	desiredStart: number;
+}): MenuScrollWindow {
+	const totalRows = Math.max(0, Math.floor(options.totalRows));
+	const availableRows = Math.max(1, Math.floor(options.availableRows));
+	if (totalRows <= availableRows) {
+		return {
+			start: 0,
+			contentRows: totalRows,
+			rowsAbove: 0,
+			rowsBelow: 0,
+			showAboveIndicator: false,
+			showBelowIndicator: false,
+		};
+	}
+
+	const indicatorsSupported = availableRows >= 3;
+	let start = Math.max(0, Math.min(totalRows - 1, Math.floor(options.desiredStart)));
+	let contentRows = indicatorsSupported ? Math.max(1, availableRows - 1) : availableRows;
+	for (let iteration = 0; iteration < 4; iteration++) {
+		const hasAbove = start > 0;
+		const hasBelow = start + contentRows < totalRows;
+		const indicatorRows = indicatorsSupported ? Number(hasAbove) + Number(hasBelow) : 0;
+		contentRows = Math.max(1, availableRows - indicatorRows);
+		start = Math.max(0, Math.min(start, totalRows - contentRows));
+	}
+	const rowsAbove = start;
+	const rowsBelow = Math.max(0, totalRows - start - contentRows);
+	return {
+		start,
+		contentRows,
+		rowsAbove,
+		rowsBelow,
+		showAboveIndicator: indicatorsSupported && rowsAbove > 0,
+		showBelowIndicator: indicatorsSupported && rowsBelow > 0,
+	};
+}
+
 function paddedBackgroundLine(
 	text: string,
 	width: number,

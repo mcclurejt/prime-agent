@@ -43,9 +43,19 @@ export class Input implements Component, Focusable {
 		return this.cursor;
 	}
 
-	setValue(value: string): void {
+	setValue(value: string, options: { cursor?: "preserve" | "start" | "end" } = {}): void {
 		this.value = value;
-		this.cursor = Math.min(this.cursor, value.length);
+		switch (options.cursor ?? "preserve") {
+			case "start":
+				this.cursor = 0;
+				break;
+			case "end":
+				this.cursor = value.length;
+				break;
+			case "preserve":
+				this.cursor = Math.min(this.cursor, value.length);
+				break;
+		}
 	}
 
 	handleInput(data: string): void {

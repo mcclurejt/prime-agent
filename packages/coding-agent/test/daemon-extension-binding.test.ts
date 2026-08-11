@@ -130,6 +130,8 @@ describe("daemon extension binding", () => {
 				outbound.push(message);
 			},
 			shutdown: () => {},
+			questionnaire: async () => ({ status: "unsupported" }),
+			terminateQuestionnaires: () => {},
 		});
 
 		await runtime.session.prompt("hello");
@@ -146,6 +148,54 @@ describe("daemon extension binding", () => {
 				"partial",
 			);
 		}
+	});
+
+	it("routes extension questionnaires through the daemon worker authority callback", async () => {
+		let commandOutcome: unknown;
+		const runtime = await createRuntimeForTest((pi) => {
+			pi.registerCommand("daemon-questionnaire", {
+				description: "daemon questionnaire",
+				handler: async (_args, ctx) => {
+					commandOutcome = await ctx.ui.questionnaire?.({
+						version: 1,
+						questions: [{ id: "confirm", kind: "confirm", prompt: "Proceed?" }],
+					});
+				},
+			});
+		}, []);
+		const state: ActiveSessionState = {
+			activeSessionId: "active-questionnaire",
+			runtime,
+			clients: new Set(),
+			pendingAttaches: 0,
+			extensionUiRequests: new Map(),
+			eventGeneration: "generation-questionnaire",
+			lastEventSequence: 0,
+		};
+		let callbackState: ActiveSessionState | undefined;
+		let callbackRequest: unknown;
+		await bindActiveSessionState(state, {
+			broadcast: () => {},
+			shutdown: () => {},
+			questionnaire: async (targetState, request) => {
+				callbackState = targetState;
+				callbackRequest = request;
+				return { status: "submitted", responses: [{ questionId: "confirm", status: "unanswered" }] };
+			},
+			terminateQuestionnaires: () => {},
+		});
+
+		await runtime.session.prompt("/daemon-questionnaire");
+
+		expect(callbackState).toBe(state);
+		expect(callbackRequest).toEqual({
+			version: 1,
+			questions: [{ id: "confirm", kind: "confirm", prompt: "Proceed?" }],
+		});
+		expect(commandOutcome).toEqual({
+			status: "submitted",
+			responses: [{ questionId: "confirm", status: "unanswered" }],
+		});
 	});
 
 	it("keeps extension replacement callbacks daemon-side and rebinds before withSession", async () => {
@@ -222,6 +272,10 @@ describe("daemon extension binding", () => {
 			shutdown: () => {
 				phases.push("shutdown");
 			},
+			questionnaire: async () => ({ status: "unsupported" }),
+			terminateQuestionnaires: (_targetState, reason) => {
+				phases.push(`terminate:${reason}`);
+			},
 		});
 
 		await runtime.session.prompt("/daemon-replace");
@@ -230,6 +284,7 @@ describe("daemon extension binding", () => {
 		const withSessionIndex = phases.indexOf("withSession");
 		expect(replacementIndex).toBeGreaterThan(-1);
 		expect(withSessionIndex).toBeGreaterThan(-1);
+		expect(phases.indexOf("terminate:runtime-replaced")).toBeLessThan(phases.indexOf("sessionReplaced"));
 		expect(phases.indexOf("sessionReplaced")).toBeLessThan(replacementIndex);
 		expect(replacementIndex).toBeLessThan(withSessionIndex);
 		expect(replacementSessionFile).toBeDefined();

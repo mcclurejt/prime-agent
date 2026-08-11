@@ -115,7 +115,8 @@ function snapshotFrame(
 function socketClient(id: string): DaemonSocketClient {
 	const socket = new PassThrough();
 	return {
-		id,
+		connectionId: `connection-${id}`,
+		logicalClientId: id,
 		socket: socket as unknown as Socket,
 		attachedActiveSessionIds: new Set([activeSessionId]),
 		catchupActiveSessionIds: new Set(),

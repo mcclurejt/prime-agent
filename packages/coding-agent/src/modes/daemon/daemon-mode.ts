@@ -148,7 +148,6 @@ import {
 	DAEMON_PROTOCOL_INFO,
 	DAEMON_SCHEMA_ID,
 	DAEMON_SCHEMA_REVISION,
-	DAEMON_SUPPORTED_CLIENT_CAPABILITIES,
 	DAEMON_UPDATE_RESTART_FORMAT_VERSION,
 	type DaemonAttachResult,
 	type DaemonClientCapability,
@@ -164,6 +163,7 @@ import {
 	isDaemonCommandEnvelope,
 	isDaemonDialogExtensionUiRequest,
 	isDaemonMutatingCommand,
+	normalizeDaemonClientCapabilities,
 	salvageDaemonCommandId,
 	success,
 	UPDATE_RESTART_DRAIN_COMMANDS,
@@ -199,8 +199,12 @@ import {
 	isDaemonWorkerFrameHeader,
 	SESSION_LEASE_OWNER_ID_ENV,
 	SESSION_LEASES_ENABLED_ENV,
+	type WorkerQuestionnaireBrokerMessage,
+	type WorkerQuestionnairePresentationMessage,
 } from "./daemon-worker-protocol.js";
+import { WorkerUiClientsMirror } from "./daemon-worker-ui-clients.js";
 import { MutationDrainLatch } from "./mutation-drain-latch.js";
+import { type QuestionnaireTerminationReason, QuestionnaireWorkerAuthority } from "./questionnaire-worker-authority.js";
 import { serializeSavedSessionInfo } from "./saved-session-info.js";
 import {
 	createSnapshotTranscriptChunks,
@@ -208,6 +212,23 @@ import {
 	type SnapshotTranscriptChunkSource,
 } from "./snapshot-transcript-cache.js";
 import { WorkerRecoveryJournal } from "./worker-recovery-journal.js";
+
+export function questionnaireTerminationReasonForClose(
+	reason: DaemonSessionClosedReason,
+): QuestionnaireTerminationReason {
+	switch (reason) {
+		case "killed":
+			return "session-killed";
+		case "completed":
+			return "session-completed";
+		case "shutdown":
+			return "daemon-shutdown";
+		case "update":
+			return "daemon-update";
+		case "replaced":
+			return "runtime-replaced";
+	}
+}
 
 export interface DaemonModeOptions {
 	socketPath?: string;
@@ -333,7 +354,6 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"shutdown",
 ]);
 
-const DAEMON_CLIENT_CAPABILITY_SET: ReadonlySet<string> = new Set(DAEMON_SUPPORTED_CLIENT_CAPABILITIES);
 const CLIENT_CATCHUP_RETRY_MS = 250;
 const UPDATE_RESTART_ABORT_BASH_TIMEOUT_MS = 5000;
 const SUPERVISOR_FENCE_POLL_MS = 250;
@@ -443,6 +463,26 @@ export class AgentDaemon {
 	private ownsSocketPath = false;
 	private socketIdentity?: DaemonSocketIdentity;
 	private readonly clients = new Set<DaemonSocketClient>();
+	private readonly workerUiClients = new WorkerUiClientsMirror();
+	private readonly questionnaireAuthority = new QuestionnaireWorkerAuthority({
+		uiClients: this.workerUiClients,
+		sendBrokerMessage: (message) => this.sendWorkerQuestionnaireBrokerMessage(message),
+		onStatusChanged: (activeSessionId, status) => {
+			const state = this.sessions.get(activeSessionId);
+			if (!state) return;
+			state.questionnaireState = status.state;
+			state.questionnaireQueueDepth = status.queueDepth > 0 ? status.queueDepth : undefined;
+			this.broadcastToSession(state, {
+				type: "session_status",
+				activeSessionId,
+				recap: state.summaryState?.summary,
+				questionnaireState: state.questionnaireState,
+				questionnaireQueueDepth: state.questionnaireQueueDepth,
+			});
+		},
+		createId: () => randomUUID(),
+		now: () => Date.now(),
+	});
 	private readonly sessions = new Map<string, ActiveSessionState>();
 	private readonly openingSessions = new Map<string, Promise<ActiveSessionState>>();
 	/** Covers path resolution through publication in openingSessions, before the runtime promise exists. */
@@ -1234,6 +1274,13 @@ export class AgentDaemon {
 				sessionReplaced: (targetSessionState) => this.refreshReplacedSessionState(targetSessionState),
 				shutdown: () => {
 					void this.shutdown(0);
+				},
+				questionnaire: (targetSessionState, request, options) =>
+					this.options.worker
+						? this.questionnaireAuthority.request(targetSessionState.activeSessionId, request, options).outcome
+						: Promise.resolve({ status: "unsupported" }),
+				terminateQuestionnaires: (targetSessionState, reason) => {
+					this.questionnaireAuthority.terminateSession(targetSessionState.activeSessionId, reason);
 				},
 				subagentRuntimeHost: this.createSubagentRuntimeHost(state),
 			});
@@ -2985,7 +3032,8 @@ export class AgentDaemon {
 
 	private handleConnection(socket: Socket): void {
 		const client: DaemonSocketClient = {
-			id: createActiveSessionId(),
+			connectionId: randomUUID(),
+			logicalClientId: createActiveSessionId(),
 			socket,
 			attachedActiveSessionIds: new Set(),
 			catchupActiveSessionIds: new Set(),
@@ -2995,6 +3043,7 @@ export class AgentDaemon {
 			detachInput: () => {},
 			supportsExtensionUi: false,
 			capabilities: new Set(DAEMON_DEFAULT_CLIENT_CAPABILITIES),
+			questionnairePresentableActiveSessionIds: new Set(),
 		};
 		this.clients.add(client);
 		this.write(client, {
@@ -3005,7 +3054,8 @@ export class AgentDaemon {
 			schemaRevision: DAEMON_SCHEMA_REVISION,
 			appVersion: VERSION,
 			runtime: getDaemonRuntimeIdentity(),
-			clientId: client.id,
+			clientId: client.logicalClientId,
+			connectionId: client.connectionId,
 			serverCapabilities: DAEMON_DEFAULT_SERVER_CAPABILITIES,
 		});
 
@@ -3066,7 +3116,7 @@ export class AgentDaemon {
 			client.backpressured = false;
 			if (!client.snapshotStreaming) {
 				void this.catchUpBackpressuredClient(client).catch((error) =>
-					this.log(`could not catch up snapshot client ${client.id}: ${String(error)}`),
+					this.log(`could not catch up snapshot client ${client.logicalClientId}: ${String(error)}`),
 				);
 			}
 		});
@@ -3082,7 +3132,7 @@ export class AgentDaemon {
 	 */
 	private parseCommandAndRegisterPromptAdmission(client: DaemonSocketClient, line: string): unknown {
 		const wireValue = JSON.parse(line) as unknown;
-		if (isDaemonCommandEnvelope(wireValue) && wireValue.clientId) client.id = wireValue.clientId;
+		if (isDaemonCommandEnvelope(wireValue) && wireValue.clientId) client.logicalClientId = wireValue.clientId;
 		const parsed = (isDaemonCommandEnvelope(wireValue) ? { ...wireValue.command, id: wireValue.id } : wireValue) as {
 			type?: unknown;
 			activeSessionId?: unknown;
@@ -3339,7 +3389,7 @@ export class AgentDaemon {
 					setDaemonClientSessionCapabilities(
 						client,
 						state.activeSessionId,
-						normalizeClientCapabilities(command.capabilities, command.supportsExtensionUi),
+						normalizeDaemonClientCapabilities(command.capabilities, command.supportsExtensionUi),
 					);
 					state.clients.add(client);
 					client.attachedActiveSessionIds.add(state.activeSessionId);
@@ -3352,6 +3402,45 @@ export class AgentDaemon {
 					this.write(client, success(command.id, "detach"));
 					return;
 				}
+				case "worker_ui_clients_sync":
+					if (this.workerUiClients.applySync(command)) this.questionnaireAuthority.handleUiClientsChanged();
+					this.writeWorkerSuccess(client, command);
+					return;
+				case "worker_ui_client_delta":
+					if (this.workerUiClients.applyDelta(command)) this.questionnaireAuthority.handleUiClientsChanged();
+					this.writeWorkerSuccess(client, command);
+					return;
+				case "worker_questionnaire_offer_result": {
+					this.questionnaireAuthority.handleOfferResult(command.result);
+					if (command.result.status === "accepted") {
+						const presentation = this.questionnaireAuthority.presentationForLease(command.result.lease);
+						if (presentation) this.sendWorkerQuestionnairePresentation(presentation);
+					}
+					this.writeWorkerSuccess(client, command);
+					return;
+				}
+				case "worker_questionnaire_lease_revoked":
+					this.questionnaireAuthority.handleLeaseRevoked(command.lease);
+					this.writeWorkerSuccess(client, command);
+					return;
+				case "worker_questionnaire_dismiss":
+					this.writeWorkerSuccess(client, command, this.questionnaireAuthority.dismiss(command.lease));
+					return;
+				case "worker_questionnaire_legacy_response":
+					this.writeWorkerSuccess(client, command, {
+						status: this.questionnaireAuthority.handleLegacyResponse(command),
+					});
+					return;
+				case "worker_questionnaire_checkpoint":
+					this.writeWorkerSuccess(client, command, this.questionnaireAuthority.checkpoint(command));
+					return;
+				case "worker_questionnaire_submit":
+					this.writeWorkerSuccess(client, command, this.questionnaireAuthority.submit(command));
+					return;
+				case "worker_questionnaire_terminal_ack":
+					this.questionnaireAuthority.acknowledgeTerminalDelivery(command.logicalRequestId);
+					this.writeWorkerSuccess(client, command);
+					return;
 				case "worker_sync_agent_peers":
 					this.remoteAgentPeers.clear();
 					for (const peer of command.peers) {
@@ -3544,12 +3633,12 @@ export class AgentDaemon {
 			case "attach": {
 				const state = await this.getOrHydrateBoundSessionState(command.activeSessionId);
 				if (command.clientId) {
-					client.id = command.clientId;
+					client.logicalClientId = command.clientId;
 				}
 				setDaemonClientSessionCapabilities(
 					client,
 					state.activeSessionId,
-					normalizeClientCapabilities(command.capabilities, command.supportsExtensionUi),
+					normalizeDaemonClientCapabilities(command.capabilities, command.supportsExtensionUi),
 				);
 				const streamsSnapshot =
 					client.transport === "private-framed" &&
@@ -3940,7 +4029,7 @@ export class AgentDaemon {
 					targetSelector: command.targetActiveSessionId,
 					message: command.message,
 					fromState,
-					clientId: client.id,
+					clientId: client.logicalClientId,
 					senderKey: this.createCliAgentMessageSenderKey(),
 					origin: command.agentOrigin === true ? "agent" : "cli",
 				});
@@ -4377,6 +4466,7 @@ export class AgentDaemon {
 
 			case "reload": {
 				const state = this.getSessionState(command.activeSessionId);
+				this.questionnaireAuthority.terminateSession(state.activeSessionId, "extension-reload");
 				// Reload re-evaluates extension modules, which capture client env
 				// (e.g. herdr pane identity) synchronously at load.
 				await withClientEnv(state.clientEnv, () => state.runtime.session.reload());
@@ -4583,7 +4673,8 @@ export class AgentDaemon {
 				sequence: state.lastEventSequence,
 			},
 			client: {
-				id: client.id,
+				id: client.logicalClientId,
+				connectionId: client.connectionId,
 				capabilities: [...capabilities],
 			},
 		};
@@ -4781,7 +4872,7 @@ export class AgentDaemon {
 			transcript.dispose?.();
 			if (!client.snapshotStreaming && client.catchupActiveSessionIds?.size) {
 				void this.catchUpBackpressuredClient(client).catch((error) =>
-					this.log(`could not catch up snapshot client ${client.id}: ${String(error)}`),
+					this.log(`could not catch up snapshot client ${client.logicalClientId}: ${String(error)}`),
 				);
 			}
 		}
@@ -6023,6 +6114,10 @@ export class AgentDaemon {
 		if (!this.sessions.has(state.activeSessionId)) {
 			return;
 		}
+		this.questionnaireAuthority.terminateSession(
+			state.activeSessionId,
+			questionnaireTerminationReasonForClose(reason),
+		);
 		if (reason === "killed") {
 			this.cancelScheduledJobsForSession(state);
 		} else if (reason !== "shutdown" && reason !== "update") {
@@ -6324,7 +6419,7 @@ export class AgentDaemon {
 				return;
 			}
 			void this.catchUpBackpressuredClient(client).catch((error) =>
-				this.log(`could not retry catch-up for client ${client.id}: ${String(error)}`),
+				this.log(`could not retry catch-up for client ${client.logicalClientId}: ${String(error)}`),
 			);
 		}, CLIENT_CATCHUP_RETRY_MS);
 	}
@@ -6445,7 +6540,7 @@ export class AgentDaemon {
 				for (const remaining of pending.slice(index)) {
 					this.queueClientCatchup(client, remaining.activeSessionId, remaining.purpose);
 				}
-				this.log(`could not catch up client ${client.id} for ${activeSessionId}: ${String(error)}`);
+				this.log(`could not catch up client ${client.logicalClientId} for ${activeSessionId}: ${String(error)}`);
 				this.scheduleClientCatchupRetry(client);
 				return "retry-later";
 			}
@@ -6498,6 +6593,46 @@ export class AgentDaemon {
 		);
 		state.lastEventSequence = meta.sequence ?? state.lastEventSequence;
 		return { ...message, meta };
+	}
+
+	sendWorkerQuestionnaireBrokerMessage(message: WorkerQuestionnaireBrokerMessage): boolean {
+		const supervisor = this.authenticatedSupervisorClient();
+		if (!supervisor) return false;
+		const frame = encodePrivateFrame<DaemonWorkerFrameHeader>(
+			{ kind: "questionnaire_broker", messageType: message.type },
+			Buffer.from(serializeJsonLine(message)),
+		);
+		const accepted = supervisor.socket.write(frame);
+		if (!accepted) supervisor.backpressured = true;
+		return true;
+	}
+
+	sendWorkerQuestionnairePresentation(message: WorkerQuestionnairePresentationMessage): boolean {
+		const supervisor = this.authenticatedSupervisorClient();
+		if (!supervisor) return false;
+		const { lease, authoritativeRevision } = message.snapshot;
+		const frame = encodePrivateFrame<DaemonWorkerFrameHeader>(
+			{
+				kind: "questionnaire_presentation",
+				supervisorGeneration: lease.supervisorGeneration,
+				activeSessionId: message.activeSessionId,
+				connectionId: lease.connectionId,
+				logicalRequestId: lease.logicalRequestId,
+				offerId: lease.offerId,
+				leaseEpoch: lease.leaseEpoch,
+				authoritativeRevision,
+			},
+			Buffer.from(serializeJsonLine(message)),
+		);
+		const accepted = supervisor.socket.write(frame);
+		if (!accepted) supervisor.backpressured = true;
+		return true;
+	}
+
+	private authenticatedSupervisorClient(): DaemonSocketClient | undefined {
+		return [...this.supervisorClaims.keys()].find(
+			(client) => client.authenticated === true && !client.socket.destroyed,
+		);
 	}
 
 	private write(client: DaemonSocketClient, message: DaemonOutbound): boolean {
@@ -6736,22 +6871,6 @@ export function cancelPendingExtensionUiRequests(state: ActiveSessionState): voi
 	for (const pending of pendingRequests) {
 		pending.resolve({ cancelled: true });
 	}
-}
-
-function normalizeClientCapabilities(
-	capabilities: readonly DaemonClientCapability[] | undefined,
-	supportsExtensionUi: boolean | undefined,
-): Set<DaemonClientCapability> {
-	const normalized = new Set<DaemonClientCapability>();
-	for (const capability of capabilities ?? DAEMON_DEFAULT_CLIENT_CAPABILITIES) {
-		if (DAEMON_CLIENT_CAPABILITY_SET.has(capability)) {
-			normalized.add(capability);
-		}
-	}
-	if (supportsExtensionUi) {
-		normalized.add("extension_ui");
-	}
-	return normalized;
 }
 
 type SequencedDaemonOutbound = Extract<

@@ -88,6 +88,7 @@ import type {
 	EditorFactory,
 	ExtensionCommandContext,
 	ExtensionContext,
+	ExtensionQuestionnaireOutcome,
 	ExtensionRunner,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
@@ -218,6 +219,7 @@ import {
 import { TreeSelectorComponent } from "./components/tree-selector.js";
 import { UserMessageComponent } from "./components/user-message.js";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.js";
+import { DaemonQuestionnaireHost } from "./daemon-questionnaire-host.js";
 import { FeatureHintDeck } from "./feature-hints.js";
 import { scopeHeartbeatsToSession } from "./heartbeat-scope.js";
 import {
@@ -234,6 +236,7 @@ import type {
 } from "./interactive-mode-services.js";
 import { type OnboardingStartupState, shouldRunOnboarding, shouldRunPrimeCliOnboardingSplash } from "./onboarding.js";
 import type { ClientPromptStashStore, PromptStash, PromptStashState } from "./prompt-stash-state.js";
+import { InteractiveQuestionnaireHost } from "./questionnaire-host.js";
 import { formatResumeHint } from "./resume-hint.js";
 import {
 	getAvailableThemes,
@@ -991,6 +994,8 @@ export class InteractiveMode {
 	private extensionSelector: ExtensionSelectorComponent | undefined = undefined;
 	private extensionInput: ExtensionInputComponent | undefined = undefined;
 	private extensionEditor: ExtensionEditorComponent | undefined = undefined;
+	private extensionQuestionnaireHost: InteractiveQuestionnaireHost | undefined;
+	private daemonQuestionnaireHost: DaemonQuestionnaireHost | undefined;
 	private extensionTerminalInputUnsubscribers = new Set<() => void>();
 	private activeConnectionExtensionUiRequests = new Map<string, { cancelLocal: () => void }>();
 
@@ -1049,7 +1054,7 @@ export class InteractiveMode {
 			throw new Error("Local extension binding requires localSessionHost");
 		}
 		this.agentConnection.onBeforeSessionInvalidate(() => {
-			this.resetExtensionUI();
+			this.resetExtensionUI("runtime-replaced");
 			this.resetSideQuestion();
 		});
 		this.version = VERSION;
@@ -2775,6 +2780,7 @@ export class InteractiveMode {
 		this.setGoalAnnouncementBaseline(this.getGoalState());
 		this.syncGoalTray(this.getGoalState());
 		this.syncWorkingLoader();
+		await this.setDaemonQuestionnairePresentable?.(true).catch(() => undefined);
 	}
 
 	private async handleFatalRuntimeError(prefix: string, error: unknown): Promise<never> {
@@ -3468,7 +3474,12 @@ export class InteractiveMode {
 		this.renderWidgets();
 	}
 
-	private resetExtensionUI(): void {
+	private resetExtensionUI(
+		questionnaireReason: Extract<ExtensionQuestionnaireOutcome, { status: "terminated" }>["reason"],
+	): void {
+		this.extensionQuestionnaireHost?.terminate(questionnaireReason);
+		this.daemonQuestionnaireHost?.conceal();
+		void this.agentConnection.questionnaire?.setPresentable(false).catch(() => undefined);
 		this.cancelActiveConnectionExtensionUiRequests();
 		this.closeHeartbeatManager();
 		if (this.extensionSelector) {
@@ -3653,6 +3664,7 @@ export class InteractiveMode {
 	 */
 	private createExtensionUIContext(): ExtensionUIContext {
 		return {
+			questionnaire: (request, options) => this.getExtensionQuestionnaireHost().request(request, options),
 			select: (title, options, opts) => this.showExtensionSelector(title, options, opts),
 			confirm: (title, message, opts) => this.showExtensionConfirm(title, message, opts),
 			input: (title, placeholder, opts) => this.showExtensionInput(title, placeholder, opts),
@@ -3706,6 +3718,29 @@ export class InteractiveMode {
 			getToolsExpanded: () => this.toolOutputExpanded,
 			setToolsExpanded: (expanded) => this.setToolsExpanded(expanded),
 		};
+	}
+
+	private getExtensionQuestionnaireHost(): InteractiveQuestionnaireHost {
+		this.extensionQuestionnaireHost ??= new InteractiveQuestionnaireHost(this.ui, this.keybindings);
+		return this.extensionQuestionnaireHost;
+	}
+
+	private getDaemonQuestionnaireHost(): DaemonQuestionnaireHost | undefined {
+		const transport = this.agentConnection.questionnaire;
+		if (!transport) return undefined;
+		this.daemonQuestionnaireHost ??= new DaemonQuestionnaireHost({
+			ui: this.ui,
+			keybindings: this.keybindings,
+			transport,
+		});
+		return this.daemonQuestionnaireHost;
+	}
+
+	private async setDaemonQuestionnairePresentable(presentable: boolean): Promise<void> {
+		const transport = this.agentConnection.questionnaire;
+		if (!transport) return;
+		if (presentable) this.getDaemonQuestionnaireHost();
+		await transport.setPresentable(presentable);
 	}
 
 	/**
@@ -5018,7 +5053,7 @@ export class InteractiveMode {
 					const run = this.sessionEventQueue.then(async () => {
 						if (generation !== this.sessionEventGeneration) return;
 						this.resetSideQuestion();
-						this.resetExtensionUI();
+						this.resetExtensionUI("runtime-replaced");
 						this.applyConnectionStateSnapshot(event.state);
 						this.resetCurrentSessionRenderState();
 						await this.rebindCurrentSession();
@@ -5042,6 +5077,12 @@ export class InteractiveMode {
 					this.sessionRecap = event.recap;
 					this.patchConnectionState({ recap: event.recap });
 					this.renderRecap();
+				} else if (event.type === "questionnaire_offer") {
+					await this.getDaemonQuestionnaireHost()?.offer(event.activeSessionId, event.lease);
+				} else if (event.type === "questionnaire_presentation") {
+					await this.getDaemonQuestionnaireHost()?.present(event.presentation);
+				} else if (event.type === "questionnaire_withdraw") {
+					await this.getDaemonQuestionnaireHost()?.withdraw(event.activeSessionId, event.lease);
 				} else if (event.type === "side_question_event") {
 					this.handleSideQuestionEvent(event.event);
 				} else if (event.type === "extension_ui_request") {
@@ -5053,6 +5094,9 @@ export class InteractiveMode {
 					);
 					if (event.status === "connected") {
 						await this.refreshHeartbeatCatalog();
+						await this.setDaemonQuestionnairePresentable?.(true).catch(() => undefined);
+					} else {
+						this.daemonQuestionnaireHost?.conceal();
 					}
 				} else if (event.type === "heartbeats_changed") {
 					await this.refreshHeartbeatCatalog();
@@ -8505,7 +8549,7 @@ export class InteractiveMode {
 			return;
 		}
 
-		this.resetExtensionUI();
+		this.resetExtensionUI("extension-reload");
 
 		const reloadBox = new Container();
 		const borderColor = (s: string) => theme.fg("border", s);
@@ -8576,6 +8620,8 @@ export class InteractiveMode {
 		} catch (error) {
 			dismissReloadBox(previousEditor as Component);
 			this.showError(`Reload failed: ${error instanceof Error ? error.message : String(error)}`);
+		} finally {
+			await this.agentConnection.questionnaire?.setPresentable(true).catch(() => undefined);
 		}
 	}
 
@@ -9681,6 +9727,9 @@ ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}${shor
 		this.stopWorkingPulse();
 		this.stopGoalTrayTimer();
 		this.closeHeartbeatManager();
+		this.extensionQuestionnaireHost?.terminate("session-completed");
+		this.daemonQuestionnaireHost?.dispose();
+		void this.agentConnection.questionnaire?.setPresentable(false).catch(() => undefined);
 		this.clearExtensionTerminalInputListeners();
 		this.footer.dispose();
 		this.footerDataProvider.dispose();

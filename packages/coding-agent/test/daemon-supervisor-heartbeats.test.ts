@@ -30,6 +30,19 @@ function createSupervisorHarness(): SupervisorHarness {
 	}) as unknown as SupervisorHarness;
 }
 
+function socketClient(): DaemonSocketClient {
+	return {
+		connectionId: "connection-client",
+		logicalClientId: "client",
+		protocolClientId: "client",
+		socket: { destroyed: false } as DaemonSocketClient["socket"],
+		attachedActiveSessionIds: new Set(),
+		detachInput: vi.fn(),
+		supportsExtensionUi: false,
+		capabilities: new Set(),
+	};
+}
+
 function worker(lifecycle: "ready" | "recovering", connected = true) {
 	return {
 		descriptor: { lifecycle },
@@ -50,7 +63,7 @@ describe("daemon supervisor heartbeat aggregation", () => {
 			}),
 		);
 
-		const initial = await supervisor.handleCommand({} as DaemonSocketClient, {
+		const initial = await supervisor.handleCommand(socketClient(), {
 			id: "list-1",
 			type: "heartbeats_list",
 		});
@@ -61,7 +74,7 @@ describe("daemon supervisor heartbeat aggregation", () => {
 
 		second.descriptor.lifecycle = "recovering";
 		delete second.client;
-		const recovered = await supervisor.handleCommand({} as DaemonSocketClient, {
+		const recovered = await supervisor.handleCommand(socketClient(), {
 			id: "list-2",
 			type: "heartbeats_list",
 		});
@@ -85,7 +98,7 @@ describe("daemon supervisor heartbeat aggregation", () => {
 				: failure(command.id, command.type, "worker unavailable"),
 		);
 
-		const response = await supervisor.handleCommand({} as DaemonSocketClient, {
+		const response = await supervisor.handleCommand(socketClient(), {
 			id: "list-2",
 			type: "heartbeats_list",
 		});
@@ -110,7 +123,7 @@ describe("daemon supervisor heartbeat aggregation", () => {
 			header: { kind: "outbound", outboundType: "heartbeats_changed" },
 			payload: Buffer.alloc(0),
 		});
-		const response = await supervisor.handleCommand({} as DaemonSocketClient, {
+		const response = await supervisor.handleCommand(socketClient(), {
 			id: "list-stale",
 			type: "heartbeats_list",
 		});
@@ -127,7 +140,7 @@ describe("daemon supervisor heartbeat aggregation", () => {
 			success(command.id, command.type, { heartbeats: [] }),
 		);
 
-		const response = await supervisor.handleCommand({} as DaemonSocketClient, {
+		const response = await supervisor.handleCommand(socketClient(), {
 			id: "list-3",
 			type: "heartbeats_list",
 		});
@@ -152,7 +165,7 @@ describe("daemon supervisor heartbeat aggregation", () => {
 			}),
 		);
 
-		const response = await supervisor.handleCommand({} as DaemonSocketClient, {
+		const response = await supervisor.handleCommand(socketClient(), {
 			id: "manage-1",
 			type: "heartbeat_manage",
 			activeSessionId: "unloaded-session",

@@ -130,14 +130,16 @@ function workerHarness() {
 
 function socketClient(id: string, socket: PassThrough): DaemonSocketClient {
 	return {
-		id,
+		connectionId: `connection-${id}`,
+		logicalClientId: id,
+		protocolClientId: id,
 		socket: socket as unknown as Socket,
 		attachedActiveSessionIds: new Set([activeSessionId]),
 		catchupActiveSessionIds: new Set<string>(),
 		detachInput: () => {},
 		supportsExtensionUi: false,
 		capabilities: new Set(["chunked_snapshot"]),
-	} as DaemonSocketClient;
+	};
 }
 
 function snapshotFrames(messages: AgentMessage[]) {
@@ -186,15 +188,17 @@ describe("ENG-4602 snapshot transfer containment", () => {
 			runtime: { metadata: { kind: "top-level", createdAt: 1 } },
 		} as unknown as ActiveSessionState;
 		const socket = new PassThrough();
-		const client = {
-			id: "supervisor",
+		const client: DaemonSocketClient = {
+			connectionId: "connection-supervisor",
+			logicalClientId: "supervisor",
+			protocolClientId: "supervisor",
 			socket: socket as unknown as Socket,
 			transport: "private-framed",
 			attachedActiveSessionIds: new Set<string>(),
 			detachInput: () => {},
 			supportsExtensionUi: false,
-			capabilities: new Set<string>(),
-		} as DaemonSocketClient;
+			capabilities: new Set(),
+		};
 		const streamError = new Error("encoder failed after begin");
 		const log = vi.fn();
 		const streamWorkerSnapshot = vi.fn(async () => {
@@ -254,16 +258,18 @@ describe("ENG-4602 snapshot transfer containment", () => {
 		socket.on("error", () => {});
 		const written: Buffer[] = [];
 		socket.on("data", (chunk: Buffer) => written.push(Buffer.from(chunk)));
-		const client = {
-			id: "supervisor",
+		const client: DaemonSocketClient = {
+			connectionId: "connection-supervisor",
+			logicalClientId: "supervisor",
+			protocolClientId: "supervisor",
 			socket: socket as unknown as Socket,
 			transport: "private-framed",
 			attachedActiveSessionIds: new Set([activeSessionId, "active-4602-sibling"]),
 			catchupActiveSessionIds: new Set<string>(),
 			detachInput: () => {},
 			supportsExtensionUi: false,
-			capabilities: new Set(["chunked_snapshot"]),
-		} as DaemonSocketClient;
+			capabilities: new Set(["chunked_snapshot"] as const),
+		};
 		const internals = daemon as unknown as {
 			streamWorkerSnapshot(
 				client: DaemonSocketClient,

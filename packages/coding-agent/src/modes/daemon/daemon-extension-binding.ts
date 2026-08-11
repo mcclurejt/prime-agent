@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type {
 	ExtensionCommandContextActions,
+	ExtensionQuestionnaireOptions,
+	ExtensionQuestionnaireOutcome,
+	ExtensionQuestionnaireRequestV1,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
@@ -23,6 +26,15 @@ export interface ActiveSessionBindingCallbacks {
 	createConnectionState?: (state: ActiveSessionState) => AgentConnectionState;
 	sessionReplaced?: (state: ActiveSessionState) => void;
 	shutdown: () => void;
+	questionnaire: (
+		state: ActiveSessionState,
+		request: ExtensionQuestionnaireRequestV1,
+		options?: ExtensionQuestionnaireOptions,
+	) => Promise<ExtensionQuestionnaireOutcome>;
+	terminateQuestionnaires: (
+		state: ActiveSessionState,
+		reason: Extract<ExtensionQuestionnaireOutcome, { status: "terminated" }>["reason"],
+	) => void;
 	subagentRuntimeHost?: SubagentRuntimeHost;
 }
 
@@ -56,6 +68,9 @@ export async function bindActiveSessionState(
 	// Every runtime rebuild (new/switch/fork/import, subagent spawn) re-loads
 	// extensions, which capture client env synchronously at that moment.
 	state.runtime.setRuntimeEnvScope((fn) => withClientEnv(state.clientEnv, fn));
+	state.runtime.setBeforeSessionInvalidate(() => {
+		callbacks.terminateQuestionnaires(state, "runtime-replaced");
+	});
 
 	state.unsubscribe?.();
 	state.runtime.setSubagentRuntimeHost(callbacks.subagentRuntimeHost);
@@ -81,8 +96,8 @@ export async function bindActiveSessionState(
 	});
 
 	await session.bindExtensions({
-		uiContext: createExtensionUIContext(state, callbacks.broadcast),
-		commandContextActions: createCommandContextActions(state),
+		uiContext: createExtensionUIContext(state, callbacks.broadcast, callbacks.questionnaire),
+		commandContextActions: createCommandContextActions(state, callbacks),
 		shutdownHandler: callbacks.shutdown,
 		onError: (error) => {
 			callbacks.broadcast(state, {
@@ -96,7 +111,10 @@ export async function bindActiveSessionState(
 	});
 }
 
-function createCommandContextActions(state: ActiveSessionState): ExtensionCommandContextActions {
+function createCommandContextActions(
+	state: ActiveSessionState,
+	callbacks: ActiveSessionBindingCallbacks,
+): ExtensionCommandContextActions {
 	return {
 		waitForIdle: () => state.runtime.session.waitForIdle(),
 		newSession: async (options) => state.runtime.newSession(options),
@@ -115,6 +133,7 @@ function createCommandContextActions(state: ActiveSessionState): ExtensionComman
 		},
 		switchSession: async (sessionPath, options) => state.runtime.switchSession(sessionPath, options),
 		reload: async () => {
+			callbacks.terminateQuestionnaires(state, "extension-reload");
 			// Reload re-evaluates extension modules, which capture client env
 			// (e.g. herdr pane identity) synchronously at load.
 			await withClientEnv(state.clientEnv, () => state.runtime.session.reload());
@@ -125,6 +144,7 @@ function createCommandContextActions(state: ActiveSessionState): ExtensionComman
 function createExtensionUIContext(
 	state: ActiveSessionState,
 	broadcast: ActiveSessionBindingCallbacks["broadcast"],
+	questionnaire: ActiveSessionBindingCallbacks["questionnaire"],
 ): ExtensionUIContext {
 	const emitUiRequest = (method: string, payload: Record<string, unknown>): string => {
 		const id = randomUUID();
@@ -177,6 +197,7 @@ function createExtensionUIContext(
 	};
 
 	return {
+		questionnaire: (request, options) => questionnaire(state, request, options),
 		select: (title, values, opts) =>
 			dialogRequest("select", { title, options: values, timeout: opts?.timeout }, opts, undefined, (response) =>
 				"cancelled" in response && response.cancelled

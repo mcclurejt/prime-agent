@@ -19,7 +19,11 @@ import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.js";
 import { formatNoModelsAvailableMessage } from "../src/core/auth-guidance.js";
 import { type AuthStatus, AuthStorage } from "../src/core/auth-storage.js";
 import type { AgentCronJob } from "../src/core/cron-jobs.js";
-import type { AutocompleteProviderFactory } from "../src/core/extensions/types.js";
+import type {
+	AutocompleteProviderFactory,
+	ExtensionQuestionnaireRequestV1,
+	ExtensionUIContext,
+} from "../src/core/extensions/types.js";
 import { emptyGoalState, type GoalState } from "../src/core/goals.js";
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import type { ModelRegistry } from "../src/core/model-registry.js";
@@ -27,6 +31,7 @@ import { PRIME_INFERENCE_PROVIDER_ID } from "../src/core/prime-inference-auth.js
 import { emptyUsage } from "../src/core/usage.js";
 import { InProcessAgentConnection } from "../src/modes/agent-connection/in-process-agent-connection.js";
 import type {
+	AgentConnectionEvent,
 	AgentConnectionExtensionUiRequest,
 	AgentConnectionExtensionUiResponse,
 	AgentConnectionHeartbeat,
@@ -1282,6 +1287,59 @@ describe("InteractiveMode connection events", () => {
 		});
 		expect(restoreStreamingMessageFromSnapshot).toHaveBeenNthCalledWith(1, undefined);
 		expect(restoreStreamingMessageFromSnapshot).toHaveBeenNthCalledWith(2, streamingMessage);
+	});
+
+	test("routes daemon questionnaire events only through the daemon questionnaire host", async () => {
+		let listener: ((event: AgentConnectionEvent) => Promise<void> | void) | undefined;
+		const questionnaireHost = {
+			offer: vi.fn(async () => {}),
+			present: vi.fn(async () => {}),
+			withdraw: vi.fn(async () => {}),
+		};
+		const fakeThis = {
+			agentConnection: {
+				subscribe: vi.fn((callback) => {
+					listener = callback;
+					return vi.fn();
+				}),
+			},
+			sessionEventQueue: Promise.resolve(),
+			sessionEventGeneration: 0,
+			getDaemonQuestionnaireHost: () => questionnaireHost,
+			showError: vi.fn(),
+		};
+		(InteractiveMode.prototype as unknown as { subscribeToAgent(this: typeof fakeThis): void }).subscribeToAgent.call(
+			fakeThis,
+		);
+		const lease = {
+			supervisorGeneration: "generation-a",
+			logicalRequestId: "request-a",
+			offerId: "offer-a",
+			leaseEpoch: 1,
+			logicalClientId: "logical-a",
+			connectionId: "connection-a",
+			mode: "rich" as const,
+		};
+		const presentation = {
+			activeSessionId: "active-a",
+			lease,
+			authoritativeRevision: 0,
+			request: { version: 1 as const, questions: [{ id: "q", kind: "short-text" as const, prompt: "Private" }] },
+			draft: {
+				version: 1 as const,
+				currentStep: { kind: "question" as const, questionId: "q" },
+				states: [{ questionId: "q", kind: "short-text" as const, value: "draft" }],
+			},
+		};
+
+		await listener?.({ type: "questionnaire_offer", activeSessionId: "active-a", lease });
+		await listener?.({ type: "questionnaire_presentation", presentation });
+		await listener?.({ type: "questionnaire_withdraw", activeSessionId: "active-a", lease });
+
+		expect(questionnaireHost.offer).toHaveBeenCalledWith("active-a", lease);
+		expect(questionnaireHost.present).toHaveBeenCalledWith(presentation);
+		expect(questionnaireHost.withdraw).toHaveBeenCalledWith("active-a", lease);
+		expect(fakeThis.showError).not.toHaveBeenCalled();
 	});
 
 	test("clears extension UI when a connection-backed session is replaced", async () => {
@@ -4262,6 +4320,32 @@ describe("InteractiveMode.createExtensionUIContext setTheme", () => {
 		expect(result.success).toBe(false);
 		expect(settingsManager.setTheme).not.toHaveBeenCalled();
 		expect(fakeThis.ui.requestRender).not.toHaveBeenCalled();
+	});
+});
+
+describe("InteractiveMode.createExtensionUIContext questionnaire", () => {
+	test("constructs the host lazily and forwards to its request method", async () => {
+		const requestQuestionnaire = vi.fn((_request: ExtensionQuestionnaireRequestV1) =>
+			Promise.resolve({ status: "dismissed" as const }),
+		);
+		const fakeThis = {
+			getExtensionQuestionnaireHost: vi.fn(() => ({ request: requestQuestionnaire })),
+		};
+		type CreateContext = (this: typeof fakeThis) => ExtensionUIContext;
+		const createContext = (InteractiveMode.prototype as unknown as { createExtensionUIContext: CreateContext })
+			.createExtensionUIContext;
+
+		const uiContext = createContext.call(fakeThis);
+		expect(fakeThis.getExtensionQuestionnaireHost).not.toHaveBeenCalled();
+		const questionnaireRequest: ExtensionQuestionnaireRequestV1 = {
+			version: 1,
+			questions: [{ id: "confirm", kind: "confirm", prompt: "Continue?" }],
+		};
+		const outcome = uiContext.questionnaire?.(questionnaireRequest);
+
+		expect(fakeThis.getExtensionQuestionnaireHost).toHaveBeenCalledOnce();
+		expect(requestQuestionnaire).toHaveBeenCalledWith(questionnaireRequest, undefined);
+		await expect(outcome).resolves.toEqual({ status: "dismissed" });
 	});
 });
 

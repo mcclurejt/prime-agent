@@ -13,7 +13,12 @@ import type {
 	AgentHeartbeatUpdateAction,
 } from "../../core/cron-jobs.js";
 import type { ReplayBuiltInToolName } from "../../core/extensions/index.js";
-import type { InputSource } from "../../core/extensions/types.js";
+import type {
+	ExtensionQuestionnaireDraftV1,
+	ExtensionQuestionnaireOutcome,
+	ExtensionQuestionnaireRequestV1,
+	InputSource,
+} from "../../core/extensions/types.js";
 import type { GoalState } from "../../core/goals.js";
 import type { KernelSentAgentMessage } from "../../core/kernel/index.js";
 import type { RefinementResult } from "../../core/refinement/index.js";
@@ -527,6 +532,61 @@ export interface AgentConnectionExtensionUiRequest {
 	payload: Record<string, unknown>;
 }
 
+export interface AgentConnectionQuestionnaireLease {
+	supervisorGeneration: string;
+	logicalRequestId: string;
+	offerId: string;
+	leaseEpoch: number;
+	logicalClientId: string;
+	connectionId: string;
+	mode: "rich" | "legacy";
+}
+
+export interface AgentConnectionQuestionnairePresentation {
+	activeSessionId: string;
+	lease: AgentConnectionQuestionnaireLease;
+	authoritativeRevision: number;
+	request: ExtensionQuestionnaireRequestV1;
+	draft: ExtensionQuestionnaireDraftV1;
+}
+
+export type AgentConnectionQuestionnaireMutationResult =
+	| {
+			status: "ack";
+			ack: { clientMutationId: string; authoritativeRevision: number; draftHash: string };
+	  }
+	| { status: "terminal"; outcome: ExtensionQuestionnaireOutcome }
+	| {
+			status: "conflict";
+			authoritativeRevision: number;
+			draftHash: string;
+			snapshot?: Omit<AgentConnectionQuestionnairePresentation, "activeSessionId">;
+	  }
+	| { status: "mutation-id-collision" | "stale-lease" };
+
+export interface AgentConnectionQuestionnaireTransport {
+	setPresentable(presentable: boolean): Promise<void>;
+	respondToOffer(
+		lease: AgentConnectionQuestionnaireLease,
+		response: "accepted" | "busy" | "presentation_error",
+	): Promise<"accepted" | "stale">;
+	checkpoint(
+		lease: AgentConnectionQuestionnaireLease,
+		baseRevision: number,
+		clientMutationId: string,
+		completeDraft: ExtensionQuestionnaireDraftV1,
+	): Promise<AgentConnectionQuestionnaireMutationResult>;
+	submit(
+		lease: AgentConnectionQuestionnaireLease,
+		baseRevision: number,
+		clientMutationId: string,
+		completeDraft: ExtensionQuestionnaireDraftV1,
+	): Promise<AgentConnectionQuestionnaireMutationResult>;
+	dismiss(lease: AgentConnectionQuestionnaireLease): Promise<AgentConnectionQuestionnaireMutationResult>;
+	reportPresentationError(lease: AgentConnectionQuestionnaireLease): Promise<"accepted" | "stale">;
+	acknowledgeWithdraw(lease: AgentConnectionQuestionnaireLease): Promise<void>;
+}
+
 export type AgentConnectionRlmChildAgentStatus = "queued" | "running" | "done" | "error" | "cancelled";
 
 export interface AgentConnectionRlmChildAgentActivity {
@@ -612,7 +672,15 @@ export type AgentConnectionEvent =
 	| { type: "side_question_event"; event: AgentConnectionSideQuestionEvent }
 	| { type: "session_replaced"; state: AgentConnectionState; messages: AgentMessage[] }
 	| { type: "session_resynced"; snapshot: AgentConnectionSnapshot }
-	| { type: "session_status"; recap?: string }
+	| {
+			type: "session_status";
+			recap?: string;
+			questionnaireState?: "waiting" | "offered" | "presenting";
+			questionnaireQueueDepth?: number;
+	  }
+	| { type: "questionnaire_offer"; activeSessionId: string; lease: AgentConnectionQuestionnaireLease }
+	| { type: "questionnaire_presentation"; presentation: AgentConnectionQuestionnairePresentation }
+	| { type: "questionnaire_withdraw"; activeSessionId: string; lease: AgentConnectionQuestionnaireLease }
 	| { type: "extension_ui_request"; request: AgentConnectionExtensionUiRequest }
 	| { type: "extension_error"; extensionPath: string; event: string; error: string }
 	| { type: "connection_status"; status: "reconnecting" | "connected"; error?: string }
@@ -625,6 +693,7 @@ export type AgentConnectionBeforeSessionInvalidateListener = () => void;
 export interface AgentConnection {
 	subscribe(listener: AgentConnectionEventListener): () => void;
 	onBeforeSessionInvalidate(listener: AgentConnectionBeforeSessionInvalidateListener): () => void;
+	readonly questionnaire?: AgentConnectionQuestionnaireTransport;
 
 	getState(): Promise<AgentConnectionState>;
 	getInitialSnapshot(): Promise<AgentConnectionSnapshot>;

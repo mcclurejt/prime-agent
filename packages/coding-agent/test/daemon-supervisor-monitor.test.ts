@@ -214,6 +214,20 @@ function createExistingLaunchWorker(root: string, descriptorDir: string) {
 	};
 }
 
+function socketClient(logicalClientId: string, overrides: Partial<DaemonSocketClient> = {}): DaemonSocketClient {
+	return {
+		connectionId: `connection-${logicalClientId}`,
+		logicalClientId,
+		protocolClientId: logicalClientId,
+		socket: { destroyed: false } as DaemonSocketClient["socket"],
+		attachedActiveSessionIds: new Set(),
+		detachInput: vi.fn(),
+		supportsExtensionUi: false,
+		capabilities: new Set(),
+		...overrides,
+	};
+}
+
 function createSupervisorSnapshotState() {
 	return {
 		clients: new Set<object>(),
@@ -351,10 +365,10 @@ describe("daemon worker supervisor monitoring", () => {
 	it("does not revoke a newer same-client claim when an older periodic fence fails", async () => {
 		const assertionReached = createDeferred<void>();
 		const assertionGate = createDeferred<void>();
-		const client = {
+		const client = socketClient("supervisor", {
 			authenticated: true,
-			socket: { destroyed: false, end: vi.fn() },
-		} as unknown as DaemonSocketClient;
+			socket: { destroyed: false, end: vi.fn() } as unknown as Socket,
+		});
 		const oldClaim = { claim: {}, ownerFingerprint: "old" };
 		const newerClaim = { claim: {}, ownerFingerprint: "new" };
 		const transaction = {
@@ -394,15 +408,10 @@ describe("daemon worker supervisor monitoring", () => {
 	it("does not revoke a newer same-client claim when an older command fence fails", async () => {
 		const assertionReached = createDeferred<void>();
 		const assertionGate = createDeferred<void>();
-		const client = {
-			id: "supervisor",
+		const client = socketClient("supervisor", {
 			authenticated: true,
-			socket: { destroyed: false, write: vi.fn(() => true), end: vi.fn() },
-			attachedActiveSessionIds: new Set(),
-			detachInput: vi.fn(),
-			supportsExtensionUi: false,
-			capabilities: new Set(),
-		} as unknown as DaemonSocketClient;
+			socket: { destroyed: false, write: vi.fn(() => true), end: vi.fn() } as unknown as Socket,
+		});
 		const oldClaim = { claim: {}, ownerFingerprint: "old" };
 		const newerClaim = { claim: {}, ownerFingerprint: "new" };
 		const transaction = {
@@ -471,15 +480,10 @@ describe("daemon worker supervisor monitoring", () => {
 			handleLine(client: DaemonSocketClient, line: string): Promise<void>;
 		};
 		const makeClient = () =>
-			({
-				id: "supervisor",
+			socketClient("supervisor", {
 				authenticated: false,
-				socket: { destroyed: false, write: vi.fn(() => true), end: vi.fn() },
-				attachedActiveSessionIds: new Set(),
-				detachInput: vi.fn(),
-				supportsExtensionUi: false,
-				capabilities: new Set(),
-			}) as unknown as DaemonSocketClient;
+				socket: { destroyed: false, write: vi.fn(() => true), end: vi.fn() } as unknown as Socket,
+			});
 		const auth = (generation: string) =>
 			JSON.stringify({
 				type: "worker_auth",
@@ -1547,12 +1551,7 @@ describe("daemon worker supervisor monitoring", () => {
 			snapshotTransferFrames: new Map(),
 			snapshotLoads: new Map(),
 		};
-		const client = {
-			id: "client-1",
-			capabilities: new Set<string>(),
-			supportsExtensionUi: false,
-			attachedActiveSessionIds: new Set<string>(),
-		};
+		const client = socketClient("client-1");
 		const seed = vi.fn();
 		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
 			workers: new Map([[worker.descriptor.workerId, worker]]),
@@ -1561,12 +1560,7 @@ describe("daemon worker supervisor monitoring", () => {
 			syncWorkerExtensionUi: vi.fn(async () => {}),
 		}) as {
 			attachClient(
-				client: {
-					id: string;
-					capabilities: Set<string>;
-					supportsExtensionUi: boolean;
-					attachedActiveSessionIds: Set<string>;
-				},
+				client: DaemonSocketClient,
 				command: { type: "attach"; activeSessionId: string },
 			): Promise<unknown>;
 		};
@@ -1583,15 +1577,12 @@ describe("daemon worker supervisor monitoring", () => {
 			writes.push(String(data));
 			return false;
 		});
-		const client = {
-			id: "client-1",
-			socket: { destroyed: false, write },
+		const client = socketClient("client-1", {
+			socket: { destroyed: false, write } as unknown as Socket,
 			attachedActiveSessionIds: new Set([activeSessionId]),
-			catchupActiveSessionIds: new Set<string>(),
+			catchupActiveSessionIds: new Set(),
 			backpressured: false,
-			supportsExtensionUi: false,
-			capabilities: new Set(),
-		} as unknown as DaemonSocketClient;
+		});
 		const worker = {
 			snapshotCache: new Map(),
 			transcriptCaches: new Map(),
@@ -1652,12 +1643,7 @@ describe("daemon worker supervisor monitoring", () => {
 	});
 
 	it("does not retain an attachment when snapshot loading fails", async () => {
-		type AttachClient = {
-			id: string;
-			capabilities: Set<string>;
-			supportsExtensionUi: boolean;
-			attachedActiveSessionIds: Set<string>;
-		};
+		type AttachClient = DaemonSocketClient;
 		const activeSessionId = "active-failed-attach";
 		const summary = {
 			id: activeSessionId,
@@ -1687,12 +1673,7 @@ describe("daemon worker supervisor monitoring", () => {
 			snapshotTransferFrames: new Map(),
 			snapshotLoads: new Map(),
 		};
-		const client: AttachClient = {
-			id: "client-1",
-			capabilities: new Set<string>(),
-			supportsExtensionUi: false,
-			attachedActiveSessionIds: new Set<string>(),
-		};
+		const client: AttachClient = socketClient("client-1");
 		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
 			workers: new Map([[worker.descriptor.workerId, worker]]),
 			clients: new Set([client]),
@@ -1837,16 +1818,15 @@ describe("daemon worker supervisor monitoring", () => {
 		commandJournal.begin("client-1", "command-1", "kill");
 		commandJournal.recordResult("client-1", "command-1", response);
 		const writes: string[] = [];
-		const client = {
-			id: "socket-client",
+		const client = socketClient("socket-client", {
 			socket: {
 				destroyed: false,
 				write: vi.fn((chunk: string) => {
 					writes.push(chunk);
 					return true;
 				}),
-			},
-		} as unknown as DaemonSocketClient;
+			} as unknown as Socket,
+		});
 		const mutationDrain = { begin: vi.fn(), end: vi.fn() };
 		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
 			ready: Promise.resolve(),
@@ -1883,16 +1863,15 @@ describe("daemon worker supervisor monitoring", () => {
 		const root = mkdtempSync(join(tmpdir(), "prime-supervisor-command-reject-"));
 		const commandJournal = new CommandRecoveryJournal(join(root, "commands.jsonl"));
 		const writes: string[] = [];
-		const client = {
-			id: "socket-client",
+		const client = socketClient("socket-client", {
 			socket: {
 				destroyed: false,
 				write: vi.fn((chunk: string) => {
 					writes.push(chunk);
 					return true;
 				}),
-			},
-		} as unknown as DaemonSocketClient;
+			} as unknown as Socket,
+		});
 		const mutationDrain = { begin: vi.fn(), end: vi.fn() };
 		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
 			ready: Promise.resolve(),

@@ -29,6 +29,7 @@ import {
 	finishClientSnapshotStreaming,
 	getChildActiveSessionStates,
 	markClientSnapshotStreaming,
+	questionnaireTerminationReasonForClose,
 	setDaemonClientSessionCapabilities,
 	shouldSendDaemonOutboundToClient,
 } from "../src/modes/daemon/daemon-mode.js";
@@ -46,6 +47,20 @@ import type { SessionSummary } from "../src/modes/daemon/daemon-session-list.js"
 import { DAEMON_WORKER_SUPERVISOR_SOCKET_ENV } from "../src/modes/daemon/daemon-worker-protocol.js";
 
 describe("daemon mode helpers", () => {
+	it("maps every orderly close reason to the normative questionnaire termination", () => {
+		expect(
+			(["killed", "completed", "shutdown", "update", "replaced"] as const).map((reason) => [
+				reason,
+				questionnaireTerminationReasonForClose(reason),
+			]),
+		).toEqual([
+			["killed", "session-killed"],
+			["completed", "session-completed"],
+			["shutdown", "daemon-shutdown"],
+			["update", "daemon-update"],
+			["replaced", "runtime-replaced"],
+		]);
+	});
 	it("preserves envelope client identity while registering prompt admission", () => {
 		const daemon = new AgentDaemon("/tmp/unused-daemon.sock", {
 			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
@@ -55,7 +70,7 @@ describe("daemon mode helpers", () => {
 		const parse = Reflect.get(daemon, "parseCommandAndRegisterPromptAdmission").bind(daemon);
 
 		parse(client, JSON.stringify(createDaemonCommandEnvelope({ type: "list" }, "request-1", "public-client")));
-		expect(client.id).toBe("public-client");
+		expect(client.logicalClientId).toBe("public-client");
 	});
 
 	it("normalizes daemon session names before validation and persistence", async () => {
@@ -1302,6 +1317,7 @@ describe("daemon mode helpers", () => {
 			recordWorkerRecoveryState: ReturnType<typeof vi.fn>;
 			broadcastToSession: ReturnType<typeof vi.fn>;
 			cancelScheduledJobsForSession: ReturnType<typeof vi.fn>;
+			questionnaireAuthority: { terminateSession: ReturnType<typeof vi.fn> };
 		};
 		internals.sessions.set(state.activeSessionId, state);
 		internals.closeChildSessions = vi.fn(async () => undefined);
@@ -1310,9 +1326,17 @@ describe("daemon mode helpers", () => {
 		internals.recordWorkerRecoveryState = vi.fn();
 		internals.broadcastToSession = vi.fn();
 		internals.cancelScheduledJobsForSession = vi.fn();
+		internals.questionnaireAuthority = { terminateSession: vi.fn() };
 
 		await expect(internals.closeSession(state, "killed", false)).rejects.toThrow("dispose failed");
 
+		expect(internals.questionnaireAuthority.terminateSession).toHaveBeenCalledWith(
+			state.activeSessionId,
+			"session-killed",
+		);
+		expect(internals.questionnaireAuthority.terminateSession.mock.invocationCallOrder[0]).toBeLessThan(
+			dispose.mock.invocationCallOrder[0]!,
+		);
 		expect(dispose).toHaveBeenCalledOnce();
 		expect(internals.sessions.has(state.activeSessionId)).toBe(false);
 		expect(internals.closingSessions.has(state.activeSessionId)).toBe(false);
@@ -4034,6 +4058,71 @@ describe("daemon mode helpers", () => {
 			}),
 		).rejects.toThrow("Agent messaging cannot target the sending session");
 		expect(state.runtime.session.prompt).not.toHaveBeenCalled();
+	});
+
+	it("keeps the socket incarnation immutable when attach changes the logical client id", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const state = makeState("active");
+		const connected = makeClient("initial-logical-client", state.activeSessionId);
+		const connectionId = connected.connectionId;
+		const internals = daemon as unknown as {
+			getOrHydrateBoundSessionState(activeSessionId: string): Promise<ActiveSessionState>;
+			createAttachResult(): Promise<never>;
+			handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+		};
+		internals.getOrHydrateBoundSessionState = vi.fn(async () => state);
+		internals.createAttachResult = vi.fn(async () => {
+			throw new Error("stop after identity update");
+		});
+
+		expect(connectionId).toEqual(expect.any(String));
+		await expect(
+			internals.handleCommand(connected, {
+				id: "attach-1",
+				type: "attach",
+				activeSessionId: state.activeSessionId,
+				clientId: "attached-logical-client",
+			}),
+		).rejects.toThrow("stop after identity update");
+		expect(connected.logicalClientId).toBe("attached-logical-client");
+		expect(connected.connectionId).toBe(connectionId);
+	});
+
+	it("stamps attach metadata with both logical and connection identities", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const state = makeState("active");
+		state.eventGeneration = "generation-1";
+		const connected = makeClient("logical-client", state.activeSessionId);
+		const snapshot = { summary: {}, messages: [] } as unknown as DaemonAttachResult["snapshot"];
+		const internals = daemon as unknown as {
+			createSessionSnapshot(state: ActiveSessionState): Promise<DaemonAttachResult["snapshot"]>;
+			createAttachResult(
+				client: DaemonSocketClient,
+				state: ActiveSessionState,
+				command: Extract<DaemonCommand, { type: "attach" }>,
+			): Promise<DaemonAttachResult>;
+		};
+		internals.createSessionSnapshot = vi.fn(async () => snapshot);
+
+		const result = await internals.createAttachResult(connected, state, {
+			type: "attach",
+			activeSessionId: state.activeSessionId,
+		});
+
+		expect(result.client).toMatchObject({
+			id: connected.logicalClientId,
+			connectionId: connected.connectionId,
+		});
 	});
 
 	it("sends dialog extension UI requests only to UI-capable clients", () => {
@@ -9898,9 +9987,10 @@ function makeState(activeSessionId: string, parentActiveSessionId?: string): Act
 	} as unknown as ActiveSessionState;
 }
 
-function makeClient(id: string, activeSessionId: string, supportsExtensionUi = false): DaemonSocketClient {
+function makeClient(logicalClientId: string, activeSessionId: string, supportsExtensionUi = false): DaemonSocketClient {
 	return {
-		id,
+		connectionId: `connection-${logicalClientId}`,
+		logicalClientId,
 		socket: { destroyed: false } as Socket,
 		attachedActiveSessionIds: new Set([activeSessionId]),
 		detachInput: vi.fn(),

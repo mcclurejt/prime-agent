@@ -9,6 +9,7 @@ import {
 	sessionNameReservationKey,
 } from "../src/core/agent-messages.js";
 import { readSessionInfo, SessionManager } from "../src/core/session-manager.js";
+import type { DaemonSocketClient } from "../src/modes/daemon/active-session-state.js";
 import { success } from "../src/modes/daemon/daemon-protocol.js";
 import type { SessionSummary } from "../src/modes/daemon/daemon-session-list.js";
 import { DaemonSupervisor } from "../src/modes/daemon/daemon-supervisor.js";
@@ -29,7 +30,7 @@ interface SupervisorInternals {
 		name: string,
 	): void;
 	familyCatalogEntry(summary: SessionSummary): AgentFamilyCatalogEntry;
-	handleCommand(client: object, command: Record<string, unknown>): Promise<unknown>;
+	handleCommand(client: DaemonSocketClient, command: Record<string, unknown>): Promise<unknown>;
 }
 
 interface WorkerFixture {
@@ -55,6 +56,19 @@ const tempDirs: string[] = [];
 afterEach(() => {
 	for (const directory of tempDirs.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
+
+function socketClient(logicalClientId: string): DaemonSocketClient {
+	return {
+		connectionId: `connection-${logicalClientId}`,
+		logicalClientId,
+		protocolClientId: logicalClientId,
+		socket: { destroyed: false } as DaemonSocketClient["socket"],
+		attachedActiveSessionIds: new Set(),
+		detachInput: vi.fn(),
+		supportsExtensionUi: false,
+		capabilities: new Set(),
+	};
+}
 
 function summary(overrides: Partial<SessionSummary> & Pick<SessionSummary, "id" | "sessionId">): SessionSummary {
 	return {
@@ -389,7 +403,7 @@ describe("daemon supervisor passive subagent topology", () => {
 		supervisor.workers.set("first", firstWorker);
 		supervisor.workers.set("second", secondWorker);
 		Object.assign(supervisor, { catalog: { list: vi.fn(async () => []) } });
-		const client = { id: "client", attachedActiveSessionIds: new Set<string>() };
+		const client = socketClient("client");
 
 		const first = supervisor.handleCommand(client, {
 			type: "rename",
@@ -432,7 +446,7 @@ describe("daemon supervisor passive subagent topology", () => {
 		}) as unknown as SupervisorInternals;
 		supervisor.workers.set("owned", ownedWorker);
 		Object.assign(supervisor, { catalog: { list: vi.fn(async () => []) } });
-		const workerClient = { id: "daemon-client:worker", attachedActiveSessionIds: new Set<string>() };
+		const workerClient = socketClient("daemon-client:worker");
 
 		await expect(
 			supervisor.handleCommand(workerClient, {
@@ -509,7 +523,7 @@ describe("daemon supervisor passive subagent topology", () => {
 				list: vi.fn(async () => []),
 			},
 		});
-		const client = { id: "client", attachedActiveSessionIds: new Set<string>() };
+		const client = socketClient("client");
 
 		const first = supervisor.handleCommand(client, {
 			type: "rename_saved_session",
@@ -569,7 +583,7 @@ describe("daemon supervisor passive subagent topology", () => {
 				rename,
 			},
 		});
-		const client = {};
+		const client = socketClient("client");
 
 		const first = supervisor.handleCommand(client, {
 			type: "rename_saved_session",

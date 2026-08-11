@@ -7,26 +7,43 @@ import {
 	createDaemonEventEnvelope,
 	createDaemonEventMeta,
 	createDaemonReplayInfo,
+	DAEMON_ADVERTISED_CLIENT_CAPABILITIES,
 	DAEMON_COMMAND_COMPATIBILITY,
 	DAEMON_DEFAULT_SERVER_CAPABILITIES,
+	DAEMON_DORMANT_CLIENT_CAPABILITIES,
 	DAEMON_OUTBOUND_COMPATIBILITY,
 	DAEMON_PROTOCOL_INFO,
 	DAEMON_PROTOCOL_VERSION,
 	DAEMON_SCHEMA_ID,
 	DAEMON_SCHEMA_REVISION,
+	DAEMON_SUPPORTED_CLIENT_CAPABILITIES,
 	type DaemonCommand,
 	type DaemonOutbound,
 	isDaemonCommandEnvelope,
 	isDaemonMutatingCommand,
+	normalizeDaemonClientCapabilities,
 	salvageDaemonCommandId,
 } from "../src/modes/daemon/daemon-protocol.js";
 
 describe("daemon protocol helpers", () => {
 	it("keeps the advertised schema identity synchronized with wire type shapes", () => {
 		const source = readFileSync(resolve(__dirname, "../src/modes/daemon/daemon-protocol.ts"), "utf8");
+		const sessionListSource = readFileSync(resolve(__dirname, "../src/modes/daemon/daemon-session-list.ts"), "utf8");
+		const sessionSummarySource = sessionListSource.slice(
+			sessionListSource.indexOf("export interface SessionSummary"),
+			sessionListSource.indexOf("/**\n * Pick the model fallback message"),
+		);
+		const questionnaireSource = source.slice(
+			source.indexOf("export type DaemonQuestionnairePresentationMode"),
+			source.indexOf("export type DaemonClientCapability"),
+		);
 		const commandSource = source.slice(
 			source.indexOf("export type DaemonCommand ="),
 			source.indexOf("type DaemonCommandName"),
+		);
+		const attachResultSource = source.slice(
+			source.indexOf("export interface DaemonAttachResult"),
+			source.indexOf("export const DAEMON_UPDATE_RESTART_FORMAT_VERSION"),
 		);
 		const savedSessionSource = source.slice(
 			source.indexOf("export interface DaemonSavedSessionInfo"),
@@ -37,10 +54,55 @@ describe("daemon protocol helpers", () => {
 			source.indexOf("export const DAEMON_OUTBOUND_COMPATIBILITY"),
 		);
 		const digest = createHash("sha256")
-			.update(`${commandSource}\n${savedSessionSource}\n${outboundSource}`)
+			.update(
+				`${sessionSummarySource}\n${questionnaireSource}\n${commandSource}\n${attachResultSource}\n${savedSessionSource}\n${outboundSource}`,
+			)
 			.digest("hex")
 			.slice(0, 12);
 		expect(DAEMON_SCHEMA_ID).toBe(`protocol-${DAEMON_PROTOCOL_VERSION}-schema-${DAEMON_SCHEMA_REVISION}-${digest}`);
+	});
+
+	it("advertises the completed questionnaire capability with its extension UI dependency", () => {
+		expect(DAEMON_DORMANT_CLIENT_CAPABILITIES).toEqual([]);
+		expect(DAEMON_ADVERTISED_CLIENT_CAPABILITIES).toEqual(DAEMON_SUPPORTED_CLIENT_CAPABILITIES);
+		expect(DAEMON_DEFAULT_SERVER_CAPABILITIES).toEqual(expect.arrayContaining(["extension_ui", "questionnaire_v1"]));
+	});
+
+	it("normalizes malformed or semantically unsupported questionnaire capability to non-rich", () => {
+		const questionnaireServer = new Set(["extension_ui", "questionnaire_v1"] as const);
+
+		expect(normalizeDaemonClientCapabilities(["questionnaire_v1"], false, questionnaireServer)).not.toContain(
+			"questionnaire_v1",
+		);
+		expect(
+			normalizeDaemonClientCapabilities(
+				["extension_ui", "questionnaire_v1"],
+				false,
+				new Set(DAEMON_DEFAULT_SERVER_CAPABILITIES),
+			),
+		).toContain("questionnaire_v1");
+		expect(
+			normalizeDaemonClientCapabilities(
+				["extension_ui", "questionnaire_v1"],
+				false,
+				new Set(["questionnaire_v1"] as const),
+			),
+		).not.toContain("questionnaire_v1");
+	});
+
+	it("round-trips questionnaire capability only against matching test server semantics", () => {
+		const normalized = normalizeDaemonClientCapabilities(
+			["extension_ui", "questionnaire_v1"],
+			false,
+			new Set(["extension_ui", "questionnaire_v1"] as const),
+		);
+
+		expect([...normalized]).toEqual(["extension_ui", "questionnaire_v1"]);
+	});
+
+	it("keeps additive connection metadata on legacy-compatible hello and attach surfaces", () => {
+		expect(DAEMON_OUTBOUND_COMPATIBILITY.daemon_hello).toEqual({ minProtocol: 7 });
+		expect(DAEMON_COMMAND_COMPATIBILITY.attach).toEqual({ minProtocol: 7 });
 	});
 
 	it("requires compatibility metadata for the heartbeat protocol surface", () => {
@@ -191,6 +253,38 @@ describe("daemon protocol helpers", () => {
 		expect(isDaemonMutatingCommand({ type: "reattach" })).toBe(false);
 		expect(isDaemonMutatingCommand({ type: "wait_for_headless_completion" })).toBe(true);
 		expect(isDaemonMutatingCommand({ type: "switch_session" })).toBe(true);
+	});
+
+	it("keeps private questionnaire mutations out of the durable command journal", () => {
+		const lease = {
+			supervisorGeneration: "generation-a",
+			logicalRequestId: "request-a",
+			offerId: "offer-a",
+			leaseEpoch: 1,
+			logicalClientId: "logical-a",
+			connectionId: "connection-a",
+			mode: "rich" as const,
+		};
+		expect(
+			isDaemonMutatingCommand({
+				type: "questionnaire_checkpoint",
+				activeSessionId: "active-a",
+				lease,
+				baseRevision: 0,
+				clientMutationId: "mutation-a",
+				completeDraft: { version: 1, currentStep: { kind: "review" }, states: [] },
+			} as DaemonCommand),
+		).toBe(false);
+		expect(
+			isDaemonMutatingCommand({
+				type: "questionnaire_submit",
+				activeSessionId: "active-a",
+				lease,
+				baseRevision: 0,
+				clientMutationId: "mutation-b",
+				completeDraft: { version: 1, currentStep: { kind: "review" }, states: [] },
+			} as DaemonCommand),
+		).toBe(false);
 	});
 
 	it("reports replay availability from resume cursors", () => {

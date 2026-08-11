@@ -56,6 +56,22 @@ describe("buildSessionList", () => {
 		]);
 	});
 
+	it("projects only content-free questionnaire status into active session summaries", () => {
+		const summary = summaryForActiveSession(
+			makeState({
+				activeSessionId: "questionnaire",
+				questionnaireState: "presenting",
+				questionnaireQueueDepth: 2,
+			}),
+		);
+
+		expect(summary).toMatchObject({ questionnaireState: "presenting", questionnaireQueueDepth: 2 });
+		expect(Object.keys(summary).filter((key) => key.toLowerCase().includes("questionnaire"))).toEqual([
+			"questionnaireState",
+			"questionnaireQueueDepth",
+		]);
+	});
+
 	it("uses the stable session header time for active rows without a saved catalog entry", () => {
 		const state = makeState({ activeSessionId: "active", sessionFile: "/tmp/active.jsonl" });
 		const first = summaryForActiveSession(state);
@@ -691,6 +707,8 @@ interface StateOptions {
 	messages?: AgentMessage[];
 	hasUserContent?: boolean;
 	summaryState?: ActiveSessionState["summaryState"];
+	questionnaireState?: ActiveSessionState["questionnaireState"];
+	questionnaireQueueDepth?: number;
 	childRunStatuses?: Record<string, "queued" | "running" | "done" | "error" | "cancelled">;
 	hasRunningRlmChildren?: boolean;
 	hasAcceptedPromptInFlight?: boolean;
@@ -714,7 +732,17 @@ interface StateOptions {
 function makeState(options: StateOptions): ActiveSessionState {
 	const clients = new Set<DaemonSocketClient>();
 	for (let index = 0; index < (options.clients ?? 0); index++) {
-		clients.add({ id: `client-${index}` } as unknown as DaemonSocketClient);
+		const logicalClientId = `client-${index}`;
+		clients.add({
+			connectionId: `connection-${logicalClientId}`,
+			logicalClientId,
+			protocolClientId: logicalClientId,
+			socket: { destroyed: false } as DaemonSocketClient["socket"],
+			attachedActiveSessionIds: new Set([options.activeSessionId]),
+			detachInput: () => undefined,
+			supportsExtensionUi: false,
+			capabilities: new Set(),
+		});
 	}
 
 	return {
@@ -722,6 +750,8 @@ function makeState(options: StateOptions): ActiveSessionState {
 		clients,
 		lastEventSequence: 0,
 		summaryState: options.summaryState,
+		questionnaireState: options.questionnaireState,
+		questionnaireQueueDepth: options.questionnaireQueueDepth,
 		runtime: {
 			metadata: options.metadata ?? { kind: "top-level", createdAt: 1 },
 			diagnostics: [],

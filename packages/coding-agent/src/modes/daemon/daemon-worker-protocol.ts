@@ -8,7 +8,22 @@ import type { IdleEvictionMinutes } from "../../core/session-action-store.js";
 
 export { SESSION_LEASE_OWNER_ID_ENV, SESSION_LEASES_ENABLED_ENV } from "../../core/session-lease.js";
 
-import type { DaemonClientCapability, DaemonCommand, DaemonOutbound } from "./daemon-protocol.js";
+import type {
+	DaemonClientCapability,
+	DaemonCommand,
+	DaemonExtensionUIResponse,
+	DaemonOutbound,
+} from "./daemon-protocol.js";
+import type {
+	QuestionnaireLease,
+	QuestionnaireOfferResult,
+	QuestionnaireWorkerOfferNeed,
+} from "./questionnaire-broker.js";
+import type { QuestionnaireLegacyPrimitiveRequest } from "./questionnaire-legacy-adapter.js";
+import type {
+	QuestionnairePresentationSnapshot,
+	QuestionnaireWorkerMutation,
+} from "./questionnaire-worker-authority.js";
 
 export const DAEMON_WORKER_ROLE_ENV = "PRIME_AGENT_INTERNAL_DAEMON_WORKER";
 export const DAEMON_WORKER_TOKEN_ENV = "PRIME_AGENT_INTERNAL_DAEMON_WORKER_TOKEN";
@@ -19,11 +34,41 @@ export const DAEMON_WORKER_STARTUP_GATE_FD_ENV = "PRIME_AGENT_INTERNAL_DAEMON_WO
 export const DAEMON_WORKER_STARTUP_GATE_COMMIT = "start\n";
 export type DaemonWorkerLifecycle = "starting" | "ready" | "recovering" | "failed";
 
+export type WorkerQuestionnaireBrokerMessage =
+	| { type: "presenter_needed"; need: Omit<QuestionnaireWorkerOfferNeed, "workerId"> }
+	| { type: "withdraw"; lease: QuestionnaireLease }
+	| {
+			type: "legacy_request";
+			activeSessionId: string;
+			lease: QuestionnaireLease;
+			requestId: string;
+			request: QuestionnaireLegacyPrimitiveRequest;
+	  };
+
+export interface WorkerQuestionnairePresentationMessage {
+	activeSessionId: string;
+	snapshot: QuestionnairePresentationSnapshot;
+}
+
 export type DaemonWorkerFrameHeader =
 	| {
 			kind: "command";
 			requestId: string;
 			commandType: string;
+	  }
+	| {
+			kind: "questionnaire_broker";
+			messageType: WorkerQuestionnaireBrokerMessage["type"];
+	  }
+	| {
+			kind: "questionnaire_presentation";
+			supervisorGeneration: string;
+			activeSessionId: string;
+			connectionId: string;
+			logicalRequestId: string;
+			offerId: string;
+			leaseEpoch: number;
+			authoritativeRevision: number;
 	  }
 	| {
 			kind: "outbound";
@@ -37,6 +82,29 @@ export type DaemonWorkerFrameHeader =
 	  };
 
 export type DaemonCreateCommand = Extract<DaemonCommand, { type: "create" }>;
+
+export interface WorkerUiClient {
+	logicalClientId: string;
+	connectionId: string;
+	activeSessionId: string;
+	capabilities: readonly DaemonClientCapability[];
+	presentable: boolean;
+}
+
+export interface WorkerUiClientsSync {
+	supervisorGeneration: string;
+	syncRevision: number;
+	clients: readonly WorkerUiClient[];
+	complete: true;
+}
+
+export interface WorkerUiClientDelta {
+	supervisorGeneration: string;
+	syncRevision: number;
+	change:
+		| { type: "upsert"; client: WorkerUiClient }
+		| { type: "detach"; connectionId: string; activeSessionId: string };
+}
 
 export type DaemonWorkerCommand =
 	| {
@@ -56,6 +124,29 @@ export type DaemonWorkerCommand =
 			supportsExtensionUi?: boolean;
 	  }
 	| { id?: string; type: "worker_unsubscribe"; activeSessionId: string }
+	| ({ id?: string; type: "worker_ui_clients_sync" } & WorkerUiClientsSync)
+	| ({ id?: string; type: "worker_ui_client_delta" } & WorkerUiClientDelta)
+	| { id?: string; type: "worker_questionnaire_offer_result"; result: QuestionnaireOfferResult }
+	| {
+			id?: string;
+			type: "worker_questionnaire_lease_revoked";
+			lease: QuestionnaireLease;
+			reason: "client_lost" | "presentability_lost" | "presentation_error";
+	  }
+	| { id?: string; type: "worker_questionnaire_dismiss"; lease: QuestionnaireLease }
+	| {
+			id?: string;
+			type: "worker_questionnaire_legacy_response";
+			lease: QuestionnaireLease;
+			requestId: string;
+			connectionId: string;
+			response: DaemonExtensionUIResponse;
+	  }
+	| ({
+			id?: string;
+			type: "worker_questionnaire_checkpoint" | "worker_questionnaire_submit";
+	  } & QuestionnaireWorkerMutation)
+	| { id?: string; type: "worker_questionnaire_terminal_ack"; logicalRequestId: string }
 	| { id?: string; type: "worker_sync_agent_peers"; peers: AgentSessionMessageAgentSummary[] }
 	| { id?: string; type: "worker_archive_and_shutdown" }
 	| {
@@ -152,6 +243,24 @@ export function isDaemonWorkerFrameHeader(value: unknown): value is DaemonWorker
 	if (candidate.kind === "command") {
 		return typeof candidate.requestId === "string" && typeof candidate.commandType === "string";
 	}
+	if (candidate.kind === "questionnaire_broker") {
+		return (
+			candidate.messageType === "presenter_needed" ||
+			candidate.messageType === "withdraw" ||
+			candidate.messageType === "legacy_request"
+		);
+	}
+	if (candidate.kind === "questionnaire_presentation") {
+		return (
+			typeof candidate.supervisorGeneration === "string" &&
+			typeof candidate.activeSessionId === "string" &&
+			typeof candidate.connectionId === "string" &&
+			typeof candidate.logicalRequestId === "string" &&
+			typeof candidate.offerId === "string" &&
+			Number.isInteger(candidate.leaseEpoch) &&
+			Number.isInteger(candidate.authoritativeRevision)
+		);
+	}
 	return (
 		candidate.kind === "outbound" &&
 		typeof candidate.outboundType === "string" &&
@@ -166,5 +275,113 @@ export function isDaemonWorkerFrameHeader(value: unknown): value is DaemonWorker
 		(candidate.payloadEncoding === undefined ||
 			candidate.payloadEncoding === "jsonl" ||
 			candidate.payloadEncoding === "assistant-delta")
+	);
+}
+
+function hasExactKeys(candidate: Record<string, unknown>, expected: readonly string[]): boolean {
+	const actual = Object.keys(candidate).sort();
+	const sortedExpected = [...expected].sort();
+	return actual.length === sortedExpected.length && actual.every((key, index) => key === sortedExpected[index]);
+}
+
+function isQuestionnaireLease(value: unknown): value is QuestionnaireLease {
+	if (!value || typeof value !== "object") return false;
+	const candidate = value as Record<string, unknown>;
+	return (
+		hasExactKeys(candidate, [
+			"supervisorGeneration",
+			"logicalRequestId",
+			"offerId",
+			"leaseEpoch",
+			"logicalClientId",
+			"connectionId",
+			"mode",
+		]) &&
+		typeof candidate.supervisorGeneration === "string" &&
+		typeof candidate.logicalRequestId === "string" &&
+		typeof candidate.offerId === "string" &&
+		Number.isInteger(candidate.leaseEpoch) &&
+		(candidate.leaseEpoch as number) >= 0 &&
+		typeof candidate.logicalClientId === "string" &&
+		typeof candidate.connectionId === "string" &&
+		(candidate.mode === "rich" || candidate.mode === "legacy")
+	);
+}
+
+function isQuestionnaireLegacyPrimitiveRequest(value: unknown): value is QuestionnaireLegacyPrimitiveRequest {
+	if (!value || typeof value !== "object") return false;
+	const candidate = value as Record<string, unknown>;
+	if (!candidate.payload || typeof candidate.payload !== "object") return false;
+	const payload = candidate.payload as Record<string, unknown>;
+	if (candidate.method === "select") {
+		return (
+			hasExactKeys(candidate, ["method", "payload"]) &&
+			hasExactKeys(payload, ["title", "options"]) &&
+			typeof payload.title === "string" &&
+			Array.isArray(payload.options) &&
+			payload.options.every((option) => typeof option === "string")
+		);
+	}
+	if (candidate.method === "input") {
+		return (
+			hasExactKeys(candidate, ["method", "payload"]) &&
+			Object.keys(payload).every((key) => key === "title" || key === "placeholder") &&
+			typeof payload.title === "string" &&
+			(payload.placeholder === undefined || typeof payload.placeholder === "string")
+		);
+	}
+	return (
+		candidate.method === "editor" &&
+		hasExactKeys(candidate, ["method", "payload"]) &&
+		hasExactKeys(payload, ["title", "prefill"]) &&
+		typeof payload.title === "string" &&
+		typeof payload.prefill === "string"
+	);
+}
+
+export function isWorkerQuestionnaireBrokerMessage(value: unknown): value is WorkerQuestionnaireBrokerMessage {
+	if (!value || typeof value !== "object") return false;
+	const candidate = value as Record<string, unknown>;
+	if (candidate.type === "withdraw") {
+		return hasExactKeys(candidate, ["type", "lease"]) && isQuestionnaireLease(candidate.lease);
+	}
+	if (candidate.type === "legacy_request") {
+		return (
+			hasExactKeys(candidate, ["type", "activeSessionId", "lease", "requestId", "request"]) &&
+			typeof candidate.activeSessionId === "string" &&
+			typeof candidate.requestId === "string" &&
+			isQuestionnaireLease(candidate.lease) &&
+			candidate.lease.mode === "legacy" &&
+			isQuestionnaireLegacyPrimitiveRequest(candidate.request)
+		);
+	}
+	if (
+		candidate.type !== "presenter_needed" ||
+		!hasExactKeys(candidate, ["type", "need"]) ||
+		!candidate.need ||
+		typeof candidate.need !== "object"
+	) {
+		return false;
+	}
+	const need = candidate.need as Record<string, unknown>;
+	return (
+		hasExactKeys(need, [
+			"supervisorGeneration",
+			"activeSessionId",
+			"logicalRequestId",
+			"offerId",
+			"leaseEpoch",
+			"createdAt",
+			"mode",
+		]) &&
+		typeof need.supervisorGeneration === "string" &&
+		typeof need.activeSessionId === "string" &&
+		typeof need.logicalRequestId === "string" &&
+		typeof need.offerId === "string" &&
+		Number.isInteger(need.leaseEpoch) &&
+		(need.leaseEpoch as number) >= 0 &&
+		typeof need.createdAt === "number" &&
+		Number.isFinite(need.createdAt) &&
+		(need.mode === "undecided" || need.mode === "rich" || need.mode === "legacy")
 	);
 }

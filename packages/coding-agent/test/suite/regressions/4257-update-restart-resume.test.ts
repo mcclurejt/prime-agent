@@ -101,7 +101,9 @@ function createDaemonInternals(
 
 function createWriteClient(writes: string[], options: { id?: string; attached?: string[] } = {}): DaemonSocketClient {
 	return {
-		id: options.id ?? "client-1",
+		connectionId: `connection-${options.id ?? "client-1"}`,
+		logicalClientId: options.id ?? "client-1",
+		protocolClientId: options.id ?? "client-1",
 		socket: {
 			destroyed: false,
 			write: vi.fn((chunk: string) => {
@@ -113,7 +115,7 @@ function createWriteClient(writes: string[], options: { id?: string; attached?: 
 		detachInput: vi.fn(),
 		supportsExtensionUi: false,
 		capabilities: new Set(),
-	} as DaemonSocketClient;
+	};
 }
 
 function hasArchivedState(harness: Harness): boolean {
@@ -272,16 +274,7 @@ describe("issue #4257 update restart resume", () => {
 		const internals = createDaemonInternals(harness, { worker: true });
 		internals.mutationDrain.begin();
 		const writes: string[] = [];
-		const client = {
-			id: "supervisor",
-			socket: {
-				destroyed: false,
-				write: (chunk: string) => {
-					writes.push(chunk);
-					return true;
-				},
-			},
-		} as unknown as DaemonSocketClient;
+		const client = createWriteClient(writes, { id: "supervisor" });
 
 		if (release === "cancel") {
 			const prepare = internals.handleWorkerCommand(client, { id: "prepare", type: "worker_prepare_update" });
@@ -518,17 +511,7 @@ describe("issue #4257 update restart resume", () => {
 		harnesses.push(harness);
 		const internals = createDaemonInternals(harness);
 		const writes: string[] = [];
-		const makeClient = (id: string) =>
-			({
-				id,
-				socket: {
-					destroyed: false,
-					write: (chunk: string) => {
-						writes.push(chunk);
-						return true;
-					},
-				},
-			}) as unknown as DaemonSocketClient;
+		const makeClient = (id: string) => createWriteClient(writes, { id });
 		await run({ internals, makeClient, writes });
 	});
 

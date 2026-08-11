@@ -22,6 +22,19 @@ interface SupervisorHarness {
 	handleLine(client: DaemonSocketClient, line: string): Promise<void>;
 }
 
+function socketClient(): DaemonSocketClient {
+	return {
+		connectionId: "connection-client-1",
+		logicalClientId: "client-1",
+		protocolClientId: "client-1",
+		socket: { destroyed: false } as DaemonSocketClient["socket"],
+		attachedActiveSessionIds: new Set(),
+		detachInput: vi.fn(),
+		supportsExtensionUi: false,
+		capabilities: new Set(),
+	};
+}
+
 describe("ENG-4620 fast mode child agents", () => {
 	it("allows service-tier changes through the daemon supervisor", async () => {
 		const handleCommand = vi.fn(
@@ -50,7 +63,7 @@ describe("ENG-4620 fast mode child agents", () => {
 			write,
 			log: vi.fn(),
 		}) as SupervisorHarness;
-		const client = { id: "client-1" } as DaemonSocketClient;
+		const client = socketClient();
 		const command = {
 			id: "tier-1",
 			type: "set_service_tier",

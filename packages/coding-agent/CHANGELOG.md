@@ -3,11 +3,15 @@
 ## [Unreleased]
 
 - Added the active session name to the top right of the interactive editor.
+- Added typed questionnaire contracts, validation and canonical byte-budget helpers for extensions.
+- Added a responsive interactive questionnaire UI for in-process extensions.
+- Added daemon-brokered questionnaire presentation with connection-incarnation leases, worker-authoritative CAS drafts, targeted rich TUI rendering, brokered legacy UI fallback, lifecycle settlement, and capability-gated protocol advertisement.
 
 ### Fixed
 
 - Fixed root session replacements dropping agent messaging, observation, and RLM heartbeat controllers, and kept saved depth-zero forks top-level in the agents view.
 - Fixed heartbeat skills being exposed when their required host controllers were unavailable.
+- Fixed daemon worker clients dropping questionnaire broker frames, transient busy responses permanently disabling presentation, reloads failing to restore presentation, and invalid legacy text wedging an active questionnaire.
 
 ## [0.7.0] - 2026-08-05
 

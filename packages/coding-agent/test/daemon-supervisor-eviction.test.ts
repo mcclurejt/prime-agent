@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { DaemonSocketClient } from "../src/modes/daemon/active-session-state.js";
 import { success } from "../src/modes/daemon/daemon-protocol.js";
 import type { SessionSummary } from "../src/modes/daemon/daemon-session-list.js";
 import { DaemonSupervisor, idleEvictionSweepIntervalMs } from "../src/modes/daemon/daemon-supervisor.js";
@@ -29,7 +30,7 @@ interface WorkerFixture {
 
 interface SupervisorInternals {
 	workers: Map<string, WorkerFixture>;
-	clients: Set<{ id: string; attachedActiveSessionIds: Set<string> }>;
+	clients: Set<DaemonSocketClient>;
 	idleEvictionFence?: Promise<void>;
 	catalog: { resolve: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> };
 	createOrReuseWorker: ReturnType<typeof vi.fn>;
@@ -38,7 +39,7 @@ interface SupervisorInternals {
 	scheduleIdleEvictionSweep(): void;
 	runIdleEvictionSweep(now?: number): Promise<void>;
 	shutdown(exitCode: number, stopWorkers: boolean): Promise<never>;
-	handleCommand(client: object, command: object): Promise<unknown>;
+	handleCommand(client: DaemonSocketClient, command: object): Promise<unknown>;
 }
 
 const tempDirs: string[] = [];
@@ -46,6 +47,19 @@ const tempDirs: string[] = [];
 afterEach(() => {
 	for (const directory of tempDirs.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
+
+function makeClient(logicalClientId: string, attachedActiveSessionIds: string[] = []): DaemonSocketClient {
+	return {
+		connectionId: `connection-${logicalClientId}`,
+		logicalClientId,
+		protocolClientId: logicalClientId,
+		socket: { destroyed: false } as DaemonSocketClient["socket"],
+		attachedActiveSessionIds: new Set(attachedActiveSessionIds),
+		detachInput: vi.fn(),
+		supportsExtensionUi: false,
+		capabilities: new Set(),
+	};
+}
 
 function makeSummary(id: string, now: number, overrides: Partial<SessionSummary> = {}): SessionSummary {
 	return {
@@ -122,7 +136,7 @@ describe("daemon supervisor whole-tree eviction", () => {
 		for (const worker of [idle, active, heartbeat, cron, attached]) {
 			supervisor.workers.set(worker.descriptor.workerId, worker);
 		}
-		supervisor.clients.add({ id: "viewer", attachedActiveSessionIds: new Set(["attached-root"]) });
+		supervisor.clients.add(makeClient("viewer", ["attached-root"]));
 
 		await supervisor.runIdleEvictionSweep(now);
 
@@ -284,7 +298,7 @@ describe("daemon supervisor whole-tree eviction", () => {
 		const reopened = makeWorker("reopened", [rootSummary]);
 		reopened.descriptor.rootActiveSessionId = "new-active-id";
 		supervisor.createOrReuseWorker = vi.fn(async () => reopened);
-		const client = { id: "viewer", attachedActiveSessionIds: new Set<string>() };
+		const client = makeClient("viewer");
 
 		const response = await supervisor.handleCommand(client, {
 			id: "create-1",
@@ -326,7 +340,7 @@ describe("daemon supervisor whole-tree eviction", () => {
 		supervisor.workers.set("source", source);
 		supervisor.catalog.resolve = vi.fn(async () => "/tmp/target.jsonl");
 		supervisor.createOrReuseWorker = vi.fn(async () => target);
-		const client = { id: "sender", attachedActiveSessionIds: new Set<string>() };
+		const client = makeClient("sender");
 
 		const response = await supervisor.handleCommand(client, {
 			id: "message-1",
@@ -368,7 +382,7 @@ describe("daemon supervisor whole-tree eviction", () => {
 			data: { deliveryStatus: "delivered" },
 		});
 		supervisor.workers.set("shared", worker);
-		const client = { id: "sender", attachedActiveSessionIds: new Set<string>() };
+		const client = makeClient("sender");
 
 		const response = await supervisor.handleCommand(client, {
 			id: "message-same-worker",
@@ -403,7 +417,7 @@ describe("daemon supervisor whole-tree eviction", () => {
 		supervisor.catalog.resolve = vi.fn(async () => {
 			throw new Error("Unknown saved session: missing-target");
 		});
-		const client = { id: "sender", attachedActiveSessionIds: new Set<string>() };
+		const client = makeClient("sender");
 
 		await expect(
 			supervisor.handleCommand(client, {
@@ -428,7 +442,7 @@ describe("daemon supervisor whole-tree eviction", () => {
 			throw new Error('Ambiguous session selector "target"');
 		});
 		supervisor.createOrReuseWorker = vi.fn();
-		const client = { id: "sender", attachedActiveSessionIds: new Set<string>() };
+		const client = makeClient("sender");
 
 		await expect(
 			supervisor.handleCommand(client, {

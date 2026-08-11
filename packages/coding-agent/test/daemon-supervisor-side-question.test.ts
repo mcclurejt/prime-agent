@@ -18,6 +18,19 @@ interface SupervisorHarness {
 	handleLine(client: DaemonSocketClient, line: string): Promise<void>;
 }
 
+function socketClient(logicalClientId: string): DaemonSocketClient {
+	return {
+		connectionId: `connection-${logicalClientId}`,
+		logicalClientId,
+		protocolClientId: logicalClientId,
+		socket: { destroyed: false } as DaemonSocketClient["socket"],
+		attachedActiveSessionIds: new Set(),
+		detachInput: vi.fn(),
+		supportsExtensionUi: false,
+		capabilities: new Set(),
+	};
+}
+
 describe("daemon supervisor side-question routing", () => {
 	it("accepts start and abort commands before forwarding them to a worker", async () => {
 		const handleCommand = vi.fn(
@@ -34,7 +47,6 @@ describe("daemon supervisor side-question routing", () => {
 			ownership: { assertCurrent: vi.fn(async () => undefined) },
 			workers: new Map(),
 			clients: new Set(),
-			protocolClientIds: new WeakMap(),
 			mutationDrain: new MutationDrainLatch(),
 			commandJournal: {
 				lookup: vi.fn(() => undefined),
@@ -46,7 +58,7 @@ describe("daemon supervisor side-question routing", () => {
 			write,
 			log: vi.fn(),
 		}) as SupervisorHarness;
-		const client = { id: "client-1" } as DaemonSocketClient;
+		const client = socketClient("client-1");
 		const commands = [
 			{
 				id: "start-1",
@@ -66,7 +78,7 @@ describe("daemon supervisor side-question routing", () => {
 		for (const command of commands) {
 			await supervisor.handleLine(
 				client,
-				JSON.stringify(createDaemonCommandEnvelope(command, command.id!, client.id)),
+				JSON.stringify(createDaemonCommandEnvelope(command, command.id!, client.logicalClientId)),
 			);
 		}
 
@@ -84,7 +96,6 @@ describe("daemon supervisor side-question routing", () => {
 			ownership: { assertCurrent: vi.fn(async () => undefined) },
 			workers: new Map(),
 			clients: new Set(),
-			protocolClientIds: new WeakMap(),
 			mutationDrain: new MutationDrainLatch(),
 			commandJournal: {
 				lookup: vi.fn(() => undefined),
@@ -96,7 +107,7 @@ describe("daemon supervisor side-question routing", () => {
 			write,
 			log: vi.fn(),
 		}) as SupervisorHarness;
-		const client = { id: "old-client" } as DaemonSocketClient;
+		const client = socketClient("old-client");
 		const command = { type: "get_state", activeSessionId: "active-1" } as const;
 
 		await supervisor.handleLine(

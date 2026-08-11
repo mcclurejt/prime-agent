@@ -118,6 +118,10 @@ class ResumeDaemonClient {
 		}
 	}
 
+	supportsServerCapability(_capability: string): boolean {
+		return false;
+	}
+
 	close(): void {}
 }
 
@@ -195,7 +199,8 @@ function asDaemonClient(client: ResumeDaemonClient): DaemonClient {
 
 function createSocketClient(id: string, attachedActiveSessionIds: string[]): DaemonSocketClient {
 	return {
-		id,
+		connectionId: `connection-${id}`,
+		logicalClientId: id,
 		socket: { destroyed: false } as DaemonSocketClient["socket"],
 		attachedActiveSessionIds: new Set(attachedActiveSessionIds),
 		detachInput: () => {},

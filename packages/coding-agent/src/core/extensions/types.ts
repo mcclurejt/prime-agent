@@ -78,6 +78,131 @@ export type { AppKeybinding, KeybindingsManager } from "../keybindings.js";
 // UI Context
 // ============================================================================
 
+export type ExtensionQuestionnaireChoice = {
+	id: string;
+	label: string;
+	description?: string;
+};
+
+export type ExtensionQuestionnaireQuestionBase = {
+	id: string;
+	label?: string;
+	prompt: string;
+};
+
+export type ExtensionQuestionnaireQuestion =
+	| (ExtensionQuestionnaireQuestionBase & {
+			kind: "confirm";
+			yesLabel?: string;
+			noLabel?: string;
+			other?: { label?: string; placeholder?: string };
+	  })
+	| (ExtensionQuestionnaireQuestionBase & {
+			kind: "single-select";
+			choices: ExtensionQuestionnaireChoice[];
+			other?: { label?: string; placeholder?: string };
+	  })
+	| (ExtensionQuestionnaireQuestionBase & {
+			kind: "multi-select";
+			choices: ExtensionQuestionnaireChoice[];
+			other?: { label?: string; placeholder?: string };
+	  })
+	| (ExtensionQuestionnaireQuestionBase & {
+			kind: "short-text";
+			placeholder?: string;
+			initialValue?: string;
+	  })
+	| (ExtensionQuestionnaireQuestionBase & {
+			kind: "multiline-text";
+			placeholder?: string;
+			initialValue?: string;
+	  });
+
+export type ExtensionQuestionnaireRequestV1 = {
+	version: 1;
+	title?: string;
+	questions: ExtensionQuestionnaireQuestion[];
+	submitLabel?: string;
+};
+
+export type ExtensionQuestionnaireResponse =
+	| { questionId: string; status: "unanswered" }
+	| { questionId: string; status: "answered"; kind: "confirm"; value: boolean }
+	| { questionId: string; status: "answered"; kind: "confirm"; otherText: string }
+	| { questionId: string; status: "answered"; kind: "single-select"; choiceId: string }
+	| { questionId: string; status: "answered"; kind: "single-select"; otherText: string }
+	| {
+			questionId: string;
+			status: "answered";
+			kind: "multi-select";
+			choiceIds: string[];
+			otherText?: string;
+	  }
+	| {
+			questionId: string;
+			status: "answered";
+			kind: "short-text" | "multiline-text";
+			value: string;
+	  };
+
+export type ExtensionQuestionnaireOutcome =
+	| { status: "submitted"; responses: ExtensionQuestionnaireResponse[] }
+	| { status: "dismissed" }
+	| { status: "unsupported" }
+	| { status: "indeterminate"; reason: "legacy-cancelled-or-presentation-lost" }
+	| { status: "aborted"; reason: "signal" }
+	| {
+			status: "terminated";
+			reason:
+				| "extension-reload"
+				| "runtime-replaced"
+				| "session-killed"
+				| "session-completed"
+				| "daemon-shutdown"
+				| "daemon-update";
+	  };
+
+export type ExtensionQuestionnaireDraftStep = { kind: "question"; questionId: string } | { kind: "review" };
+
+export type ExtensionQuestionnaireDraftQuestionState =
+	| {
+			questionId: string;
+			kind: "confirm";
+			selection: "yes" | "no" | "other" | null;
+			otherEditorOpen: boolean;
+			otherText: string;
+	  }
+	| {
+			questionId: string;
+			kind: "single-select";
+			selection: { kind: "choice"; choiceId: string } | { kind: "other" } | null;
+			otherEditorOpen: boolean;
+			otherText: string;
+	  }
+	| {
+			questionId: string;
+			kind: "multi-select";
+			choiceIds: string[];
+			otherSelected: boolean;
+			otherEditorOpen: boolean;
+			otherText: string;
+	  }
+	| {
+			questionId: string;
+			kind: "short-text" | "multiline-text";
+			value: string;
+	  };
+
+export type ExtensionQuestionnaireDraftV1 = {
+	version: 1;
+	currentStep: ExtensionQuestionnaireDraftStep;
+	states: ExtensionQuestionnaireDraftQuestionState[];
+};
+
+export interface ExtensionQuestionnaireOptions {
+	signal?: AbortSignal;
+}
+
 /** Options for extension UI dialogs. */
 export interface ExtensionUIDialogOptions {
 	/** AbortSignal to programmatically dismiss the dialog. */
@@ -115,6 +240,12 @@ export type EditorFactory = (tui: TUI, theme: EditorTheme, keybindings: Keybindi
  * Each mode (interactive, RPC, print) provides its own implementation.
  */
 export interface ExtensionUIContext {
+	/** Present a declarative questionnaire when this UI supports it. */
+	questionnaire?: (
+		request: ExtensionQuestionnaireRequestV1,
+		options?: ExtensionQuestionnaireOptions,
+	) => Promise<ExtensionQuestionnaireOutcome>;
+
 	/** Show a selector and return the user's choice. */
 	select(title: string, options: string[], opts?: ExtensionUIDialogOptions): Promise<string | undefined>;
 
