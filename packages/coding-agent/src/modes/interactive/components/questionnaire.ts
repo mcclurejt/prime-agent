@@ -903,6 +903,9 @@ export class QuestionnaireComponent implements Component, Focusable {
 	): { lines: string[]; anchor: number } {
 		const state = this.model.getState(question.id);
 		const cursor = this.choiceCursors.get(question.id) ?? 0;
+		const otherText = this.model.getOtherText(question.id);
+		const otherLabel = (selected: boolean): string =>
+			selected && otherText.trim().length > 0 ? otherText : question.other?.label || "Something else…";
 		const rows: Array<{ label: string; description?: string; checked: boolean }> = [];
 		if (question.kind === "confirm" && state.kind === "confirm") {
 			rows.push(
@@ -910,7 +913,7 @@ export class QuestionnaireComponent implements Component, Focusable {
 				{ label: question.noLabel ?? "No", checked: state.selection === "no" },
 			);
 			if (question.other)
-				rows.push({ label: question.other.label ?? "Something else…", checked: state.selection === "other" });
+				rows.push({ label: otherLabel(state.selection === "other"), checked: state.selection === "other" });
 		} else if (question.kind === "single-select" && state.kind === "single-select") {
 			for (const choice of question.choices) {
 				rows.push({
@@ -920,7 +923,10 @@ export class QuestionnaireComponent implements Component, Focusable {
 				});
 			}
 			if (question.other)
-				rows.push({ label: question.other.label ?? "Something else…", checked: state.selection?.kind === "other" });
+				rows.push({
+					label: otherLabel(state.selection?.kind === "other"),
+					checked: state.selection?.kind === "other",
+				});
 		} else if (question.kind === "multi-select" && state.kind === "multi-select") {
 			for (const choice of question.choices) {
 				rows.push({
@@ -929,8 +935,7 @@ export class QuestionnaireComponent implements Component, Focusable {
 					checked: state.choiceIds.includes(choice.id),
 				});
 			}
-			if (question.other)
-				rows.push({ label: question.other.label ?? "Something else…", checked: state.otherSelected });
+			if (question.other) rows.push({ label: otherLabel(state.otherSelected), checked: state.otherSelected });
 		}
 		const lines: string[] = [];
 		let anchor = 0;

@@ -43,7 +43,7 @@ const request: ExtensionQuestionnaireRequestV1 = {
 				{ id: "east", label: "East" },
 				{ id: "west", label: "West" },
 			],
-			other: {},
+			other: { label: "Custom test answer" },
 		},
 		{ id: "short", label: "Name", kind: "short-text", prompt: "Name?", initialValue: "alpha" },
 		{ id: "long", label: "Notes", kind: "multiline-text", prompt: "Notes?" },
@@ -255,6 +255,12 @@ describe("QuestionnaireComponent", () => {
 		const output = stripAnsi(component.render(80).join("\n"));
 		expect(output).toContain("Space toggle");
 		expect(output).toContain("[▶ Regions]");
+		expect(output).toContain("custom region");
+		expect(output).not.toContain("Custom test answer");
+		component.handleInput(" ");
+		const deselectedOutput = stripAnsi(component.render(80).join("\n"));
+		expect(deselectedOutput).toContain("Custom test answer");
+		expect(deselectedOutput).not.toContain("custom region");
 		component.handleInput("\x1b[C");
 		expect(component.model.currentStep).toEqual({ kind: "question", questionId: "short" });
 	});
