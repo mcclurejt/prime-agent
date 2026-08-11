@@ -634,10 +634,13 @@ export function buildAgentsViewRows(
 	);
 	const isDirectScopeChild = (summary: SessionSummary): boolean =>
 		scopeRoot !== undefined && getParentKeys(summary).some((key) => scopeRootKeys.has(key));
-	const baseRows = inputs.map(
-		({ summary, record }): MutableAgentsViewRow => ({
+	const baseRows = inputs.map(({ summary, record }): MutableAgentsViewRow => {
+		const section = record?.section ?? classifyAgentsViewSession(summary);
+		return {
 			kind: isSubagentSummary(summary) && !isDirectScopeChild(summary) ? "subagent" : "agent",
-			section: record?.section ?? classifyAgentsViewSession(summary),
+			// Needs Input is a global inbox. Scoped views retain the original three
+			// categories, where a non-busy session belongs in Idle.
+			section: scope && section === "needs-input" ? "idle" : section,
 			summary,
 			title: getAgentsViewSessionTitle(summary),
 			subtitle: getSessionSubtitle(summary),
@@ -647,8 +650,8 @@ export function buildAgentsViewRows(
 			runningSubagentCount: 0,
 			identity: record?.identity ?? getAgentsViewSummaryIdentity(summary),
 			...(record ? { record, heartbeat: record.heartbeat } : {}),
-		}),
-	);
+		};
+	});
 	const rowsByKey = buildRowKeyMap(baseRows);
 	const childrenByParent = new Map<MutableAgentsViewRow, MutableAgentsViewRow[]>();
 	const parentByChild = new Map<MutableAgentsViewRow, MutableAgentsViewRow>();
