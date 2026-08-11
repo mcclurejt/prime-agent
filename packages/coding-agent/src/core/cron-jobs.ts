@@ -12,6 +12,8 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { lockSync } from "proper-lockfile";
 
+export const RLM_HEARTBEAT_SKILL_NAME = "rlm-heartbeat";
+
 export type AgentCronJobStatus = "active" | "paused" | "completed" | "cancelled";
 export type AgentCronScheduleKind = "once" | "cron" | "interval";
 export type AgentCronJobSource = "cron" | "heartbeat" | "rlm_heartbeat";

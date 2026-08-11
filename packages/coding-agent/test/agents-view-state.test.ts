@@ -21,6 +21,7 @@ import {
 	resolveAgentsViewSessionUiServices,
 	shouldReconnectAgentsViewDaemon,
 } from "../src/modes/agents-view/agents-view-mode.js";
+import { summaryForUnifiedRecord } from "../src/modes/agents-view/agents-view-state.js";
 import {
 	type AgentsViewScopeFrame,
 	aggregateSessionHeartbeats,
@@ -96,6 +97,38 @@ describe("agents view state", () => {
 				}),
 			),
 		).toBe("inactive");
+	});
+
+	test("uses explicit saved RLM depth rather than fork ancestry for hierarchy", () => {
+		const fork = summaryForUnifiedRecord(
+			reconcileUnifiedSessions(
+				[],
+				[
+					makeSessionInfo({
+						id: "fork-root",
+						path: "/tmp/fork-root.jsonl",
+						parentSessionPath: "/tmp/fork-origin.jsonl",
+						rlmDepth: 0,
+					}),
+				],
+			)[0]!,
+		);
+		const child = summaryForUnifiedRecord(
+			reconcileUnifiedSessions(
+				[],
+				[
+					makeSessionInfo({
+						id: "rlm-child",
+						path: "/tmp/rlm-child.jsonl",
+						parentSessionPath: "/tmp/fork-root.jsonl",
+						rlmDepth: 1,
+					}),
+				],
+			)[0]!,
+		);
+
+		expect(fork).toMatchObject({ runtimeKind: "top-level", rlmDepth: 0, lifecycle: "archived" });
+		expect(child).toMatchObject({ runtimeKind: "subagent", rlmDepth: 1, lifecycle: "archived" });
 	});
 
 	test("places all non-busy resident sessions in Idle", () => {

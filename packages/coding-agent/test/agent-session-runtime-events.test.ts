@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { AgentSessionMessageController } from "../src/core/agent-messages.js";
+import type { AgentObserveController } from "../src/core/agent-observe.js";
 import {
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionFromServices,
@@ -10,9 +12,11 @@ import {
 	createAgentSessionServices,
 } from "../src/core/agent-session-runtime.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
+import type { AgentRlmHeartbeatController } from "../src/core/cron-jobs.js";
 import { SESSION_LEASE_OWNER_ID_ENV, SESSION_LEASES_ENABLED_ENV } from "../src/core/session-lease.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import type { ExtensionFactory } from "../src/index.js";
+import { createTestResourceLoader } from "./utilities.js";
 
 describe("AgentSessionRuntime session lifecycle events", () => {
 	const cleanups: Array<() => Promise<void> | void> = [];
@@ -24,7 +28,16 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 		vi.unstubAllEnvs();
 	});
 
-	async function createRuntimeHost(extensionFactory: ExtensionFactory) {
+	type HostControllerOptions = {
+		agentMessageController?: AgentSessionMessageController;
+		agentObserveController?: AgentObserveController;
+		rlmHeartbeatController?: AgentRlmHeartbeatController;
+	};
+
+	async function createRuntimeHost(
+		extensionFactory: ExtensionFactory,
+		hostControllerOptions: HostControllerOptions = {},
+	) {
 		const tempDir = join(tmpdir(), `pi-runtime-events-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(tempDir, { recursive: true });
 
@@ -45,26 +58,52 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 				noThemes: true,
 			},
 		};
-		const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager, sessionStartEvent }) => {
-			const services = await createAgentSessionServices({
-				...runtimeOptions,
-				cwd,
-			});
-			return {
-				...(await createAgentSessionFromServices({
+		const createRuntime: CreateAgentSessionRuntimeFactory = vi.fn(
+			async ({ cwd, sessionManager, sessionStartEvent, sessionOptions }) => {
+				const baseServices = await createAgentSessionServices({
+					...runtimeOptions,
+					cwd,
+				});
+				const services = {
+					...baseServices,
+					resourceLoader: createTestResourceLoader({
+						extensionsResult: baseServices.resourceLoader.getExtensions(),
+						skills: ["agent-message", "agent-observe", "rlm-heartbeat"].map((name) => ({
+							name,
+							description: name,
+							filePath: `/skills/${name}/SKILL.md`,
+							baseDir: `/skills/${name}`,
+							sourceInfo: {
+								source: "local" as const,
+								path: `/skills/${name}/SKILL.md`,
+								scope: "project" as const,
+								origin: "top-level" as const,
+							},
+							disableModelInvocation: false,
+							kind: "markdown" as const,
+						})),
+					}),
+				};
+				return {
+					...(await createAgentSessionFromServices({
+						services,
+						sessionManager,
+						sessionStartEvent,
+						model: faux.getModel(),
+						agentMessageController: sessionOptions?.agentMessageController,
+						agentObserveController: sessionOptions?.agentObserveController,
+						rlmHeartbeatController: sessionOptions?.rlmHeartbeatController,
+					})),
 					services,
-					sessionManager,
-					sessionStartEvent,
-					model: faux.getModel(),
-				})),
-				services,
-				diagnostics: services.diagnostics,
-			};
-		};
+					diagnostics: services.diagnostics,
+				};
+			},
+		);
 		const runtimeHost = await createAgentSessionRuntime(createRuntime, {
 			cwd: tempDir,
 			agentDir: tempDir,
 			sessionManager: SessionManager.create(tempDir, join(tempDir, "sessions")),
+			sessionOptions: hostControllerOptions,
 		});
 		await runtimeHost.session.bindExtensions({});
 
@@ -76,8 +115,51 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 			}
 		});
 
-		return { runtimeHost, faux };
+		return { runtimeHost, faux, createRuntime };
 	}
+
+	it("preserves host controller options across a saved-session replacement", async () => {
+		const agentMessageController = {
+			listAgents: () => ({ agents: [] }),
+			sendAgentMessage: () => Promise.reject(new Error("not used")),
+		} satisfies AgentSessionMessageController;
+		const agentObserveController = {
+			listAgents: () => Promise.reject(new Error("not used")),
+			getAgent: () => Promise.reject(new Error("not used")),
+			recentMessages: () => Promise.reject(new Error("not used")),
+		} satisfies AgentObserveController;
+		const rlmHeartbeatController: AgentRlmHeartbeatController = {
+			listRlmHeartbeats: () => [],
+			createRlmHeartbeat: () => {
+				throw new Error("not used");
+			},
+			updateRlmHeartbeat: () => undefined,
+			deleteRlmHeartbeat: () => undefined,
+		};
+		const hostControllerOptions = { agentMessageController, agentObserveController, rlmHeartbeatController };
+		const { runtimeHost, createRuntime } = await createRuntimeHost(() => undefined, hostControllerOptions);
+
+		await runtimeHost.newSession({ parentSession: runtimeHost.session.sessionFile });
+
+		expect(createRuntime).toHaveBeenCalledTimes(2);
+		expect(vi.mocked(createRuntime).mock.calls[1]?.[0].sessionOptions).toEqual(hostControllerOptions);
+		const internals = runtimeHost.session as unknown as {
+			_createKernelHostHandlers(): Record<string, unknown>;
+			_modelVisibleSkills(): { name: string }[];
+		};
+		expect(internals._modelVisibleSkills().map((skill) => skill.name)).toEqual([
+			"agent-message",
+			"agent-observe",
+			"rlm-heartbeat",
+		]);
+		expect(internals._createKernelHostHandlers()).toEqual(
+			expect.objectContaining({
+				"agent_message.list_agents": expect.any(Function),
+				"agent_observe.list": expect.any(Function),
+				"rlm_heartbeat.list": expect.any(Function),
+			}),
+		);
+	});
 
 	it("runs beforeSessionInvalidate after session_shutdown and before rebindSession", async () => {
 		const phases: string[] = [];

@@ -121,8 +121,13 @@ import {
 	loadContextTreeChildFromDisk,
 	loadContextTreeChildrenFromDisk,
 } from "./context-tree.js";
-import type { AgentCronJob, AgentRlmHeartbeatController, AgentRlmHeartbeatStatusUpdate } from "./cron-jobs.js";
-import { normalizeHeartbeatDeliveryMode } from "./cron-jobs.js";
+import {
+	type AgentCronJob,
+	type AgentRlmHeartbeatController,
+	type AgentRlmHeartbeatStatusUpdate,
+	normalizeHeartbeatDeliveryMode,
+	RLM_HEARTBEAT_SKILL_NAME,
+} from "./cron-jobs.js";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.js";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.js";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.js";
@@ -8651,6 +8656,9 @@ export class AgentSession {
 		}
 		if (!this._agentObserveController) {
 			skills = skills.filter((skill) => skill.name !== AGENT_OBSERVE_SKILL_NAME);
+		}
+		if (!this._rlmHeartbeatController) {
+			skills = skills.filter((skill) => skill.name !== RLM_HEARTBEAT_SKILL_NAME);
 		}
 		if (!this._agentObserveController || !this._rlmHeartbeatController) {
 			skills = skills.filter((skill) => skill.name !== ORCHESTRATION_HEARTBEAT_SKILL_NAME);

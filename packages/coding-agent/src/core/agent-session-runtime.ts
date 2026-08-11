@@ -99,6 +99,10 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 		private _diagnostics: AgentSessionRuntimeDiagnostic[] = [],
 		private _modelFallbackMessage?: string,
 		private readonly sessionConfig?: AgentSessionRuntimeConfig,
+		private readonly hostControllerOptions?: Pick<
+			AgentSessionCreationOptions,
+			"agentMessageController" | "agentObserveController" | "rlmHeartbeatController"
+		>,
 		private readonly _metadata: AgentSessionRuntimeMetadata = {
 			kind: "top-level",
 			createdAt: Date.now(),
@@ -459,6 +463,7 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 							previousSessionFile,
 						},
 						sessionConfig: this.sessionConfig,
+						sessionOptions: this.hostControllerOptions,
 					}),
 				),
 			lease,
@@ -502,6 +507,7 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 							previousSessionFile,
 						},
 						sessionConfig: this.sessionConfig,
+						sessionOptions: this.hostControllerOptions,
 					}),
 				),
 			lease,
@@ -573,6 +579,7 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 									previousSessionFile,
 								},
 								sessionConfig: this.sessionConfig,
+								sessionOptions: this.hostControllerOptions,
 							}),
 						),
 					lease,
@@ -602,6 +609,7 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 								previousSessionFile,
 							},
 							sessionConfig: this.sessionConfig,
+							sessionOptions: this.hostControllerOptions,
 						}),
 					),
 				lease,
@@ -635,6 +643,7 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 							previousSessionFile,
 						},
 						sessionConfig: this.sessionConfig,
+						sessionOptions: this.hostControllerOptions,
 					}),
 				),
 			lease,
@@ -695,6 +704,7 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 							previousSessionFile,
 						},
 						sessionConfig: this.sessionConfig,
+						sessionOptions: this.hostControllerOptions,
 					}),
 				),
 			lease,
@@ -783,6 +793,13 @@ export async function createAgentSessionRuntime(
 			result.diagnostics,
 			result.modelFallbackMessage,
 			runtimeOptions.sessionConfig,
+			runtimeOptions.sessionOptions
+				? {
+						agentMessageController: runtimeOptions.sessionOptions.agentMessageController,
+						agentObserveController: runtimeOptions.sessionOptions.agentObserveController,
+						rlmHeartbeatController: runtimeOptions.sessionOptions.rlmHeartbeatController,
+					}
+				: undefined,
 			runtimeOptions.runtimeMetadata,
 			lease,
 		);

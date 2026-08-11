@@ -7,8 +7,10 @@
 
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { AgentObserveController } from "../../src/core/agent-observe.js";
 import { type AgentSessionRuntimeConfig, mergeAgentSessionRuntimeConfig } from "../../src/core/agent-session-config.js";
 import type { AgentRlmHeartbeatController } from "../../src/core/cron-jobs.js";
+import { createTestResourceLoader } from "../utilities.js";
 import { createHarness, type Harness } from "./harness.js";
 
 type SerializedInternals = {
@@ -22,6 +24,7 @@ type SerializedInternals = {
 	_agentObserveController?: unknown;
 	_ipythonKernelProvisioner?: unknown;
 	_createKernelHostHandlers(): Record<string, unknown>;
+	_modelVisibleSkills(): { name: string }[];
 };
 
 describe("Serialized refine config integration (unit)", () => {
@@ -137,6 +140,56 @@ describe("Serialized refine controller availability (unit)", () => {
 		vi.restoreAllMocks();
 		while (harnesses.length > 0) {
 			harnesses.pop()?.cleanup();
+		}
+	});
+
+	it("filters heartbeat skills by their required host controllers", async () => {
+		const agentObserveController = {
+			listAgents: () => Promise.reject(new Error("not used")),
+			getAgent: () => Promise.reject(new Error("not used")),
+			recentMessages: () => Promise.reject(new Error("not used")),
+		} satisfies AgentObserveController;
+		const rlmHeartbeatController = {
+			listRlmHeartbeats: () => [],
+			createRlmHeartbeat: () => {
+				throw new Error("not used");
+			},
+			updateRlmHeartbeat: () => undefined,
+			deleteRlmHeartbeat: () => undefined,
+		} satisfies AgentRlmHeartbeatController;
+		const skills = ["rlm-heartbeat", "orchestration-heartbeat"].map((name) => ({
+			name,
+			description: name,
+			filePath: `/skills/${name}/SKILL.md`,
+			baseDir: `/skills/${name}`,
+			sourceInfo: {
+				source: "local" as const,
+				path: `/skills/${name}/SKILL.md`,
+				scope: "project" as const,
+				origin: "top-level" as const,
+			},
+			disableModelInvocation: false,
+			kind: "markdown" as const,
+		}));
+
+		for (const testCase of [
+			{ observe: false, heartbeat: false, expected: [] },
+			{ observe: true, heartbeat: false, expected: [] },
+			{ observe: false, heartbeat: true, expected: ["rlm-heartbeat"] },
+			{ observe: true, heartbeat: true, expected: ["rlm-heartbeat", "orchestration-heartbeat"] },
+		]) {
+			const harness = await createHarness({
+				persistSession: true,
+				resourceLoader: createTestResourceLoader({ skills }),
+				...(testCase.observe ? { agentObserveController } : {}),
+			});
+			harnesses.push(harness);
+			if (testCase.heartbeat) {
+				harness.session.setRlmHeartbeatController(rlmHeartbeatController);
+			}
+
+			const internals = harness.session as unknown as SerializedInternals;
+			expect(internals._modelVisibleSkills().map((skill) => skill.name)).toEqual(testCase.expected);
 		}
 	});
 

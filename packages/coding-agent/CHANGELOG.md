@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed root session replacements dropping agent messaging, observation, and RLM heartbeat controllers, and kept saved depth-zero forks top-level in the agents view.
+- Fixed heartbeat skills being exposed when their required host controllers were unavailable.
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes
