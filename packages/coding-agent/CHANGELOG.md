@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Fixed scoped session views showing the global Needs Input section.
 - Fixed Needs Input parents with subagents rendering as a duplicate context row.
 - Fixed Needs Input session descendants starting expanded instead of using the normal toggle.
 - Fixed children of Needs Input sessions appearing under Idle.

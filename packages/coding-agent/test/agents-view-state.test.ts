@@ -1505,11 +1505,12 @@ describe("agents view state", () => {
 				runtimeKind: "subagent",
 				parentActiveSessionId: "root-active",
 				parentSessionId: "root-session",
+				taskState: "needs_input",
 			});
 			const scope = { sessionId: "root-session", activeSessionId: "root-active" };
 
 			expect(buildAgentsViewRows([root, child], new Set(), new Set(), scope)).toMatchObject([
-				{ kind: "agent", depth: 0, summary: { sessionId: "child-session" } },
+				{ kind: "agent", depth: 0, section: "idle", summary: { sessionId: "child-session" } },
 			]);
 		});
 
