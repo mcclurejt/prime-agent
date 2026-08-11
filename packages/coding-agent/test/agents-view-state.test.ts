@@ -208,7 +208,7 @@ describe("agents view state", () => {
 		expect(rows.map((row) => [row.title, row.kind, row.section, row.selectable])).toEqual([
 			["Input root", "agent", "needs-input", true],
 			["Input root", "context", "needs-input", false],
-			["Completed child", "subagent", "idle", true],
+			["1 subagent", "subagent-summary", "needs-input", true],
 		]);
 	});
 

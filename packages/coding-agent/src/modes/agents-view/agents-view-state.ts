@@ -715,9 +715,26 @@ export function buildAgentsViewRows(
 			};
 			context.depth = depth;
 			flattened.push(context);
-			for (const child of children.sort(compareAgentsViewRows)) {
-				child.parentIdentity = context.identity;
-				emit(child, depth + 1);
+			const contextChildren = children.filter(
+				(child) => child.section !== "needs-input" || hasOrdinaryDescendant(child),
+			);
+			const childHasSpawnCode = contextChildren.some((child) => hasSpawnCode(child.summary));
+			if (expandedSubagentParents.has(context.identity)) {
+				const showProgram = programShownParents.has(context.identity);
+				const groups = groupChildrenBySpawnCode(contextChildren.sort(compareAgentsViewRows));
+				for (const [groupIndex, group] of groups.entries()) {
+					if (showProgram && group.spawnCode) {
+						for (const codeRow of buildSpawnCodeRows(context, group.spawnCode, depth + 1, groupIndex)) {
+							flattened.push(codeRow);
+						}
+					}
+					for (const child of group.children) {
+						child.parentIdentity = context.identity;
+						emit(child, depth + 1);
+					}
+				}
+			} else {
+				flattened.push(createSubagentSummaryRow(context, contextChildren, depth + 1, childHasSpawnCode));
 			}
 			return;
 		}
