@@ -39,6 +39,8 @@ export interface QuestionnaireWorkerRequestHandle {
 	outcome: Promise<ExtensionQuestionnaireOutcome>;
 }
 
+export type QuestionnaireTerminationReason = Extract<ExtensionQuestionnaireOutcome, { status: "terminated" }>["reason"];
+
 export interface QuestionnaireWorkerMutation {
 	lease: QuestionnaireLease;
 	baseRevision: number;
@@ -304,6 +306,14 @@ export class QuestionnaireWorkerAuthority {
 		}
 		this.pump(activeSessionId);
 		return { logicalRequestId, request: clone(request), outcome };
+	}
+
+	terminateSession(activeSessionId: string, reason: QuestionnaireTerminationReason): number {
+		const records = [...(this.queues.get(activeSessionId) ?? [])];
+		for (const record of records.reverse()) {
+			this.finish(record, { status: "terminated", reason }, false);
+		}
+		return records.length;
 	}
 
 	status(activeSessionId: string): QuestionnaireWorkerStatus {
@@ -622,6 +632,13 @@ export class QuestionnaireWorkerAuthority {
 		}
 		record.request = { version: 1, questions: [] };
 		record.draft = { version: 1, currentStep: { kind: "review" }, states: [] };
+		record.pendingOffer = undefined;
+		record.lease = undefined;
+		record.legacyRequestId = undefined;
+		record.legacyAdapter?.dispose();
+		record.legacyAdapter = undefined;
+		if (!retainTombstone) record.ledger.clear();
+		record.resolveOutcome = () => {};
 		this.pump(record.activeSessionId);
 	}
 }

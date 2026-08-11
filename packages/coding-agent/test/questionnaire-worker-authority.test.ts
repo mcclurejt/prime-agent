@@ -375,6 +375,21 @@ describe("QuestionnaireWorkerAuthority", () => {
 		expect(authority.status("session-a")).toEqual({ state: "offered", queueDepth: 1 });
 	});
 
+	it("terminates every queued request for a session and releases private presentation state", async () => {
+		const { authority, mirror, messages } = harness();
+		syncRich(mirror);
+		const first = authority.request("session-a", request);
+		const second = authority.request("session-a", request);
+		const lease = acceptLatest(authority, messages);
+
+		expect(authority.terminateSession("session-a", "extension-reload")).toBe(2);
+		await expect(first.outcome).resolves.toEqual({ status: "terminated", reason: "extension-reload" });
+		await expect(second.outcome).resolves.toEqual({ status: "terminated", reason: "extension-reload" });
+		expect(authority.status("session-a")).toEqual({ state: undefined, queueDepth: 0 });
+		expect(authority.presentationSnapshot(first.logicalRequestId)).toBeUndefined();
+		expect(messages.at(-1)).toEqual({ type: "withdraw", lease });
+	});
+
 	it("preserves acknowledged authority across generation rollover and aborts without fabricating dismissal", async () => {
 		const { authority, mirror, messages } = harness();
 		syncRich(mirror);

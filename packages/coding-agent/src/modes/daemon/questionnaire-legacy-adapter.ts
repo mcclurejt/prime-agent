@@ -53,10 +53,10 @@ export class QuestionnaireLegacyAdapter {
 	private phase: Phase | undefined;
 	private draftValue: ExtensionQuestionnaireDraftV1;
 
-	constructor(
-		private readonly request: ExtensionQuestionnaireRequestV1,
-		draft: ExtensionQuestionnaireDraftV1,
-	) {
+	private requestValue: ExtensionQuestionnaireRequestV1;
+
+	constructor(request: ExtensionQuestionnaireRequestV1, draft: ExtensionQuestionnaireDraftV1) {
+		this.requestValue = clone(request);
 		this.draftValue = clone(draft);
 	}
 
@@ -71,6 +71,13 @@ export class QuestionnaireLegacyAdapter {
 
 	resetPresentation(): void {
 		this.phase = undefined;
+	}
+
+	dispose(): void {
+		this.phase = undefined;
+		this.questionIndex = 0;
+		this.requestValue = { version: 1, questions: [] };
+		this.draftValue = { version: 1, currentStep: { kind: "review" }, states: [] };
 	}
 
 	respond(response: DaemonExtensionUIResponse): QuestionnaireLegacyAdapterAction {
@@ -163,8 +170,8 @@ export class QuestionnaireLegacyAdapter {
 	}
 
 	private beginCurrentStep(): QuestionnaireLegacyAdapterAction {
-		if (this.questionIndex >= this.request.questions.length) {
-			const submitValue = this.request.submitLabel ?? "Submit";
+		if (this.questionIndex >= this.requestValue.questions.length) {
+			const submitValue = this.requestValue.submitLabel ?? "Submit";
 			this.phase = { kind: "review", submitValue, editValue: "Edit answers" };
 			this.draftValue.currentStep = { kind: "review" };
 			return this.requestForPhase();
@@ -207,7 +214,7 @@ export class QuestionnaireLegacyAdapter {
 
 	private requestForPhase(): QuestionnaireLegacyAdapterAction {
 		const phase = this.phase!;
-		const question = this.questionIndex < this.request.questions.length ? this.currentQuestion() : undefined;
+		const question = this.questionIndex < this.requestValue.questions.length ? this.currentQuestion() : undefined;
 		switch (phase.kind) {
 			case "confirm":
 			case "single":
@@ -292,7 +299,7 @@ export class QuestionnaireLegacyAdapter {
 	}
 
 	private currentQuestion(): ExtensionQuestionnaireQuestion {
-		return this.request.questions[this.questionIndex]!;
+		return this.requestValue.questions[this.questionIndex]!;
 	}
 
 	private currentState(): ExtensionQuestionnaireDraftQuestionState {
@@ -309,9 +316,9 @@ export class QuestionnaireLegacyAdapter {
 	}
 
 	private reviewText(): string {
-		const lines = [this.request.title ?? "Questionnaire", "Review answers:"];
-		for (let index = 0; index < this.request.questions.length; index++) {
-			const question = this.request.questions[index]!;
+		const lines = [this.requestValue.title ?? "Questionnaire", "Review answers:"];
+		for (let index = 0; index < this.requestValue.questions.length; index++) {
+			const question = this.requestValue.questions[index]!;
 			const state = this.draftValue.states[index]!;
 			lines.push(`${question.label ?? question.prompt}: ${this.summarize(question, state)}`);
 		}

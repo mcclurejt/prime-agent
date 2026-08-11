@@ -100,6 +100,14 @@ describe("QuestionnaireLegacyAdapter", () => {
 		expect(adapter.draft.states[2]).toMatchObject({ choiceIds: [] });
 	});
 
+	it("clears request and draft buffers on disposal", () => {
+		const adapter = new QuestionnaireLegacyAdapter(request, createInitialQuestionnaireDraft(request));
+		adapter.start();
+		adapter.dispose();
+		expect(adapter.draft).toEqual({ version: 1, currentStep: { kind: "review" }, states: [] });
+		expect(JSON.stringify(adapter)).not.toMatch(/Setup|Continue|Pick many|seed/u);
+	});
+
 	it("normalizes every old cancellation shape to conservative indeterminacy", () => {
 		for (const response of [{ cancelled: true } as const, { confirmed: false } as const]) {
 			const adapter = new QuestionnaireLegacyAdapter(request, createInitialQuestionnaireDraft(request));

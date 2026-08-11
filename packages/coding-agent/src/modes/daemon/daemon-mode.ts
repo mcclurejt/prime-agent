@@ -204,7 +204,7 @@ import {
 } from "./daemon-worker-protocol.js";
 import { WorkerUiClientsMirror } from "./daemon-worker-ui-clients.js";
 import { MutationDrainLatch } from "./mutation-drain-latch.js";
-import { QuestionnaireWorkerAuthority } from "./questionnaire-worker-authority.js";
+import { type QuestionnaireTerminationReason, QuestionnaireWorkerAuthority } from "./questionnaire-worker-authority.js";
 import { serializeSavedSessionInfo } from "./saved-session-info.js";
 import {
 	createSnapshotTranscriptChunks,
@@ -212,6 +212,23 @@ import {
 	type SnapshotTranscriptChunkSource,
 } from "./snapshot-transcript-cache.js";
 import { WorkerRecoveryJournal } from "./worker-recovery-journal.js";
+
+export function questionnaireTerminationReasonForClose(
+	reason: DaemonSessionClosedReason,
+): QuestionnaireTerminationReason {
+	switch (reason) {
+		case "killed":
+			return "session-killed";
+		case "completed":
+			return "session-completed";
+		case "shutdown":
+			return "daemon-shutdown";
+		case "update":
+			return "daemon-update";
+		case "replaced":
+			return "runtime-replaced";
+	}
+}
 
 export interface DaemonModeOptions {
 	socketPath?: string;
@@ -1262,6 +1279,9 @@ export class AgentDaemon {
 					this.options.worker
 						? this.questionnaireAuthority.request(targetSessionState.activeSessionId, request, options).outcome
 						: Promise.resolve({ status: "unsupported" }),
+				terminateQuestionnaires: (targetSessionState, reason) => {
+					this.questionnaireAuthority.terminateSession(targetSessionState.activeSessionId, reason);
+				},
 				subagentRuntimeHost: this.createSubagentRuntimeHost(state),
 			});
 			if (runtimeOpenGuard) {
@@ -4446,6 +4466,7 @@ export class AgentDaemon {
 
 			case "reload": {
 				const state = this.getSessionState(command.activeSessionId);
+				this.questionnaireAuthority.terminateSession(state.activeSessionId, "extension-reload");
 				// Reload re-evaluates extension modules, which capture client env
 				// (e.g. herdr pane identity) synchronously at load.
 				await withClientEnv(state.clientEnv, () => state.runtime.session.reload());
@@ -6093,6 +6114,10 @@ export class AgentDaemon {
 		if (!this.sessions.has(state.activeSessionId)) {
 			return;
 		}
+		this.questionnaireAuthority.terminateSession(
+			state.activeSessionId,
+			questionnaireTerminationReasonForClose(reason),
+		);
 		if (reason === "killed") {
 			this.cancelScheduledJobsForSession(state);
 		} else if (reason !== "shutdown" && reason !== "update") {

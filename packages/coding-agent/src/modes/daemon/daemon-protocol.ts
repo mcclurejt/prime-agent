@@ -146,7 +146,7 @@ export const DAEMON_SUPPORTED_CLIENT_CAPABILITIES: readonly DaemonClientCapabili
 	"client_owned_sessions",
 ];
 
-export const DAEMON_DORMANT_CLIENT_CAPABILITIES: readonly DaemonClientCapability[] = ["questionnaire_v1"];
+export const DAEMON_DORMANT_CLIENT_CAPABILITIES: readonly DaemonClientCapability[] = [];
 
 const DAEMON_DORMANT_CLIENT_CAPABILITY_SET: ReadonlySet<DaemonClientCapability> = new Set(
 	DAEMON_DORMANT_CLIENT_CAPABILITIES,

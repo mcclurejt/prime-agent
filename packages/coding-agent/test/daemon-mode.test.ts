@@ -29,6 +29,7 @@ import {
 	finishClientSnapshotStreaming,
 	getChildActiveSessionStates,
 	markClientSnapshotStreaming,
+	questionnaireTerminationReasonForClose,
 	setDaemonClientSessionCapabilities,
 	shouldSendDaemonOutboundToClient,
 } from "../src/modes/daemon/daemon-mode.js";
@@ -46,6 +47,20 @@ import type { SessionSummary } from "../src/modes/daemon/daemon-session-list.js"
 import { DAEMON_WORKER_SUPERVISOR_SOCKET_ENV } from "../src/modes/daemon/daemon-worker-protocol.js";
 
 describe("daemon mode helpers", () => {
+	it("maps every orderly close reason to the normative questionnaire termination", () => {
+		expect(
+			(["killed", "completed", "shutdown", "update", "replaced"] as const).map((reason) => [
+				reason,
+				questionnaireTerminationReasonForClose(reason),
+			]),
+		).toEqual([
+			["killed", "session-killed"],
+			["completed", "session-completed"],
+			["shutdown", "daemon-shutdown"],
+			["update", "daemon-update"],
+			["replaced", "runtime-replaced"],
+		]);
+	});
 	it("preserves envelope client identity while registering prompt admission", () => {
 		const daemon = new AgentDaemon("/tmp/unused-daemon.sock", {
 			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
@@ -1302,6 +1317,7 @@ describe("daemon mode helpers", () => {
 			recordWorkerRecoveryState: ReturnType<typeof vi.fn>;
 			broadcastToSession: ReturnType<typeof vi.fn>;
 			cancelScheduledJobsForSession: ReturnType<typeof vi.fn>;
+			questionnaireAuthority: { terminateSession: ReturnType<typeof vi.fn> };
 		};
 		internals.sessions.set(state.activeSessionId, state);
 		internals.closeChildSessions = vi.fn(async () => undefined);
@@ -1310,9 +1326,17 @@ describe("daemon mode helpers", () => {
 		internals.recordWorkerRecoveryState = vi.fn();
 		internals.broadcastToSession = vi.fn();
 		internals.cancelScheduledJobsForSession = vi.fn();
+		internals.questionnaireAuthority = { terminateSession: vi.fn() };
 
 		await expect(internals.closeSession(state, "killed", false)).rejects.toThrow("dispose failed");
 
+		expect(internals.questionnaireAuthority.terminateSession).toHaveBeenCalledWith(
+			state.activeSessionId,
+			"session-killed",
+		);
+		expect(internals.questionnaireAuthority.terminateSession.mock.invocationCallOrder[0]).toBeLessThan(
+			dispose.mock.invocationCallOrder[0]!,
+		);
 		expect(dispose).toHaveBeenCalledOnce();
 		expect(internals.sessions.has(state.activeSessionId)).toBe(false);
 		expect(internals.closingSessions.has(state.activeSessionId)).toBe(false);

@@ -131,6 +131,7 @@ describe("daemon extension binding", () => {
 			},
 			shutdown: () => {},
 			questionnaire: async () => ({ status: "unsupported" }),
+			terminateQuestionnaires: () => {},
 		});
 
 		await runtime.session.prompt("hello");
@@ -181,6 +182,7 @@ describe("daemon extension binding", () => {
 				callbackRequest = request;
 				return { status: "submitted", responses: [{ questionId: "confirm", status: "unanswered" }] };
 			},
+			terminateQuestionnaires: () => {},
 		});
 
 		await runtime.session.prompt("/daemon-questionnaire");
@@ -271,6 +273,9 @@ describe("daemon extension binding", () => {
 				phases.push("shutdown");
 			},
 			questionnaire: async () => ({ status: "unsupported" }),
+			terminateQuestionnaires: (_targetState, reason) => {
+				phases.push(`terminate:${reason}`);
+			},
 		});
 
 		await runtime.session.prompt("/daemon-replace");
@@ -279,6 +284,7 @@ describe("daemon extension binding", () => {
 		const withSessionIndex = phases.indexOf("withSession");
 		expect(replacementIndex).toBeGreaterThan(-1);
 		expect(withSessionIndex).toBeGreaterThan(-1);
+		expect(phases.indexOf("terminate:runtime-replaced")).toBeLessThan(phases.indexOf("sessionReplaced"));
 		expect(phases.indexOf("sessionReplaced")).toBeLessThan(replacementIndex);
 		expect(replacementIndex).toBeLessThan(withSessionIndex);
 		expect(replacementSessionFile).toBeDefined();

@@ -62,17 +62,10 @@ describe("daemon protocol helpers", () => {
 		expect(DAEMON_SCHEMA_ID).toBe(`protocol-${DAEMON_PROTOCOL_VERSION}-schema-${DAEMON_SCHEMA_REVISION}-${digest}`);
 	});
 
-	it("recognizes dormant client capabilities without advertising unfinished server semantics", () => {
-		const supportedWithoutDormant = DAEMON_SUPPORTED_CLIENT_CAPABILITIES.filter(
-			(capability) => !DAEMON_DORMANT_CLIENT_CAPABILITIES.includes(capability),
-		);
-
-		expect(DAEMON_DORMANT_CLIENT_CAPABILITIES).toEqual(["questionnaire_v1"]);
-		expect(DAEMON_ADVERTISED_CLIENT_CAPABILITIES).toEqual(supportedWithoutDormant);
-		expect(DAEMON_DEFAULT_SERVER_CAPABILITIES).toEqual(expect.arrayContaining(supportedWithoutDormant));
-		for (const dormant of DAEMON_DORMANT_CLIENT_CAPABILITIES) {
-			expect(DAEMON_DEFAULT_SERVER_CAPABILITIES).not.toContain(dormant);
-		}
+	it("advertises the completed questionnaire capability with its extension UI dependency", () => {
+		expect(DAEMON_DORMANT_CLIENT_CAPABILITIES).toEqual([]);
+		expect(DAEMON_ADVERTISED_CLIENT_CAPABILITIES).toEqual(DAEMON_SUPPORTED_CLIENT_CAPABILITIES);
+		expect(DAEMON_DEFAULT_SERVER_CAPABILITIES).toEqual(expect.arrayContaining(["extension_ui", "questionnaire_v1"]));
 	});
 
 	it("normalizes malformed or semantically unsupported questionnaire capability to non-rich", () => {
@@ -87,7 +80,7 @@ describe("daemon protocol helpers", () => {
 				false,
 				new Set(DAEMON_DEFAULT_SERVER_CAPABILITIES),
 			),
-		).not.toContain("questionnaire_v1");
+		).toContain("questionnaire_v1");
 		expect(
 			normalizeDaemonClientCapabilities(
 				["extension_ui", "questionnaire_v1"],
@@ -260,6 +253,38 @@ describe("daemon protocol helpers", () => {
 		expect(isDaemonMutatingCommand({ type: "reattach" })).toBe(false);
 		expect(isDaemonMutatingCommand({ type: "wait_for_headless_completion" })).toBe(true);
 		expect(isDaemonMutatingCommand({ type: "switch_session" })).toBe(true);
+	});
+
+	it("keeps private questionnaire mutations out of the durable command journal", () => {
+		const lease = {
+			supervisorGeneration: "generation-a",
+			logicalRequestId: "request-a",
+			offerId: "offer-a",
+			leaseEpoch: 1,
+			logicalClientId: "logical-a",
+			connectionId: "connection-a",
+			mode: "rich" as const,
+		};
+		expect(
+			isDaemonMutatingCommand({
+				type: "questionnaire_checkpoint",
+				activeSessionId: "active-a",
+				lease,
+				baseRevision: 0,
+				clientMutationId: "mutation-a",
+				completeDraft: { version: 1, currentStep: { kind: "review" }, states: [] },
+			} as DaemonCommand),
+		).toBe(false);
+		expect(
+			isDaemonMutatingCommand({
+				type: "questionnaire_submit",
+				activeSessionId: "active-a",
+				lease,
+				baseRevision: 0,
+				clientMutationId: "mutation-b",
+				completeDraft: { version: 1, currentStep: { kind: "review" }, states: [] },
+			} as DaemonCommand),
+		).toBe(false);
 	});
 
 	it("reports replay availability from resume cursors", () => {

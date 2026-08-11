@@ -320,6 +320,9 @@ describe("daemon supervisor questionnaire brokerage", () => {
 			payload: Buffer.from(JSON.stringify({ ...legacyRequest, requestId: "legacy-step-b" })),
 		});
 		expect(internals.pendingLegacyQuestionnaireRequests.has("legacy-step-b")).toBe(true);
+		expect(JSON.stringify([...internals.pendingLegacyQuestionnaireRequests])).not.toMatch(
+			/Private legacy prompt|Submit/u,
+		);
 		requestWorker.mockClear();
 		internals.questionnaireBroker.disconnect("connection-b");
 		expect(internals.pendingLegacyQuestionnaireRequests.size).toBe(0);
