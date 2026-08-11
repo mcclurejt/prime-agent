@@ -682,4 +682,10 @@ describe("agents view startup notices", () => {
 
 		expect(runs).toBe(2);
 	});
+	it("uses distinct icons for needs input, idle, and inactive sessions", () => {
+		const getRowIcon = (AgentsViewMode.prototype as unknown as { getRowIcon(section: string): string }).getRowIcon;
+		expect(getRowIcon.call({}, "needs-input")).toBe("?");
+		expect(getRowIcon.call({}, "idle")).toBe("●");
+		expect(getRowIcon.call({}, "inactive")).toBe("✓");
+	});
 });
