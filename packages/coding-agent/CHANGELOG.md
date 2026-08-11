@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Fixed ancestor session rows remaining idle while their subagents run.
 - Added the active session name to the top right of the interactive editor.
 - Added typed questionnaire contracts, validation and canonical byte-budget helpers for extensions.
 - Added a responsive interactive questionnaire UI for in-process extensions.

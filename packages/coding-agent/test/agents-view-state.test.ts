@@ -469,6 +469,55 @@ describe("agents view state", () => {
 		]);
 	});
 
+	test("promotes idle ancestors when a descendant is actively working", () => {
+		const summaries = [
+			makeSummary({
+				id: "working-grandchild",
+				activeSessionId: "working-grandchild",
+				sessionId: "working-grandchild-session",
+				sessionName: "Working grandchild",
+				runtimeKind: "subagent",
+				parentActiveSessionId: "idle-child",
+				activity: "working",
+				isStreaming: true,
+			}),
+			makeSummary({
+				id: "idle-child",
+				activeSessionId: "idle-child",
+				sessionId: "idle-child-session",
+				sessionName: "Idle child",
+				runtimeKind: "subagent",
+				parentActiveSessionId: "idle-root",
+				activity: "idle",
+				taskState: "completed",
+			}),
+			makeSummary({
+				id: "idle-root",
+				activeSessionId: "idle-root",
+				sessionId: "idle-root-session",
+				sessionName: "Idle root",
+				activity: "idle",
+				taskState: "completed",
+			}),
+		];
+
+		const collapsed = buildAgentsViewRows(summaries);
+		expect(collapsed[0]).toMatchObject({
+			title: "Idle root",
+			section: "running",
+			statusLabel: "subagents running",
+			runningSubagentCount: 1,
+		});
+		expect(collapsed[1]).toMatchObject({
+			kind: "subagent-summary",
+			title: "1 subagent running",
+		});
+
+		const rootIdentity = collapsed[0]?.identity ?? "";
+		const child = buildAgentsViewRows(summaries, new Set([rootIdentity])).find((row) => row.title === "Idle child");
+		expect(child).toMatchObject({ section: "running", statusLabel: "subagents running" });
+	});
+
 	test("expands subagent rows for expanded parents and collapses otherwise", () => {
 		const summaries = [
 			makeSummary({
