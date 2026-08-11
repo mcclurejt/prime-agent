@@ -34,6 +34,22 @@ Edit directly or use `/settings` for common options.
 }
 ```
 
+#### sessionSummary
+
+`sessionSummary` is a global daemon setting; project settings do not override it. Summaries are opt-in: set both `provider` and `model` to enable recap and Needs Input classification. Changes take effect after restarting the daemon.
+
+```json
+{
+  "sessionSummary": {
+    "provider": "openai-codex",
+    "model": "gpt-5.6-luna",
+    "workingIntervalMs": 25000
+  }
+}
+```
+
+`workingIntervalMs` defaults to `25000` and has a minimum of `10000` milliseconds.
+
 ### UI & Display
 
 | Setting | Type | Default | Description |

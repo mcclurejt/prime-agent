@@ -2474,7 +2474,7 @@ export class AgentsViewMode implements Component, Focusable {
 
 	private getAgentCountsText(): string {
 		const counts = countRowsBySection(this.rows);
-		return `${counts.running} running, ${counts.idle} idle, ${counts.inactive} inactive`;
+		return `${counts["needs-input"]} needs input, ${counts.running} running, ${counts.idle} idle, ${counts.inactive} inactive`;
 	}
 
 	private renderSessionRows(width: number, maxRows: number): string[] {
@@ -2533,6 +2533,10 @@ export class AgentsViewMode implements Component, Focusable {
 		const selected = row.selectable && row.identity === this.rows[this.selectedIndex]?.identity;
 		if (row.kind === "subagent-code") {
 			return this.renderCodeRow(row);
+		}
+		if (row.kind === "context") {
+			const indent = "  ".repeat(row.depth);
+			return padLine(truncateToWidth(`${indent}${theme.fg("dim", `↳ ${row.title}`)}`, width, ""), width);
 		}
 		if (row.kind === "subagent-summary") {
 			const indent = "  ".repeat(row.depth);
@@ -2723,10 +2727,12 @@ export class AgentsViewMode implements Component, Focusable {
 
 	private getRowIcon(section: AgentsViewSection): string {
 		switch (section) {
+			case "needs-input":
+				return NEEDS_INPUT_ROW_ICON;
 			case "running":
 				return workingIconFrame(this.workingIconFrame);
 			case "idle":
-				return NEEDS_INPUT_ROW_ICON;
+				return COMPLETED_ROW_ICON;
 			case "inactive":
 				return COMPLETED_ROW_ICON;
 			default: {
@@ -2738,10 +2744,12 @@ export class AgentsViewMode implements Component, Focusable {
 
 	private formatRowIcon(section: AgentsViewSection, icon: string): string {
 		switch (section) {
+			case "needs-input":
+				return theme.fg("warning", icon);
 			case "running":
 				return theme.bold(icon);
 			case "idle":
-				return theme.fg("warning", icon);
+				return theme.fg("dim", icon);
 			case "inactive":
 				return theme.fg("dim", icon);
 			default: {
@@ -2760,7 +2768,7 @@ type DisplayItem =
 
 function buildDisplayItems(rows: readonly AgentsViewRow[]): DisplayItem[] {
 	const items: DisplayItem[] = [];
-	const sections: AgentsViewSection[] = ["running", "idle", "inactive"];
+	const sections: AgentsViewSection[] = ["needs-input", "running", "idle", "inactive"];
 	for (const [index, section] of sections.entries()) {
 		if (index > 0) {
 			items.push({ type: "spacer" });
@@ -2797,6 +2805,7 @@ function getDisplayRowsForSection(rows: readonly AgentsViewRow[], section: Agent
 function countRowsBySection(rows: readonly AgentsViewRow[]): Record<AgentsViewSection, number> {
 	const agents = rows.filter((row) => row.kind === "agent");
 	return {
+		"needs-input": rows.filter((row) => row.section === "needs-input").length,
 		running: agents.filter((row) => row.section === "running").length,
 		idle: agents.filter((row) => row.section === "idle").length,
 		inactive: agents.filter((row) => row.section === "inactive").length,

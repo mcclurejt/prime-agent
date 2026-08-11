@@ -116,6 +116,7 @@ import {
 } from "../../core/session-manager.js";
 import { resolveSessionPath } from "../../core/session-resolver.js";
 import type { SessionStats } from "../../core/session-stats.js";
+import { SettingsManager } from "../../core/settings-manager.js";
 import { type SideQuestionRun, startSideQuestion } from "../../core/side-question.js";
 import { killTrackedDetachedChildren } from "../../utils/shell.js";
 import {
@@ -544,21 +545,7 @@ export class AgentDaemon {
 	private supervisorLaunchInProgress = false;
 	private readonly supervisorClaims = new Map<DaemonSocketClient, BoundSupervisorGenerationClaim>();
 	private agentMessagesPaused = false;
-	private readonly summarizer = new DaemonSessionSummarizer(
-		() => [...this.sessions.values()],
-		(state) => {
-			// Subagents share their recap with the parent so it shows in the parent's
-			// subagent tree; their own session channel usually has no attached client.
-			if (state.runtime.metadata.kind === "subagent") {
-				state.runtime.session.setCurrentRecap(state.summaryState?.summary);
-			}
-			this.broadcastToSession(state, {
-				type: "session_status",
-				activeSessionId: state.activeSessionId,
-				recap: state.summaryState?.summary,
-			});
-		},
-	);
+	private readonly summarizer: DaemonSessionSummarizer;
 	private readonly recoveryJournal?: WorkerRecoveryJournal;
 
 	constructor(
@@ -569,6 +556,26 @@ export class AgentDaemon {
 			throw new Error("Daemon config is missing agentDir");
 		}
 		this.agentDir = options.defaultSessionConfig.agentDir;
+		const summarySettings = SettingsManager.create(process.cwd(), this.agentDir).getGlobalSettings().sessionSummary;
+		this.summarizer = new DaemonSessionSummarizer(
+			() => [...this.sessions.values()],
+			(state) => {
+				if (state.runtime.metadata.kind === "subagent") {
+					state.runtime.session.setCurrentRecap(state.summaryState?.summary);
+				}
+				this.broadcastToSession(state, {
+					type: "session_status",
+					activeSessionId: state.activeSessionId,
+					recap: state.summaryState?.summary,
+				});
+			},
+			undefined,
+			{
+				provider: summarySettings?.provider,
+				model: summarySettings?.model,
+				workingIntervalMs: summarySettings?.workingIntervalMs,
+			},
+		);
 		this.cronStore = options.worker
 			? AgentCronJobStore.forSessionArtifacts()
 			: new AgentCronJobStore(getCronJobsPath(this.agentDir));
