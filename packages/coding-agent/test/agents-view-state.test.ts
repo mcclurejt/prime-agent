@@ -185,8 +185,8 @@ describe("agents view state", () => {
 		expect(rows.some((row) => row.section === "needs-input")).toBe(false);
 	});
 
-	test("retains ordinary descendants under a nonselectable needs-input context", () => {
-		const rows = buildAgentsViewRows([
+	test("retains ordinary descendants directly under a collapsed needs-input parent", () => {
+		const summaries = [
 			makeSummary({
 				id: "completed-child",
 				activeSessionId: "completed-child",
@@ -203,12 +203,18 @@ describe("agents view state", () => {
 				sessionName: "Input root",
 				taskState: "needs_input",
 			}),
+		];
+
+		const collapsed = buildAgentsViewRows(summaries);
+		expect(collapsed.map((row) => [row.title, row.kind, row.section, row.selectable])).toEqual([
+			["Input root", "agent", "needs-input", true],
+			["1 subagent", "subagent-summary", "needs-input", true],
 		]);
 
-		expect(rows.map((row) => [row.title, row.kind, row.section, row.selectable])).toEqual([
-			["Input root", "agent", "needs-input", true],
-			["Input root", "context", "needs-input", false],
-			["1 subagent", "subagent-summary", "needs-input", true],
+		const expanded = buildAgentsViewRows(summaries, new Set([collapsed[0]?.identity ?? ""]));
+		expect(expanded.map((row) => [row.title, row.kind, row.parentIdentity])).toEqual([
+			["Input root", "agent", undefined],
+			["Completed child", "subagent", "needs-input:active:input-root"],
 		]);
 	});
 
