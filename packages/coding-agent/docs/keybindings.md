@@ -132,7 +132,7 @@ These actions move between questionnaire questions and switch the Review page be
 |--------|---------|-------------|
 | `app.questionnaire.next` | `tab`, `right` | Move to the next questionnaire page or select Submit on Review |
 | `app.questionnaire.previous` | `shift+tab`, `left` | Move to the previous questionnaire page or select Edit on Review |
-| `app.questionnaire.toggle` | `space` | Toggle the focused checkbox in a multi-select question |
+| `app.questionnaire.toggle` | `space` | Toggle the focused checkbox in a multi-select question; the confirm key (Enter by default) also toggles |
 
 ### Display and Message Queue
 

@@ -217,7 +217,7 @@ describe("QuestionnaireComponent", () => {
 		expect(submit).toHaveBeenCalledWith({ status: "submitted", responses: expect.any(Array) });
 	});
 
-	it("uses Space for multi-select toggles and left/right arrows for persistent page navigation", () => {
+	it("uses Enter or Space for multi-select toggles and left/right arrows for persistent page navigation", () => {
 		const tui = createFakeTui(18);
 		const component = new QuestionnaireComponent({
 			tui,
@@ -236,6 +236,8 @@ describe("QuestionnaireComponent", () => {
 
 		component.handleInput("\r");
 		expect(component.model.currentStep).toEqual({ kind: "question", questionId: "multi" });
+		expect(component.model.getState("multi")).toMatchObject({ choiceIds: ["east"] });
+		component.handleInput("\r");
 		expect(component.model.getState("multi")).toMatchObject({ choiceIds: [] });
 		component.handleInput(" ");
 		expect(component.model.getState("multi")).toMatchObject({ choiceIds: ["east"] });
@@ -253,7 +255,7 @@ describe("QuestionnaireComponent", () => {
 		expect(component.model.currentStep).toEqual({ kind: "question", questionId: "multi" });
 		expect(component.model.getOtherText("multi")).toBe("custom region");
 		const output = stripAnsi(component.render(80).join("\n"));
-		expect(output).toContain("Space toggle");
+		expect(output).toContain("Space/Enter toggle");
 		expect(output).toContain("[▶ Regions]");
 		expect(output).toContain("custom region");
 		expect(output).not.toContain("Custom test answer");
@@ -310,7 +312,7 @@ describe("QuestionnaireComponent", () => {
 		expect(component.model.getState("multi")).toMatchObject({ choiceIds: [] });
 		component.handleInput("\x18");
 		expect(component.model.getState("multi")).toMatchObject({ choiceIds: ["x"] });
-		expect(stripAnsi(component.render(80).join("\n"))).toContain("Ctrl+X toggle");
+		expect(stripAnsi(component.render(80).join("\n"))).toContain("Ctrl+X/Enter toggle");
 	});
 
 	it("fills through keystrokes to zero reserved bytes and navigates review round trips without throwing", () => {

@@ -679,9 +679,10 @@ export class QuestionnaireComponent implements Component, Focusable {
 			this.scrollPage(-1);
 		} else if (kb.matches(data, "tui.select.pageDown")) {
 			this.scrollPage(1);
-		} else if (question.kind === "multi-select" && kb.matches(data, "app.questionnaire.toggle")) {
-			this.activateChoice(question, cursor);
-		} else if (question.kind !== "multi-select" && kb.matches(data, "tui.select.confirm")) {
+		} else if (
+			(question.kind === "multi-select" && kb.matches(data, "app.questionnaire.toggle")) ||
+			kb.matches(data, "tui.select.confirm")
+		) {
 			this.activateChoice(question, cursor);
 		}
 		this.renderRequested();
@@ -1034,7 +1035,7 @@ export class QuestionnaireComponent implements Component, Focusable {
 				} else if (this.model.currentStep.kind === "review") {
 					hint = `${previous}/${next} Edit/Submit · ${up}/${down} answer · ${confirm} choose · ${pageUp}/${pageDown} scroll · ${cancel} dismiss`;
 				} else if (currentQuestion?.kind === "multi-select") {
-					hint = `${up}/${down} move · ${this.keyText("app.questionnaire.toggle")} toggle · ${previous}/${next} previous/next · ${pageUp}/${pageDown} scroll · ${cancel} dismiss`;
+					hint = `${up}/${down} move · ${this.keyText("app.questionnaire.toggle")}/${confirm} toggle · ${previous}/${next} previous/next · ${pageUp}/${pageDown} scroll · ${cancel} dismiss`;
 				} else if (currentQuestion?.kind === "multiline-text") {
 					const newline = this.keyText("tui.input.newLine");
 					hint = `${newline} newline · ${previous}/${next} previous/next · ${pageUp}/${pageDown} scroll · ${cancel} dismiss`;
