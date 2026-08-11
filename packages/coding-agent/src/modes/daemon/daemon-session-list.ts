@@ -77,6 +77,10 @@ export interface SessionSummary {
 	summary?: string;
 	/** Completion verdict for an idle session; absent while working or unjudged. */
 	taskState?: AgentTaskState;
+	/** Content-free lifecycle of the head worker-owned questionnaire request. */
+	questionnaireState?: "waiting" | "offered" | "presenting";
+	/** Total worker-owned questionnaire requests queued for this session. */
+	questionnaireQueueDepth?: number;
 	/** Resident session-host process state, populated by the global supervisor. */
 	workerState?: "starting" | "ready" | "recovering" | "failed";
 	/** Diagnostic process identity; clients must not use this as a stable session identifier. */
@@ -267,6 +271,8 @@ export function summaryForActiveSession(
 		// that is active again.
 		summary: activeSession.summaryState?.summary,
 		...(isSummaryCurrent(activeSession) ? { taskState: activeSession.summaryState?.taskState } : {}),
+		questionnaireState: activeSession.questionnaireState,
+		questionnaireQueueDepth: activeSession.questionnaireQueueDepth,
 	};
 }
 

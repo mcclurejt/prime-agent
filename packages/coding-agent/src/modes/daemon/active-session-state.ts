@@ -56,6 +56,10 @@ export interface ActiveSessionState {
 	unsubscribe?: () => void;
 	/** Latest background status summary, surfaced in the agents view. */
 	summaryState?: AgentStatus;
+	/** Content-free questionnaire lifecycle for session-list status surfaces. */
+	questionnaireState?: "waiting" | "offered" | "presenting";
+	/** Total worker-owned questionnaire requests queued for this session. */
+	questionnaireQueueDepth?: number;
 	/**
 	 * Client env (e.g. herdr pane identity), merged over process.env for this
 	 * session's pi.exec() subprocesses. Bound when the runtime is created (or

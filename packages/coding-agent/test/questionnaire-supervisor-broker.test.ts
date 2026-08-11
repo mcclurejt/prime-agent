@@ -8,6 +8,7 @@ import type { DaemonCommand, DaemonResponse } from "../src/modes/daemon/daemon-p
 import { DaemonSupervisor } from "../src/modes/daemon/daemon-supervisor.js";
 import type {
 	DaemonWorkerCommand,
+	DaemonWorkerFrameHeader,
 	WorkerQuestionnaireBrokerMessage,
 } from "../src/modes/daemon/daemon-worker-protocol.js";
 import { SupervisorWorkerUiClientsSync } from "../src/modes/daemon/daemon-worker-ui-clients.js";
@@ -55,10 +56,7 @@ describe("daemon supervisor questionnaire brokerage", () => {
 			clients: Set<DaemonSocketClient>;
 			workers: Map<string, unknown>;
 			synchronizeQuestionnairePresenters(): void;
-			handleWorkerFrame(
-				worker: unknown,
-				frame: { header: { kind: "questionnaire_broker"; messageType: string }; payload: Buffer },
-			): void;
+			handleWorkerFrame(worker: unknown, frame: { header: DaemonWorkerFrameHeader; payload: Buffer }): void;
 			handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<DaemonResponse | undefined>;
 			questionnaireBroker: { disconnect(connectionId: string): void };
 		};
@@ -72,6 +70,7 @@ describe("daemon supervisor questionnaire brokerage", () => {
 			},
 			client: { requestWorker },
 			summaries: new Map([["session-a", { id: "session-a", activeSessionId: "session-a" }]]),
+			snapshotCache: new Map(),
 			uiClientsSync: new SupervisorWorkerUiClientsSync(internals.generation),
 			uiClientsSyncQueue: Promise.resolve(),
 			uiClientsNeedsFullSync: false,
@@ -138,8 +137,96 @@ describe("daemon supervisor questionnaire brokerage", () => {
 				result: { status: "accepted", lease: outbound.lease },
 			}),
 		);
+		requestWorker.mockClear();
+		const presentation = {
+			activeSessionId: "session-a",
+			snapshot: {
+				lease: outbound.lease,
+				authoritativeRevision: 0,
+				request: { version: 1 as const, questions: [{ id: "q", kind: "short-text" as const, prompt: "private" }] },
+				draft: {
+					version: 1 as const,
+					currentStep: { kind: "question" as const, questionId: "q" },
+					states: [{ questionId: "q", kind: "short-text" as const, value: "draft" }],
+				},
+			},
+		};
+		internals.handleWorkerFrame(worker, {
+			header: {
+				kind: "questionnaire_presentation",
+				supervisorGeneration: outbound.lease.supervisorGeneration,
+				activeSessionId: "session-a",
+				connectionId: "connection-a",
+				logicalRequestId: "request-a",
+				offerId: "offer-a",
+				leaseEpoch: 1,
+				authoritativeRevision: 0,
+			},
+			payload: Buffer.from(JSON.stringify(presentation)),
+		});
+		expect(target.socket.write).toHaveBeenCalledTimes(2);
+		expect(observer.socket.write).not.toHaveBeenCalled();
+		expect(JSON.parse(String(vi.mocked(target.socket.write).mock.calls[1]![0]))).toMatchObject({
+			type: "questionnaire_presentation_snapshot",
+			activeSessionId: "session-a",
+			lease: { connectionId: "connection-a" },
+			request: { questions: [{ prompt: "private" }] },
+		});
+
+		await internals.handleCommand(target, {
+			type: "questionnaire_checkpoint",
+			activeSessionId: "session-a",
+			lease: { ...outbound.lease, connectionId: "forged", logicalClientId: "forged" } as never,
+			baseRevision: 0,
+			clientMutationId: "mutation-a",
+			completeDraft: presentation.snapshot.draft,
+		});
+		expect(requestWorker).toHaveBeenCalledWith({
+			type: "worker_questionnaire_checkpoint",
+			lease: outbound.lease,
+			baseRevision: 0,
+			clientMutationId: "mutation-a",
+			completeDraft: presentation.snapshot.draft,
+		});
+
+		internals.handleWorkerFrame(worker, {
+			header: { kind: "outbound", outboundType: "session_status", activeSessionId: "session-a" },
+			payload: Buffer.from(
+				JSON.stringify({
+					type: "session_status",
+					activeSessionId: "session-a",
+					questionnaireState: "presenting",
+					questionnaireQueueDepth: 2,
+				}),
+			),
+		});
+		expect(worker.summaries.get("session-a")).toMatchObject({
+			questionnaireState: "presenting",
+			questionnaireQueueDepth: 2,
+		});
+
+		internals.handleWorkerFrame(worker, {
+			header: { kind: "questionnaire_broker", messageType: "withdraw" },
+			payload: Buffer.from(JSON.stringify({ type: "withdraw", lease: outbound.lease })),
+		});
+		expect(JSON.parse(String(vi.mocked(target.socket.write).mock.calls[3]![0]))).toMatchObject({
+			type: "questionnaire_withdraw",
+			activeSessionId: "session-a",
+			lease: outbound.lease,
+		});
+		await internals.handleCommand(target, {
+			type: "questionnaire_withdraw_ack",
+			activeSessionId: "session-a",
+			lease: outbound.lease as never,
+		});
+		await vi.waitFor(() =>
+			expect(requestWorker).toHaveBeenCalledWith({
+				type: "worker_questionnaire_terminal_ack",
+				logicalRequestId: "request-a",
+			}),
+		);
+
 		internals.questionnaireBroker.disconnect("connection-a");
-		await vi.waitFor(() => expect(requestWorker).toHaveBeenCalledTimes(2));
 		requestWorker.mockClear();
 		internals.clients.delete(target);
 		observer.capabilities = new Set(["extension_ui"]);
@@ -161,7 +248,13 @@ describe("daemon supervisor questionnaire brokerage", () => {
 			header: { kind: "questionnaire_broker", messageType: "presenter_needed" },
 			payload: Buffer.from(JSON.stringify(legacyMessage)),
 		});
-		expect(observer.socket.write).not.toHaveBeenCalled();
+		expect(observer.socket.write).toHaveBeenCalledOnce();
+		expect(JSON.parse(String(vi.mocked(observer.socket.write).mock.calls[0]![0]))).toEqual({
+			type: "session_status",
+			activeSessionId: "session-a",
+			questionnaireState: "presenting",
+			questionnaireQueueDepth: 2,
+		});
 		await vi.waitFor(() =>
 			expect(requestWorker).toHaveBeenCalledWith({
 				type: "worker_questionnaire_offer_result",

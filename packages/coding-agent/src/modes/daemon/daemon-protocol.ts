@@ -16,7 +16,11 @@ import type {
 	AgentHeartbeatManagementAction,
 	AgentHeartbeatUpdateAction,
 } from "../../core/cron-jobs.js";
-import type { InputSource } from "../../core/extensions/types.js";
+import type {
+	ExtensionQuestionnaireDraftV1,
+	ExtensionQuestionnaireRequestV1,
+	InputSource,
+} from "../../core/extensions/types.js";
 import type { CustomMessage } from "../../core/messages.js";
 import type { SessionCwdIssue } from "../../core/session-cwd.js";
 import type { DeleteSessionFileResult } from "../../core/session-file-actions.js";
@@ -58,8 +62,9 @@ export const DAEMON_COMMAND_ENVELOPE_MIN_PROTOCOL_VERSION = 7;
 // Revision 13 narrows agent-origin reach and roster wire shapes to the nuclear family.
 // Revision 14 adds additive public-socket connection incarnation metadata.
 // Revision 15 adds capability-gated questionnaire broker offer and withdrawal messages.
-export const DAEMON_SCHEMA_REVISION = 15;
-export const DAEMON_SCHEMA_ID = "protocol-7-schema-15-4a79f41da462";
+// Revision 16 adds questionnaire CAS mutations and targeted presentation snapshots.
+export const DAEMON_SCHEMA_REVISION = 16;
+export const DAEMON_SCHEMA_ID = "protocol-7-schema-16-830c137d27a0";
 
 export type DaemonProtocolName = typeof DAEMON_PROTOCOL_NAME;
 export type DaemonProtocolVersion = number;
@@ -681,6 +686,15 @@ export type DaemonCommand =
 			activeSessionId: string;
 			lease: DaemonQuestionnaireLease;
 	  }
+	| {
+			id?: string;
+			type: "questionnaire_checkpoint" | "questionnaire_submit";
+			activeSessionId: string;
+			lease: DaemonQuestionnaireLease;
+			baseRevision: number;
+			clientMutationId: string;
+			completeDraft: ExtensionQuestionnaireDraftV1;
+	  }
 	| { id?: string; type: "ack_result"; commandId: string }
 	| { id?: string; type: "prepare_update_restart" }
 	| { id?: string; type: "retry_worker"; activeSessionId: string }
@@ -716,7 +730,16 @@ const DELETE_RLM_SUBAGENT_COMMAND = {
 	capability: "delete_rlm_subagent",
 } as const;
 const FLAT_SESSION_TREE_COMMAND = { minProtocol: 7 } as const;
-const QUESTIONNAIRE_COMMAND = { minProtocol: 7, minSchemaRevision: 15, capability: "questionnaire_v1" } as const;
+const QUESTIONNAIRE_BROKER_COMMAND = {
+	minProtocol: 7,
+	minSchemaRevision: 15,
+	capability: "questionnaire_v1",
+} as const;
+const QUESTIONNAIRE_CAS_COMMAND = {
+	minProtocol: 7,
+	minSchemaRevision: 16,
+	capability: "questionnaire_v1",
+} as const;
 
 export const DAEMON_COMMAND_COMPATIBILITY = {
 	ack_result: LEGACY_DAEMON_COMMAND,
@@ -813,9 +836,11 @@ export const DAEMON_COMMAND_COMPATIBILITY = {
 	get_tool_definition: LEGACY_DAEMON_COMMAND,
 	set_session_entry_label: LEGACY_DAEMON_COMMAND,
 	extension_ui_response: LEGACY_DAEMON_COMMAND,
-	questionnaire_presentability: QUESTIONNAIRE_COMMAND,
-	questionnaire_offer_response: QUESTIONNAIRE_COMMAND,
-	questionnaire_withdraw_ack: QUESTIONNAIRE_COMMAND,
+	questionnaire_presentability: QUESTIONNAIRE_BROKER_COMMAND,
+	questionnaire_offer_response: QUESTIONNAIRE_BROKER_COMMAND,
+	questionnaire_withdraw_ack: QUESTIONNAIRE_BROKER_COMMAND,
+	questionnaire_checkpoint: QUESTIONNAIRE_CAS_COMMAND,
+	questionnaire_submit: QUESTIONNAIRE_CAS_COMMAND,
 	prepare_update_restart: LEGACY_DAEMON_COMMAND,
 	retry_worker: LEGACY_DAEMON_COMMAND,
 	restart: LEGACY_DAEMON_COMMAND,
@@ -942,7 +967,14 @@ export type DaemonOutbound =
 	| { type: "heartbeats_changed" }
 	| { type: "session_event"; activeSessionId: string; event: AgentConnectionSessionEvent; meta?: DaemonEventMeta }
 	| { type: "side_question_event"; activeSessionId: string; event: AgentConnectionSideQuestionEvent }
-	| { type: "session_status"; activeSessionId: string; recap?: string; meta?: DaemonEventMeta }
+	| {
+			type: "session_status";
+			activeSessionId: string;
+			recap?: string;
+			questionnaireState?: "waiting" | "offered" | "presenting";
+			questionnaireQueueDepth?: number;
+			meta?: DaemonEventMeta;
+	  }
 	| {
 			type: "session_replaced";
 			activeSessionId: string;
@@ -1009,6 +1041,14 @@ export type DaemonOutbound =
 	| { type: "questionnaire_offer"; activeSessionId: string; lease: DaemonQuestionnaireLease }
 	| { type: "questionnaire_withdraw"; activeSessionId: string; lease: DaemonQuestionnaireLease }
 	| {
+			type: "questionnaire_presentation_snapshot";
+			activeSessionId: string;
+			lease: DaemonQuestionnaireLease;
+			authoritativeRevision: number;
+			request: ExtensionQuestionnaireRequestV1;
+			draft: ExtensionQuestionnaireDraftV1;
+	  }
+	| {
 			type: "extension_error";
 			activeSessionId: string;
 			extensionPath: string;
@@ -1038,8 +1078,9 @@ export const DAEMON_OUTBOUND_COMPATIBILITY = {
 	session_detached: LEGACY_DAEMON_COMMAND,
 	session_closed: LEGACY_DAEMON_COMMAND,
 	extension_ui_request: LEGACY_DAEMON_COMMAND,
-	questionnaire_offer: QUESTIONNAIRE_COMMAND,
-	questionnaire_withdraw: QUESTIONNAIRE_COMMAND,
+	questionnaire_offer: QUESTIONNAIRE_BROKER_COMMAND,
+	questionnaire_withdraw: QUESTIONNAIRE_BROKER_COMMAND,
+	questionnaire_presentation_snapshot: QUESTIONNAIRE_CAS_COMMAND,
 	extension_error: LEGACY_DAEMON_COMMAND,
 } as const satisfies Record<DaemonOutbound["type"], DaemonCommandCompatibility>;
 
@@ -1110,6 +1151,8 @@ const READ_ONLY_DAEMON_COMMANDS: ReadonlySet<DaemonCommand["type"]> = new Set([
 	"questionnaire_presentability",
 	"questionnaire_offer_response",
 	"questionnaire_withdraw_ack",
+	"questionnaire_checkpoint",
+	"questionnaire_submit",
 	"agent_messages_status",
 	"wait_for_idle",
 	"get_session_header",

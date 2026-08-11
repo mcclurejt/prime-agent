@@ -14,6 +14,10 @@ import type {
 	QuestionnaireOfferResult,
 	QuestionnaireWorkerOfferNeed,
 } from "./questionnaire-broker.js";
+import type {
+	QuestionnairePresentationSnapshot,
+	QuestionnaireWorkerMutation,
+} from "./questionnaire-worker-authority.js";
 
 export const DAEMON_WORKER_ROLE_ENV = "PRIME_AGENT_INTERNAL_DAEMON_WORKER";
 export const DAEMON_WORKER_TOKEN_ENV = "PRIME_AGENT_INTERNAL_DAEMON_WORKER_TOKEN";
@@ -28,6 +32,11 @@ export type WorkerQuestionnaireBrokerMessage =
 	| { type: "presenter_needed"; need: Omit<QuestionnaireWorkerOfferNeed, "workerId"> }
 	| { type: "withdraw"; lease: QuestionnaireLease };
 
+export interface WorkerQuestionnairePresentationMessage {
+	activeSessionId: string;
+	snapshot: QuestionnairePresentationSnapshot;
+}
+
 export type DaemonWorkerFrameHeader =
 	| {
 			kind: "command";
@@ -37,6 +46,16 @@ export type DaemonWorkerFrameHeader =
 	| {
 			kind: "questionnaire_broker";
 			messageType: WorkerQuestionnaireBrokerMessage["type"];
+	  }
+	| {
+			kind: "questionnaire_presentation";
+			supervisorGeneration: string;
+			activeSessionId: string;
+			connectionId: string;
+			logicalRequestId: string;
+			offerId: string;
+			leaseEpoch: number;
+			authoritativeRevision: number;
 	  }
 	| {
 			kind: "outbound";
@@ -101,6 +120,11 @@ export type DaemonWorkerCommand =
 			lease: QuestionnaireLease;
 			reason: "client_lost" | "presentability_lost";
 	  }
+	| ({
+			id?: string;
+			type: "worker_questionnaire_checkpoint" | "worker_questionnaire_submit";
+	  } & QuestionnaireWorkerMutation)
+	| { id?: string; type: "worker_questionnaire_terminal_ack"; logicalRequestId: string }
 	| { id?: string; type: "worker_sync_agent_peers"; peers: AgentSessionMessageAgentSummary[] }
 	| { id?: string; type: "worker_archive_and_shutdown" }
 	| {
@@ -199,6 +223,17 @@ export function isDaemonWorkerFrameHeader(value: unknown): value is DaemonWorker
 	}
 	if (candidate.kind === "questionnaire_broker") {
 		return candidate.messageType === "presenter_needed" || candidate.messageType === "withdraw";
+	}
+	if (candidate.kind === "questionnaire_presentation") {
+		return (
+			typeof candidate.supervisorGeneration === "string" &&
+			typeof candidate.activeSessionId === "string" &&
+			typeof candidate.connectionId === "string" &&
+			typeof candidate.logicalRequestId === "string" &&
+			typeof candidate.offerId === "string" &&
+			Number.isInteger(candidate.leaseEpoch) &&
+			Number.isInteger(candidate.authoritativeRevision)
+		);
 	}
 	return (
 		candidate.kind === "outbound" &&

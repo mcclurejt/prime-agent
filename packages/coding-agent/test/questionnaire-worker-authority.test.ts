@@ -1,0 +1,298 @@
+import { describe, expect, it } from "vitest";
+import type { ExtensionQuestionnaireDraftV1 } from "../src/core/extensions/types.js";
+import type { WorkerQuestionnaireBrokerMessage } from "../src/modes/daemon/daemon-worker-protocol.js";
+import { WorkerUiClientsMirror } from "../src/modes/daemon/daemon-worker-ui-clients.js";
+import {
+	QuestionnaireWorkerAuthority,
+	type QuestionnaireWorkerMutation,
+} from "../src/modes/daemon/questionnaire-worker-authority.js";
+
+const request = {
+	version: 1 as const,
+	title: "Deploy",
+	questions: [
+		{ id: "confirm", kind: "confirm" as const, prompt: "Proceed?", other: {} },
+		{
+			id: "targets",
+			kind: "multi-select" as const,
+			prompt: "Targets?",
+			choices: [
+				{ id: "a", label: "A" },
+				{ id: "b", label: "B" },
+			],
+			other: {},
+		},
+		{ id: "notes", kind: "multiline-text" as const, prompt: "Notes" },
+	],
+};
+
+function initialDraft(): ExtensionQuestionnaireDraftV1 {
+	return {
+		version: 1,
+		currentStep: { kind: "question", questionId: "confirm" },
+		states: [
+			{
+				questionId: "confirm",
+				kind: "confirm",
+				selection: null,
+				otherEditorOpen: false,
+				otherText: "",
+			},
+			{
+				questionId: "targets",
+				kind: "multi-select",
+				choiceIds: [],
+				otherSelected: false,
+				otherEditorOpen: false,
+				otherText: "",
+			},
+			{ questionId: "notes", kind: "multiline-text", value: "" },
+		],
+	};
+}
+
+function editedDraft(): ExtensionQuestionnaireDraftV1 {
+	return {
+		...initialDraft(),
+		currentStep: { kind: "review" },
+		states: [
+			{
+				questionId: "confirm",
+				kind: "confirm",
+				selection: "other",
+				otherEditorOpen: true,
+				otherText: " custom approval ",
+			},
+			{
+				questionId: "targets",
+				kind: "multi-select",
+				choiceIds: ["b", "a"],
+				otherSelected: true,
+				otherEditorOpen: false,
+				otherText: "   ",
+			},
+			{ questionId: "notes", kind: "multiline-text", value: "line one\nline two" },
+		],
+	};
+}
+
+function harness() {
+	const mirror = new WorkerUiClientsMirror();
+	const messages: WorkerQuestionnaireBrokerMessage[] = [];
+	const statuses: Array<{
+		activeSessionId: string;
+		status: { state: "waiting" | "offered" | "presenting" | undefined; queueDepth: number };
+	}> = [];
+	let id = 0;
+	const authority = new QuestionnaireWorkerAuthority({
+		uiClients: mirror,
+		sendBrokerMessage: (message) => {
+			messages.push(message);
+			return true;
+		},
+		onStatusChanged: (activeSessionId, status) => statuses.push({ activeSessionId, status }),
+		createId: () => `id-${++id}`,
+		now: () => id,
+	});
+	return { authority, mirror, messages, statuses };
+}
+
+function syncRich(
+	mirror: WorkerUiClientsMirror,
+	generation = "generation-a",
+	revision = 1,
+	connectionId = "connection-a",
+) {
+	mirror.applySync({
+		supervisorGeneration: generation,
+		syncRevision: revision,
+		clients: [
+			{
+				logicalClientId: `logical-${connectionId}`,
+				connectionId,
+				activeSessionId: "session-a",
+				capabilities: ["extension_ui", "questionnaire_v1"],
+				presentable: true,
+			},
+		],
+		complete: true,
+	});
+}
+
+function acceptLatest(authority: QuestionnaireWorkerAuthority, messages: WorkerQuestionnaireBrokerMessage[]) {
+	const need = messages.at(-1);
+	if (need?.type !== "presenter_needed") throw new Error("missing presenter need");
+	const lease = {
+		supervisorGeneration: need.need.supervisorGeneration,
+		logicalRequestId: need.need.logicalRequestId,
+		offerId: need.need.offerId,
+		leaseEpoch: need.need.leaseEpoch,
+		logicalClientId: "logical-connection-a",
+		connectionId: "connection-a",
+		mode: "rich" as const,
+	};
+	authority.handleOfferResult({ status: "accepted", lease });
+	return lease;
+}
+
+function mutation(
+	lease: ReturnType<typeof acceptLatest>,
+	baseRevision: number,
+	clientMutationId: string,
+	completeDraft: ExtensionQuestionnaireDraftV1,
+): QuestionnaireWorkerMutation {
+	return { lease, baseRevision, clientMutationId, completeDraft };
+}
+
+describe("QuestionnaireWorkerAuthority", () => {
+	it("waits for a complete broker barrier and exposes only the FIFO session head", () => {
+		const { authority, mirror, messages, statuses } = harness();
+		const first = authority.request("session-a", request);
+		const second = authority.request("session-a", request);
+
+		expect(authority.status("session-a")).toEqual({ state: "waiting", queueDepth: 2 });
+		expect(messages).toEqual([]);
+		syncRich(mirror);
+		authority.handleUiClientsChanged();
+
+		expect(messages).toHaveLength(1);
+		expect(messages[0]).toMatchObject({
+			type: "presenter_needed",
+			need: { logicalRequestId: first.logicalRequestId, leaseEpoch: 1, mode: "undecided" },
+		});
+		expect(messages[0]).not.toMatchObject({ need: { logicalRequestId: second.logicalRequestId } });
+		expect(authority.status("session-a")).toEqual({ state: "offered", queueDepth: 2 });
+		expect(statuses.at(-1)).toEqual({
+			activeSessionId: "session-a",
+			status: { state: "offered", queueDepth: 2 },
+		});
+		expect(JSON.stringify(statuses)).not.toMatch(/Deploy|Proceed|Targets|Notes/u);
+	});
+
+	it("commits rich mode once, applies canonical checkpoint CAS, and replays only identical mutations", () => {
+		const { authority, mirror, messages } = harness();
+		syncRich(mirror);
+		const pending = authority.request("session-a", request);
+		const lease = acceptLatest(authority, messages);
+		expect(authority.status("session-a")).toEqual({ state: "presenting", queueDepth: 1 });
+
+		const first = authority.checkpoint(mutation(lease, 0, "mutation-a", editedDraft()));
+		expect(first).toMatchObject({ status: "ack", ack: { clientMutationId: "mutation-a", authoritativeRevision: 1 } });
+		if (first.status !== "ack") throw new Error("checkpoint did not ACK");
+		expect(first.ack.draftHash).toMatch(/^[a-f0-9]{64}$/u);
+		expect(authority.checkpoint(mutation(lease, 0, "mutation-a", editedDraft()))).toEqual(first);
+
+		const collisionDraft = editedDraft();
+		collisionDraft.states[2] = { questionId: "notes", kind: "multiline-text", value: "different" };
+		expect(authority.checkpoint(mutation(lease, 0, "mutation-a", collisionDraft))).toEqual({
+			status: "mutation-id-collision",
+		});
+		const stale = authority.checkpoint(mutation(lease, 0, "mutation-b", initialDraft()));
+		expect(stale).toMatchObject({
+			status: "conflict",
+			authoritativeRevision: 1,
+			draftHash: first.ack.draftHash,
+			snapshot: { lease, authoritativeRevision: 1, request: pending.request },
+		});
+	});
+
+	it("rejects wrong leases and prevents an old presenter from overwriting an intervening edit", () => {
+		const { authority, mirror, messages } = harness();
+		syncRich(mirror);
+		authority.request("session-a", request);
+		const leaseA = acceptLatest(authority, messages);
+		authority.handleLeaseRevoked(leaseA);
+		authority.handleUiClientsChanged();
+		const leaseB = acceptLatest(authority, messages);
+		expect(leaseB.leaseEpoch).toBe(2);
+		const applied = authority.checkpoint(mutation(leaseB, 0, "mutation-b", editedDraft()));
+		expect(applied).toMatchObject({ status: "ack", ack: { authoritativeRevision: 1 } });
+
+		authority.handleLeaseRevoked(leaseB);
+		authority.handleUiClientsChanged();
+		const leaseA2 = acceptLatest(authority, messages);
+		const oldBase = authority.checkpoint(mutation(leaseA2, 0, "mutation-a-old", initialDraft()));
+		expect(oldBase).toMatchObject({ status: "conflict", authoritativeRevision: 1 });
+		expect(authority.checkpoint(mutation(leaseA, 1, "mutation-stale-lease", editedDraft()))).toEqual({
+			status: "stale-lease",
+		});
+	});
+
+	it("atomically submits ordered responses, advances FIFO, and tombstones duplicate submit", async () => {
+		const { authority, mirror, messages } = harness();
+		syncRich(mirror);
+		const first = authority.request("session-a", request);
+		const second = authority.request("session-a", request);
+		const lease = acceptLatest(authority, messages);
+
+		const submitted = authority.submit(mutation(lease, 0, "submit-a", editedDraft()));
+		expect(submitted).toMatchObject({
+			status: "terminal",
+			outcome: {
+				status: "submitted",
+				responses: [
+					{ questionId: "confirm", status: "answered", kind: "confirm", otherText: " custom approval " },
+					{ questionId: "targets", status: "answered", kind: "multi-select", choiceIds: ["a", "b"] },
+					{ questionId: "notes", status: "answered", kind: "multiline-text", value: "line one\nline two" },
+				],
+			},
+		});
+		expect(await first.outcome).toEqual(submitted.status === "terminal" ? submitted.outcome : undefined);
+		expect(messages.at(-2)).toEqual({ type: "withdraw", lease });
+		expect(messages.at(-1)).toMatchObject({
+			type: "presenter_needed",
+			need: { logicalRequestId: second.logicalRequestId },
+		});
+		expect(authority.submit(mutation(lease, 0, "submit-a", editedDraft()))).toEqual(submitted);
+		expect(authority.submit(mutation(lease, 0, "submit-a", initialDraft()))).toEqual({
+			status: "mutation-id-collision",
+		});
+		authority.acknowledgeTerminalDelivery(first.logicalRequestId);
+		expect(authority.submit(mutation(lease, 0, "submit-a", editedDraft()))).toEqual({ status: "stale-lease" });
+	});
+
+	it("rejects an accepted lease that changes an already committed presentation mode", () => {
+		const { authority, mirror, messages } = harness();
+		syncRich(mirror);
+		authority.request("session-a", request);
+		const firstLease = acceptLatest(authority, messages);
+		authority.handleLeaseRevoked(firstLease);
+		const need = messages.at(-1);
+		if (need?.type !== "presenter_needed") throw new Error("missing replacement presenter need");
+		const wrongModeLease = {
+			supervisorGeneration: need.need.supervisorGeneration,
+			logicalRequestId: need.need.logicalRequestId,
+			offerId: need.need.offerId,
+			leaseEpoch: need.need.leaseEpoch,
+			logicalClientId: "logical-connection-a",
+			connectionId: "connection-a",
+			mode: "legacy" as const,
+		};
+
+		authority.handleOfferResult({ status: "accepted", lease: wrongModeLease });
+
+		expect(messages.at(-2)).toEqual({ type: "withdraw", lease: wrongModeLease });
+		expect(messages.at(-1)).toMatchObject({ type: "presenter_needed", need: { mode: "rich", leaseEpoch: 3 } });
+		expect(authority.status("session-a")).toEqual({ state: "offered", queueDepth: 1 });
+	});
+
+	it("preserves acknowledged authority across generation rollover and aborts without fabricating dismissal", async () => {
+		const { authority, mirror, messages } = harness();
+		syncRich(mirror);
+		const controller = new AbortController();
+		const pending = authority.request("session-a", request, { signal: controller.signal });
+		const oldLease = acceptLatest(authority, messages);
+		authority.checkpoint(mutation(oldLease, 0, "checkpoint-a", editedDraft()));
+
+		syncRich(mirror, "generation-b", 1, "connection-b");
+		authority.handleUiClientsChanged();
+		const newNeed = messages.at(-1);
+		expect(newNeed).toMatchObject({
+			type: "presenter_needed",
+			need: { supervisorGeneration: "generation-b", leaseEpoch: 2, mode: "rich" },
+		});
+		controller.abort();
+		expect(await pending.outcome).toEqual({ status: "aborted", reason: "signal" });
+		expect(authority.status("session-a")).toEqual({ state: undefined, queueDepth: 0 });
+	});
+});

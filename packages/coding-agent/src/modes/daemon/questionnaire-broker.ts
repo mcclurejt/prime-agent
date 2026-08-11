@@ -52,6 +52,7 @@ export interface QuestionnaireBrokerCallbacks {
 	deliverWithdraw(connectionId: string, activeSessionId: string, lease: QuestionnaireLease): void;
 	onOfferResult(workerId: string, result: QuestionnaireOfferResult): void;
 	onLeaseRevoked(workerId: string, lease: QuestionnaireLease, reason: "client_lost" | "presentability_lost"): void;
+	onWithdrawn(workerId: string, lease: QuestionnaireLease): void;
 }
 
 interface QueuedNeed {
@@ -113,6 +114,7 @@ export class QuestionnaireBroker {
 	private readonly queuedNeeds = new Map<string, QueuedNeed>();
 	private readonly pendingOffersByConnection = new Map<string, PendingOffer>();
 	private readonly activeLeasesByConnection = new Map<string, ActiveLease>();
+	private readonly suppressedPresenterKeys = new Set<string>();
 	private sequence = 0;
 	private arbitrating = false;
 
@@ -122,6 +124,7 @@ export class QuestionnaireBroker {
 	) {}
 
 	synchronizePresenters(presenters: readonly QuestionnairePresenter[]): void {
+		this.suppressedPresenterKeys.clear();
 		const next = new Map<string, QuestionnairePresenter>();
 		for (const presenter of presenters) next.set(presenterKey(presenter), { ...presenter });
 		this.presenters = next;
@@ -199,6 +202,7 @@ export class QuestionnaireBroker {
 			this.callbacks.onOfferResult(pending.workerId, { status: "accepted", lease: pending.lease });
 			return "accepted";
 		}
+		this.suppressedPresenterKeys.add(`${connectionId}\0${activeSessionId}`);
 		this.callbacks.onOfferResult(pending.workerId, {
 			status: "rejected",
 			reason: response,
@@ -222,15 +226,36 @@ export class QuestionnaireBroker {
 	}
 
 	validateLeaseMessage(connectionId: string, activeSessionId: string, stamp: QuestionnaireLeaseStamp): boolean {
-		const active = this.activeLeasesByConnection.get(connectionId);
-		return Boolean(
-			active && active.activeSessionId === activeSessionId && !active.withdrawing && sameStamp(active.lease, stamp),
-		);
+		return this.leaseForMessage(connectionId, activeSessionId, stamp) !== undefined;
 	}
 
-	routeToLease(workerId: string, stamp: QuestionnaireLeaseStamp, deliver: (connectionId: string) => void): boolean {
+	leaseForMessage(
+		connectionId: string,
+		activeSessionId: string,
+		stamp: QuestionnaireLeaseStamp,
+		allowWithdrawing = false,
+	): QuestionnaireLease | undefined {
+		const active = this.activeLeasesByConnection.get(connectionId);
+		return active &&
+			active.activeSessionId === activeSessionId &&
+			(allowWithdrawing || !active.withdrawing) &&
+			sameStamp(active.lease, stamp)
+			? { ...active.lease }
+			: undefined;
+	}
+
+	routeToLease(
+		workerId: string,
+		activeSessionId: string,
+		stamp: QuestionnaireLeaseStamp,
+		deliver: (connectionId: string) => void,
+	): boolean {
 		const active = [...this.activeLeasesByConnection.values()].find(
-			(candidate) => candidate.workerId === workerId && !candidate.withdrawing && sameStamp(candidate.lease, stamp),
+			(candidate) =>
+				candidate.workerId === workerId &&
+				candidate.activeSessionId === activeSessionId &&
+				!candidate.withdrawing &&
+				sameStamp(candidate.lease, stamp),
 		);
 		if (!active) return false;
 		deliver(active.lease.connectionId);
@@ -259,6 +284,7 @@ export class QuestionnaireBroker {
 			return "stale";
 		}
 		this.activeLeasesByConnection.delete(connectionId);
+		this.callbacks.onWithdrawn(active.workerId, active.lease);
 		this.arbitrate();
 		return "accepted";
 	}
@@ -327,6 +353,7 @@ export class QuestionnaireBroker {
 			(presenter) =>
 				presenter.activeSessionId === need.activeSessionId &&
 				presenter.presentable &&
+				!this.suppressedPresenterKeys.has(presenterKey(presenter)) &&
 				!this.pendingOffersByConnection.has(presenter.connectionId) &&
 				!this.activeLeasesByConnection.has(presenter.connectionId),
 		);
@@ -358,6 +385,9 @@ export class QuestionnaireBroker {
 		if (!pending) return;
 		clearTimeout(pending.timer);
 		this.pendingOffersByConnection.delete(connectionId);
+		if (reason === "presentation_error") {
+			this.suppressedPresenterKeys.add(`${connectionId}\0${pending.activeSessionId}`);
+		}
 		this.callbacks.onOfferResult(pending.workerId, {
 			status: "rejected",
 			reason,

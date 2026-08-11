@@ -54,6 +54,7 @@ function harness(): {
 		deliverWithdraw: (connectionId, _activeSessionId, lease) => withdraws.push({ connectionId, lease }),
 		onOfferResult: (workerId, result) => results.push({ workerId, result }),
 		onLeaseRevoked: vi.fn(),
+		onWithdrawn: vi.fn(),
 	};
 	return { broker: new QuestionnaireBroker("generation-a", callbacks), callbacks, offers, results, withdraws };
 }
@@ -210,16 +211,18 @@ describe("QuestionnaireBroker", () => {
 		const delivered: Array<{ connectionId: string; payload: unknown }> = [];
 		const payload = { private: "questionnaire prompt and draft" };
 
-		expect(broker.routeToLease("worker-a", lease, (connectionId) => delivered.push({ connectionId, payload }))).toBe(
-			true,
-		);
+		expect(
+			broker.routeToLease("worker-a", "session-a", lease, (connectionId) =>
+				delivered.push({ connectionId, payload }),
+			),
+		).toBe(true);
 		expect(delivered).toEqual([{ connectionId: "connection-a", payload }]);
-		expect(broker.routeToLease("worker-a", { ...lease, offerId: "stale" }, () => {})).toBe(false);
+		expect(broker.routeToLease("worker-a", "session-a", { ...lease, offerId: "stale" }, () => {})).toBe(false);
 		expect(JSON.stringify(broker.debugContentFreeState())).not.toContain("questionnaire prompt and draft");
 	});
 
 	it("keeps capacity until an exact withdraw ACK, then permits the next fair offer", () => {
-		const { broker, offers, withdraws } = harness();
+		const { broker, callbacks, offers, withdraws } = harness();
 		broker.synchronizePresenters([presenter("connection-a", "session-a"), presenter("connection-a", "session-b")]);
 		broker.offer(need("worker-a", "session-a", 1));
 		const lease = acceptedLease(offers);
@@ -228,9 +231,13 @@ describe("QuestionnaireBroker", () => {
 
 		expect(broker.withdraw("worker-a", lease)).toBe(true);
 		expect(withdraws).toEqual([{ connectionId: "connection-a", lease }]);
+		expect(broker.leaseForMessage("connection-a", "session-a", lease)).toBeUndefined();
+		expect(broker.leaseForMessage("connection-a", "session-a", lease, true)).toEqual(lease);
 		expect(broker.acknowledgeWithdraw("connection-a", "session-a", { ...lease, leaseEpoch: 2 })).toBe("stale");
 		expect(offers).toHaveLength(1);
 		expect(broker.acknowledgeWithdraw("connection-a", "session-a", lease)).toBe("accepted");
+		expect(callbacks.onWithdrawn).toHaveBeenCalledWith("worker-a", lease);
+		expect(broker.leaseForMessage("connection-a", "session-a", lease, true)).toBeUndefined();
 		expect(offers).toHaveLength(2);
 		expect(acceptedLease(offers, 1).logicalRequestId).toBe("request-worker-b");
 	});

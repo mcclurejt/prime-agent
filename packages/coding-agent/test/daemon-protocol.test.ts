@@ -28,6 +28,11 @@ import {
 describe("daemon protocol helpers", () => {
 	it("keeps the advertised schema identity synchronized with wire type shapes", () => {
 		const source = readFileSync(resolve(__dirname, "../src/modes/daemon/daemon-protocol.ts"), "utf8");
+		const sessionListSource = readFileSync(resolve(__dirname, "../src/modes/daemon/daemon-session-list.ts"), "utf8");
+		const sessionSummarySource = sessionListSource.slice(
+			sessionListSource.indexOf("export interface SessionSummary"),
+			sessionListSource.indexOf("/**\n * Pick the model fallback message"),
+		);
 		const questionnaireSource = source.slice(
 			source.indexOf("export type DaemonQuestionnairePresentationMode"),
 			source.indexOf("export type DaemonClientCapability"),
@@ -50,7 +55,7 @@ describe("daemon protocol helpers", () => {
 		);
 		const digest = createHash("sha256")
 			.update(
-				`${questionnaireSource}\n${commandSource}\n${attachResultSource}\n${savedSessionSource}\n${outboundSource}`,
+				`${sessionSummarySource}\n${questionnaireSource}\n${commandSource}\n${attachResultSource}\n${savedSessionSource}\n${outboundSource}`,
 			)
 			.digest("hex")
 			.slice(0, 12);

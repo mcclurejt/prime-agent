@@ -200,9 +200,11 @@ import {
 	SESSION_LEASE_OWNER_ID_ENV,
 	SESSION_LEASES_ENABLED_ENV,
 	type WorkerQuestionnaireBrokerMessage,
+	type WorkerQuestionnairePresentationMessage,
 } from "./daemon-worker-protocol.js";
 import { WorkerUiClientsMirror } from "./daemon-worker-ui-clients.js";
 import { MutationDrainLatch } from "./mutation-drain-latch.js";
+import { QuestionnaireWorkerAuthority } from "./questionnaire-worker-authority.js";
 import { serializeSavedSessionInfo } from "./saved-session-info.js";
 import {
 	createSnapshotTranscriptChunks,
@@ -445,6 +447,25 @@ export class AgentDaemon {
 	private socketIdentity?: DaemonSocketIdentity;
 	private readonly clients = new Set<DaemonSocketClient>();
 	private readonly workerUiClients = new WorkerUiClientsMirror();
+	private readonly questionnaireAuthority = new QuestionnaireWorkerAuthority({
+		uiClients: this.workerUiClients,
+		sendBrokerMessage: (message) => this.sendWorkerQuestionnaireBrokerMessage(message),
+		onStatusChanged: (activeSessionId, status) => {
+			const state = this.sessions.get(activeSessionId);
+			if (!state) return;
+			state.questionnaireState = status.state;
+			state.questionnaireQueueDepth = status.queueDepth > 0 ? status.queueDepth : undefined;
+			this.broadcastToSession(state, {
+				type: "session_status",
+				activeSessionId,
+				recap: state.summaryState?.summary,
+				questionnaireState: state.questionnaireState,
+				questionnaireQueueDepth: state.questionnaireQueueDepth,
+			});
+		},
+		createId: () => randomUUID(),
+		now: () => Date.now(),
+	});
 	private readonly sessions = new Map<string, ActiveSessionState>();
 	private readonly openingSessions = new Map<string, Promise<ActiveSessionState>>();
 	/** Covers path resolution through publication in openingSessions, before the runtime promise exists. */
@@ -1237,6 +1258,10 @@ export class AgentDaemon {
 				shutdown: () => {
 					void this.shutdown(0);
 				},
+				questionnaire: (targetSessionState, request, options) =>
+					this.options.worker
+						? this.questionnaireAuthority.request(targetSessionState.activeSessionId, request, options).outcome
+						: Promise.resolve({ status: "unsupported" }),
 				subagentRuntimeHost: this.createSubagentRuntimeHost(state),
 			});
 			if (runtimeOpenGuard) {
@@ -3358,16 +3383,34 @@ export class AgentDaemon {
 					return;
 				}
 				case "worker_ui_clients_sync":
-					this.workerUiClients.applySync(command);
+					if (this.workerUiClients.applySync(command)) this.questionnaireAuthority.handleUiClientsChanged();
 					this.writeWorkerSuccess(client, command);
 					return;
 				case "worker_ui_client_delta":
-					this.workerUiClients.applyDelta(command);
+					if (this.workerUiClients.applyDelta(command)) this.questionnaireAuthority.handleUiClientsChanged();
 					this.writeWorkerSuccess(client, command);
 					return;
-				case "worker_questionnaire_offer_result":
+				case "worker_questionnaire_offer_result": {
+					this.questionnaireAuthority.handleOfferResult(command.result);
+					if (command.result.status === "accepted") {
+						const presentation = this.questionnaireAuthority.presentationForLease(command.result.lease);
+						if (presentation) this.sendWorkerQuestionnairePresentation(presentation);
+					}
+					this.writeWorkerSuccess(client, command);
+					return;
+				}
 				case "worker_questionnaire_lease_revoked":
-					// Phase 3D binds these authenticated broker results to worker-owned request authority.
+					this.questionnaireAuthority.handleLeaseRevoked(command.lease);
+					this.writeWorkerSuccess(client, command);
+					return;
+				case "worker_questionnaire_checkpoint":
+					this.writeWorkerSuccess(client, command, this.questionnaireAuthority.checkpoint(command));
+					return;
+				case "worker_questionnaire_submit":
+					this.writeWorkerSuccess(client, command, this.questionnaireAuthority.submit(command));
+					return;
+				case "worker_questionnaire_terminal_ack":
+					this.questionnaireAuthority.acknowledgeTerminalDelivery(command.logicalRequestId);
 					this.writeWorkerSuccess(client, command);
 					return;
 				case "worker_sync_agent_peers":
@@ -6520,9 +6563,7 @@ export class AgentDaemon {
 	}
 
 	sendWorkerQuestionnaireBrokerMessage(message: WorkerQuestionnaireBrokerMessage): boolean {
-		const supervisor = [...this.supervisorClaims.keys()].find(
-			(client) => client.authenticated === true && !client.socket.destroyed,
-		);
+		const supervisor = this.authenticatedSupervisorClient();
 		if (!supervisor) return false;
 		const frame = encodePrivateFrame<DaemonWorkerFrameHeader>(
 			{ kind: "questionnaire_broker", messageType: message.type },
@@ -6531,6 +6572,34 @@ export class AgentDaemon {
 		const accepted = supervisor.socket.write(frame);
 		if (!accepted) supervisor.backpressured = true;
 		return true;
+	}
+
+	sendWorkerQuestionnairePresentation(message: WorkerQuestionnairePresentationMessage): boolean {
+		const supervisor = this.authenticatedSupervisorClient();
+		if (!supervisor) return false;
+		const { lease, authoritativeRevision } = message.snapshot;
+		const frame = encodePrivateFrame<DaemonWorkerFrameHeader>(
+			{
+				kind: "questionnaire_presentation",
+				supervisorGeneration: lease.supervisorGeneration,
+				activeSessionId: message.activeSessionId,
+				connectionId: lease.connectionId,
+				logicalRequestId: lease.logicalRequestId,
+				offerId: lease.offerId,
+				leaseEpoch: lease.leaseEpoch,
+				authoritativeRevision,
+			},
+			Buffer.from(serializeJsonLine(message)),
+		);
+		const accepted = supervisor.socket.write(frame);
+		if (!accepted) supervisor.backpressured = true;
+		return true;
+	}
+
+	private authenticatedSupervisorClient(): DaemonSocketClient | undefined {
+		return [...this.supervisorClaims.keys()].find(
+			(client) => client.authenticated === true && !client.socket.destroyed,
+		);
 	}
 
 	private write(client: DaemonSocketClient, message: DaemonOutbound): boolean {

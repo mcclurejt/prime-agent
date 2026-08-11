@@ -6,6 +6,7 @@ import {
 	isDaemonWorkerFrameHeader,
 	isWorkerQuestionnaireBrokerMessage,
 	type WorkerQuestionnaireBrokerMessage,
+	type WorkerQuestionnairePresentationMessage,
 } from "../src/modes/daemon/daemon-worker-protocol.js";
 import { PrivateFrameDecoder } from "../src/modes/session-worker/private-framing.js";
 
@@ -43,6 +44,7 @@ describe("worker questionnaire broker transport", () => {
 		const internals = daemon as unknown as {
 			supervisorClaims: Map<DaemonSocketClient, unknown>;
 			sendWorkerQuestionnaireBrokerMessage(message: WorkerQuestionnaireBrokerMessage): boolean;
+			sendWorkerQuestionnairePresentation(message: WorkerQuestionnairePresentationMessage): boolean;
 		};
 		internals.supervisorClaims.set(client, {});
 		const message: WorkerQuestionnaireBrokerMessage = {
@@ -83,5 +85,62 @@ describe("worker questionnaire broker transport", () => {
 				},
 			}),
 		).toBe(false);
+	});
+
+	it("frames targeted presentation content separately with exact lease and revision stamps", () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-worker-questionnaire-presentation.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-worker-questionnaire", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+			worker: { authenticationToken: "worker-token" },
+		});
+		const writes: Buffer[] = [];
+		const client = supervisorClient(
+			vi.fn((chunk: Uint8Array) => {
+				writes.push(Buffer.from(chunk));
+				return true;
+			}),
+		);
+		const internals = daemon as unknown as {
+			supervisorClaims: Map<DaemonSocketClient, unknown>;
+			sendWorkerQuestionnairePresentation(message: WorkerQuestionnairePresentationMessage): boolean;
+		};
+		internals.supervisorClaims.set(client, {});
+		const message: WorkerQuestionnairePresentationMessage = {
+			activeSessionId: "session-a",
+			snapshot: {
+				lease: {
+					supervisorGeneration: "generation-a",
+					logicalRequestId: "request-a",
+					offerId: "offer-a",
+					leaseEpoch: 3,
+					logicalClientId: "logical-a",
+					connectionId: "connection-a",
+					mode: "rich",
+				},
+				authoritativeRevision: 7,
+				request: { version: 1, questions: [{ id: "q", kind: "short-text", prompt: "private prompt" }] },
+				draft: {
+					version: 1,
+					currentStep: { kind: "question", questionId: "q" },
+					states: [{ questionId: "q", kind: "short-text", value: "private draft" }],
+				},
+			},
+		};
+
+		expect(internals.sendWorkerQuestionnairePresentation(message)).toBe(true);
+		const frames = new PrivateFrameDecoder(isDaemonWorkerFrameHeader).push(writes[0]!);
+		expect(frames[0]!.header).toMatchObject({
+			kind: "questionnaire_presentation",
+			supervisorGeneration: "generation-a",
+			activeSessionId: "session-a",
+			connectionId: "connection-a",
+			logicalRequestId: "request-a",
+			offerId: "offer-a",
+			leaseEpoch: 3,
+			authoritativeRevision: 7,
+		});
+		expect(JSON.parse(frames[0]!.payload.toString("utf8"))).toEqual(message);
 	});
 });

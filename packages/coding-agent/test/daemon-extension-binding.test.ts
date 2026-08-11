@@ -130,6 +130,7 @@ describe("daemon extension binding", () => {
 				outbound.push(message);
 			},
 			shutdown: () => {},
+			questionnaire: async () => ({ status: "unsupported" }),
 		});
 
 		await runtime.session.prompt("hello");
@@ -146,6 +147,53 @@ describe("daemon extension binding", () => {
 				"partial",
 			);
 		}
+	});
+
+	it("routes extension questionnaires through the daemon worker authority callback", async () => {
+		let commandOutcome: unknown;
+		const runtime = await createRuntimeForTest((pi) => {
+			pi.registerCommand("daemon-questionnaire", {
+				description: "daemon questionnaire",
+				handler: async (_args, ctx) => {
+					commandOutcome = await ctx.ui.questionnaire?.({
+						version: 1,
+						questions: [{ id: "confirm", kind: "confirm", prompt: "Proceed?" }],
+					});
+				},
+			});
+		}, []);
+		const state: ActiveSessionState = {
+			activeSessionId: "active-questionnaire",
+			runtime,
+			clients: new Set(),
+			pendingAttaches: 0,
+			extensionUiRequests: new Map(),
+			eventGeneration: "generation-questionnaire",
+			lastEventSequence: 0,
+		};
+		let callbackState: ActiveSessionState | undefined;
+		let callbackRequest: unknown;
+		await bindActiveSessionState(state, {
+			broadcast: () => {},
+			shutdown: () => {},
+			questionnaire: async (targetState, request) => {
+				callbackState = targetState;
+				callbackRequest = request;
+				return { status: "submitted", responses: [{ questionId: "confirm", status: "unanswered" }] };
+			},
+		});
+
+		await runtime.session.prompt("/daemon-questionnaire");
+
+		expect(callbackState).toBe(state);
+		expect(callbackRequest).toEqual({
+			version: 1,
+			questions: [{ id: "confirm", kind: "confirm", prompt: "Proceed?" }],
+		});
+		expect(commandOutcome).toEqual({
+			status: "submitted",
+			responses: [{ questionId: "confirm", status: "unanswered" }],
+		});
 	});
 
 	it("keeps extension replacement callbacks daemon-side and rebinds before withSession", async () => {
@@ -222,6 +270,7 @@ describe("daemon extension binding", () => {
 			shutdown: () => {
 				phases.push("shutdown");
 			},
+			questionnaire: async () => ({ status: "unsupported" }),
 		});
 
 		await runtime.session.prompt("/daemon-replace");

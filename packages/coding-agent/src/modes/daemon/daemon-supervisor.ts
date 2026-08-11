@@ -117,6 +117,7 @@ import {
 	SESSION_LEASE_OWNER_ID_ENV,
 	SESSION_LEASES_ENABLED_ENV,
 	type WorkerQuestionnaireBrokerMessage,
+	type WorkerQuestionnairePresentationMessage,
 	type WorkerUiClient,
 } from "./daemon-worker-protocol.js";
 import { SupervisorWorkerUiClientsSync } from "./daemon-worker-ui-clients.js";
@@ -250,6 +251,8 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"questionnaire_presentability",
 	"questionnaire_offer_response",
 	"questionnaire_withdraw_ack",
+	"questionnaire_checkpoint",
+	"questionnaire_submit",
 	"prepare_update_restart",
 	"retry_worker",
 	"restart",
@@ -658,6 +661,7 @@ export class DaemonSupervisor {
 				}),
 			onOfferResult: (workerId, result) => this.sendQuestionnaireOfferResult(workerId, result),
 			onLeaseRevoked: (workerId, lease, reason) => this.sendQuestionnaireLeaseRevoked(workerId, lease, reason),
+			onWithdrawn: (workerId, lease) => this.sendQuestionnaireTerminalAck(workerId, lease.logicalRequestId),
 		});
 	}
 
@@ -1082,7 +1086,7 @@ export class DaemonSupervisor {
 			cleaned = true;
 			client.detachInput();
 			this.clients.delete(client);
-			this.questionnaireBroker.disconnect(client.connectionId);
+			this.questionnaireBroker?.disconnect(client.connectionId);
 			this.cancelWaitingPromptAdmissionsForClient(client);
 			for (const activeSessionId of [...client.attachedActiveSessionIds]) {
 				client.attachedActiveSessionIds.delete(activeSessionId);
@@ -1831,6 +1835,10 @@ export class DaemonSupervisor {
 					command.lease,
 					command.response,
 				);
+				if (status === "accepted" && command.response !== "accepted") {
+					client.questionnairePresentableActiveSessionIds?.delete(command.activeSessionId);
+					this.scheduleWorkerUiClientsSyncForClient(client);
+				}
 				return success(command.id, command.type, { status });
 			}
 			case "questionnaire_withdraw_ack": {
@@ -1840,6 +1848,29 @@ export class DaemonSupervisor {
 					command.lease,
 				);
 				return success(command.id, command.type, { status });
+			}
+			case "questionnaire_checkpoint":
+			case "questionnaire_submit": {
+				const lease = this.questionnaireBroker.leaseForMessage(
+					client.connectionId,
+					command.activeSessionId,
+					command.lease,
+					command.type === "questionnaire_submit",
+				);
+				if (!lease) return success(command.id, command.type, { status: "stale-lease" as const });
+				const match = await this.findWorkerForClient(client, command.activeSessionId);
+				if (!match.worker.client) throw new Error("Session worker is not connected");
+				const response = await match.worker.client.requestWorker({
+					type:
+						command.type === "questionnaire_checkpoint"
+							? "worker_questionnaire_checkpoint"
+							: "worker_questionnaire_submit",
+					lease,
+					baseRevision: command.baseRevision,
+					clientMutationId: command.clientMutationId,
+					completeDraft: command.completeDraft,
+				});
+				return { ...response, id: command.id, command: command.type };
 			}
 			case "delete_saved_session":
 				if (!command.activeSessionId) {
@@ -2399,6 +2430,7 @@ export class DaemonSupervisor {
 	}
 
 	private synchronizeQuestionnairePresenters(): void {
+		if (!this.clients || !this.questionnaireBroker) return;
 		const presenters: QuestionnairePresenter[] = [];
 		for (const client of this.clients) {
 			for (const activeSessionId of client.attachedActiveSessionIds) {
@@ -2416,7 +2448,10 @@ export class DaemonSupervisor {
 
 	private deliverQuestionnaireBrokerEvent(
 		connectionId: string,
-		event: Extract<DaemonOutbound, { type: "questionnaire_offer" | "questionnaire_withdraw" }>,
+		event: Extract<
+			DaemonOutbound,
+			{ type: "questionnaire_offer" | "questionnaire_withdraw" | "questionnaire_presentation_snapshot" }
+		>,
 	): void {
 		const client = [...this.clients].find((candidate) => candidate.connectionId === connectionId);
 		if (
@@ -2460,6 +2495,19 @@ export class DaemonSupervisor {
 			);
 	}
 
+	private sendQuestionnaireTerminalAck(workerId: string, logicalRequestId: string): void {
+		const worker = this.workers.get(workerId);
+		if (!worker?.client) return;
+		void worker.client
+			.requestWorker({ type: "worker_questionnaire_terminal_ack", logicalRequestId })
+			.then((response) => {
+				if (!response.success) throw new Error(response.error);
+			})
+			.catch((error: unknown) =>
+				this.log(`Could not acknowledge questionnaire cleanup on worker ${workerId}: ${String(error)}`),
+			);
+	}
+
 	private handleWorkerQuestionnaireBrokerMessage(
 		worker: ResidentWorker,
 		message: WorkerQuestionnaireBrokerMessage,
@@ -2480,6 +2528,47 @@ export class DaemonSupervisor {
 			return;
 		}
 		this.questionnaireBroker.offer({ ...message.need, workerId: worker.descriptor.workerId });
+	}
+
+	private handleWorkerQuestionnairePresentation(
+		worker: ResidentWorker,
+		header: Extract<DaemonWorkerFrameHeader, { kind: "questionnaire_presentation" }>,
+		payload: Buffer,
+	): void {
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(payload.toString("utf8"));
+		} catch {
+			return;
+		}
+		if (!parsed || typeof parsed !== "object") return;
+		const candidate = parsed as Partial<WorkerQuestionnairePresentationMessage>;
+		const snapshot = candidate.snapshot;
+		const lease = snapshot?.lease;
+		if (
+			candidate.activeSessionId !== header.activeSessionId ||
+			!lease ||
+			lease.supervisorGeneration !== header.supervisorGeneration ||
+			lease.connectionId !== header.connectionId ||
+			lease.logicalRequestId !== header.logicalRequestId ||
+			lease.offerId !== header.offerId ||
+			lease.leaseEpoch !== header.leaseEpoch ||
+			snapshot.authoritativeRevision !== header.authoritativeRevision ||
+			!snapshot.request ||
+			!snapshot.draft
+		) {
+			return;
+		}
+		this.questionnaireBroker.routeToLease(worker.descriptor.workerId, header.activeSessionId, lease, (connectionId) =>
+			this.deliverQuestionnaireBrokerEvent(connectionId, {
+				type: "questionnaire_presentation_snapshot",
+				activeSessionId: header.activeSessionId,
+				lease,
+				authoritativeRevision: snapshot.authoritativeRevision!,
+				request: snapshot.request!,
+				draft: snapshot.draft!,
+			}),
+		);
 	}
 
 	private workerUiClients(worker: ResidentWorker): WorkerUiClient[] {
@@ -2516,7 +2605,7 @@ export class DaemonSupervisor {
 
 	private scheduleWorkerUiClientsSync(worker: ResidentWorker): void {
 		const client = worker.client;
-		if (!client) return;
+		if (!client || !worker.uiClientsSync || !worker.uiClientsSyncQueue) return;
 		worker.uiClientsSyncQueue = worker.uiClientsSyncQueue
 			.catch(() => undefined)
 			.then(async () => {
@@ -3944,6 +4033,10 @@ export class DaemonSupervisor {
 	}
 
 	private handleWorkerFrame(worker: ResidentWorker, frame: PrivateFrame<DaemonWorkerFrameHeader>): void {
+		if (frame.header.kind === "questionnaire_presentation") {
+			this.handleWorkerQuestionnairePresentation(worker, frame.header, frame.payload);
+			return;
+		}
 		if (frame.header.kind === "questionnaire_broker") {
 			try {
 				const message: unknown = JSON.parse(frame.payload.toString("utf8"));
@@ -4312,6 +4405,7 @@ export class DaemonSupervisor {
 		} else if (
 			sessionEventType === "message_start" ||
 			sessionEventType === "message_end" ||
+			outboundType === "session_status" ||
 			outboundType === "session_replaced" ||
 			outboundType === "session_resynced" ||
 			outboundType === "session_closed"
@@ -4325,6 +4419,26 @@ export class DaemonSupervisor {
 		}
 		const replacementSnapshotFollows =
 			decodedOutbound?.type === "session_replaced" && decodedOutbound.snapshotFollows === true;
+		if (decodedOutbound?.type === "session_status") {
+			const questionnaireState = decodedOutbound.questionnaireState;
+			const questionnaireQueueDepth = decodedOutbound.questionnaireQueueDepth;
+			if (
+				decodedOutbound.activeSessionId !== activeSessionId ||
+				(questionnaireState !== undefined &&
+					questionnaireState !== "waiting" &&
+					questionnaireState !== "offered" &&
+					questionnaireState !== "presenting") ||
+				(questionnaireQueueDepth !== undefined &&
+					(!Number.isInteger(questionnaireQueueDepth) || questionnaireQueueDepth < 1))
+			) {
+				return;
+			}
+			const summary = worker.summaries.get(activeSessionId);
+			if (summary) {
+				summary.questionnaireState = questionnaireState;
+				summary.questionnaireQueueDepth = questionnaireQueueDepth;
+			}
+		}
 		this.invalidateWorkerSnapshot(
 			worker,
 			activeSessionId,

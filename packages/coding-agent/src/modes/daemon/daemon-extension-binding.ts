@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type {
 	ExtensionCommandContextActions,
+	ExtensionQuestionnaireOptions,
+	ExtensionQuestionnaireOutcome,
+	ExtensionQuestionnaireRequestV1,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
@@ -23,6 +26,11 @@ export interface ActiveSessionBindingCallbacks {
 	createConnectionState?: (state: ActiveSessionState) => AgentConnectionState;
 	sessionReplaced?: (state: ActiveSessionState) => void;
 	shutdown: () => void;
+	questionnaire: (
+		state: ActiveSessionState,
+		request: ExtensionQuestionnaireRequestV1,
+		options?: ExtensionQuestionnaireOptions,
+	) => Promise<ExtensionQuestionnaireOutcome>;
 	subagentRuntimeHost?: SubagentRuntimeHost;
 }
 
@@ -81,7 +89,7 @@ export async function bindActiveSessionState(
 	});
 
 	await session.bindExtensions({
-		uiContext: createExtensionUIContext(state, callbacks.broadcast),
+		uiContext: createExtensionUIContext(state, callbacks.broadcast, callbacks.questionnaire),
 		commandContextActions: createCommandContextActions(state),
 		shutdownHandler: callbacks.shutdown,
 		onError: (error) => {
@@ -125,6 +133,7 @@ function createCommandContextActions(state: ActiveSessionState): ExtensionComman
 function createExtensionUIContext(
 	state: ActiveSessionState,
 	broadcast: ActiveSessionBindingCallbacks["broadcast"],
+	questionnaire: ActiveSessionBindingCallbacks["questionnaire"],
 ): ExtensionUIContext {
 	const emitUiRequest = (method: string, payload: Record<string, unknown>): string => {
 		const id = randomUUID();
@@ -177,6 +186,7 @@ function createExtensionUIContext(
 	};
 
 	return {
+		questionnaire: (request, options) => questionnaire(state, request, options),
 		select: (title, values, opts) =>
 			dialogRequest("select", { title, options: values, timeout: opts?.timeout }, opts, undefined, (response) =>
 				"cancelled" in response && response.cancelled
