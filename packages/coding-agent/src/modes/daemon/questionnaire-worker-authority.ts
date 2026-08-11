@@ -14,9 +14,11 @@ import type {
 	ExtensionQuestionnaireRequestV1,
 	ExtensionQuestionnaireResponse,
 } from "../../core/extensions/types.js";
+import type { DaemonExtensionUIResponse } from "./daemon-protocol.js";
 import type { WorkerQuestionnaireBrokerMessage } from "./daemon-worker-protocol.js";
 import type { WorkerUiClientsMirror } from "./daemon-worker-ui-clients.js";
 import type { QuestionnaireLease, QuestionnaireOfferResult, QuestionnaireRequestMode } from "./questionnaire-broker.js";
+import { QuestionnaireLegacyAdapter, type QuestionnaireLegacyAdapterAction } from "./questionnaire-legacy-adapter.js";
 
 export interface QuestionnaireWorkerStatus {
 	state: "waiting" | "offered" | "presenting" | undefined;
@@ -107,6 +109,8 @@ interface RequestRecord {
 	resolveOutcome(outcome: ExtensionQuestionnaireOutcome): void;
 	signal?: AbortSignal;
 	abortHandler?: () => void;
+	legacyAdapter?: QuestionnaireLegacyAdapter;
+	legacyRequestId?: string;
 }
 
 interface TerminalTombstone {
@@ -323,7 +327,13 @@ export class QuestionnaireWorkerAuthority {
 		for (const queue of this.queues.values()) {
 			const head = queue[0];
 			if (!head) continue;
-			if (head.lease && head.lease.supervisorGeneration !== generation) head.lease = undefined;
+			if (head.lease && head.lease.supervisorGeneration !== generation) {
+				if (head.lease.mode === "legacy") {
+					head.legacyRequestId = undefined;
+					head.legacyAdapter?.resetPresentation();
+				}
+				head.lease = undefined;
+			}
 			if (head.pendingOffer && head.pendingOffer.supervisorGeneration !== generation) {
 				head.pendingOffer = undefined;
 			}
@@ -347,6 +357,10 @@ export class QuestionnaireWorkerAuthority {
 			record.lease = clone(result.lease);
 			record.state = result.lease.mode === "rich" ? "presenting-rich" : "presenting-legacy";
 			this.publishStatus(record.activeSessionId);
+			if (result.lease.mode === "legacy") {
+				record.legacyAdapter ??= new QuestionnaireLegacyAdapter(record.request, record.draft);
+				this.advanceLegacy(record, record.legacyAdapter.start());
+			}
 			return;
 		}
 		record.state = "waiting-for-presenter";
@@ -356,6 +370,10 @@ export class QuestionnaireWorkerAuthority {
 	handleLeaseRevoked(lease: QuestionnaireLease): void {
 		const record = this.requests.get(lease.logicalRequestId);
 		if (!record?.lease || !sameLease(record.lease, lease)) return;
+		if (record.lease.mode === "legacy") {
+			record.legacyRequestId = undefined;
+			record.legacyAdapter?.resetPresentation();
+		}
 		record.lease = undefined;
 		record.state = "waiting-for-presenter";
 		this.pump(record.activeSessionId);
@@ -369,6 +387,28 @@ export class QuestionnaireWorkerAuthority {
 		const outcome: ExtensionQuestionnaireOutcome = { status: "dismissed" };
 		this.finish(record, outcome, false);
 		return { status: "terminal", outcome };
+	}
+
+	handleLegacyResponse(input: {
+		lease: QuestionnaireLease;
+		requestId: string;
+		connectionId: string;
+		response: DaemonExtensionUIResponse;
+	}): "accepted" | "stale" {
+		const record = this.requests.get(input.lease.logicalRequestId);
+		if (
+			!record?.lease ||
+			record.lease.mode !== "legacy" ||
+			!sameLease(record.lease, input.lease) ||
+			input.connectionId !== record.lease.connectionId ||
+			record.legacyRequestId !== input.requestId ||
+			!record.legacyAdapter
+		) {
+			return "stale";
+		}
+		record.legacyRequestId = undefined;
+		this.advanceLegacy(record, record.legacyAdapter.respond(input.response));
+		return "accepted";
 	}
 
 	checkpoint(mutation: QuestionnaireWorkerMutation): QuestionnaireWorkerMutationResult {
@@ -395,6 +435,41 @@ export class QuestionnaireWorkerAuthority {
 
 	acknowledgeTerminalDelivery(logicalRequestId: string): void {
 		this.tombstones.delete(logicalRequestId);
+	}
+
+	private advanceLegacy(record: RequestRecord, action: QuestionnaireLegacyAdapterAction): void {
+		const adapter = record.legacyAdapter;
+		if (!adapter || !record.lease || record.lease.mode !== "legacy") return;
+		const draft = normalizeExtensionQuestionnaireDraftForValidatedRequest(record.request, adapter.draft);
+		assertQuestionnaireEnvelopeBudget(draft);
+		const draftHash = hashCanonical(draft);
+		if (draftHash !== record.draftHash) {
+			record.draft = draft;
+			record.draftHash = draftHash;
+			record.authoritativeRevision++;
+		}
+		if (action.status === "submitted") {
+			this.finish(
+				record,
+				{ status: "submitted", responses: deriveQuestionnaireResponses(record.request, record.draft) },
+				false,
+			);
+			return;
+		}
+		if (action.status === "indeterminate") {
+			this.finish(record, action, false);
+			return;
+		}
+		const requestId = this.host.createId();
+		record.legacyRequestId = requestId;
+		const sent = this.host.sendBrokerMessage({
+			type: "legacy_request",
+			activeSessionId: record.activeSessionId,
+			lease: record.lease,
+			requestId,
+			request: action.request,
+		});
+		if (!sent) record.legacyRequestId = undefined;
 	}
 
 	private applyMutation(

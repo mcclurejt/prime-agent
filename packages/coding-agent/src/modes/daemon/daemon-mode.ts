@@ -3406,6 +3406,11 @@ export class AgentDaemon {
 				case "worker_questionnaire_dismiss":
 					this.writeWorkerSuccess(client, command, this.questionnaireAuthority.dismiss(command.lease));
 					return;
+				case "worker_questionnaire_legacy_response":
+					this.writeWorkerSuccess(client, command, {
+						status: this.questionnaireAuthority.handleLegacyResponse(command),
+					});
+					return;
 				case "worker_questionnaire_checkpoint":
 					this.writeWorkerSuccess(client, command, this.questionnaireAuthority.checkpoint(command));
 					return;

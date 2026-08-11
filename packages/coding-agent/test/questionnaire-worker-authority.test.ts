@@ -119,7 +119,33 @@ function syncRich(
 	});
 }
 
-function acceptLatest(authority: QuestionnaireWorkerAuthority, messages: WorkerQuestionnaireBrokerMessage[]) {
+function syncLegacy(
+	mirror: WorkerUiClientsMirror,
+	generation = "generation-a",
+	revision = 1,
+	connectionId = "connection-a",
+) {
+	mirror.applySync({
+		supervisorGeneration: generation,
+		syncRevision: revision,
+		clients: [
+			{
+				logicalClientId: `logical-${connectionId}`,
+				connectionId,
+				activeSessionId: "session-a",
+				capabilities: ["extension_ui"],
+				presentable: true,
+			},
+		],
+		complete: true,
+	});
+}
+
+function acceptLatest(
+	authority: QuestionnaireWorkerAuthority,
+	messages: WorkerQuestionnaireBrokerMessage[],
+	mode: "rich" | "legacy" = "rich",
+) {
 	const need = messages.at(-1);
 	if (need?.type !== "presenter_needed") throw new Error("missing presenter need");
 	const lease = {
@@ -129,7 +155,7 @@ function acceptLatest(authority: QuestionnaireWorkerAuthority, messages: WorkerQ
 		leaseEpoch: need.need.leaseEpoch,
 		logicalClientId: "logical-connection-a",
 		connectionId: "connection-a",
-		mode: "rich" as const,
+		mode,
 	};
 	authority.handleOfferResult({ status: "accepted", lease });
 	return lease;
@@ -262,6 +288,66 @@ describe("QuestionnaireWorkerAuthority", () => {
 		await expect(pending.outcome).resolves.toEqual({ status: "dismissed" });
 		expect(messages.at(-1)).toEqual({ type: "withdraw", lease });
 		expect(authority.dismiss(lease)).toEqual({ status: "stale-lease" });
+	});
+
+	it("runs legacy primitives on the exact lease and preserves only completed answers across requeue", async () => {
+		const { authority, mirror, messages } = harness();
+		syncLegacy(mirror);
+		const pending = authority.request("session-a", request);
+		const firstLease = acceptLatest(authority, messages, "legacy");
+		let primitive = messages.at(-1);
+		if (primitive?.type !== "legacy_request" || primitive.request.method !== "select") {
+			throw new Error("missing legacy confirm request");
+		}
+		expect(primitive.lease).toEqual(firstLease);
+		authority.handleLegacyResponse({
+			lease: firstLease,
+			requestId: primitive.requestId,
+			connectionId: firstLease.connectionId,
+			response: { value: primitive.request.payload.options[0]! },
+		});
+
+		primitive = messages.at(-1);
+		if (primitive?.type !== "legacy_request" || primitive.request.method !== "select") {
+			throw new Error("missing legacy multi-select request");
+		}
+		const selectedA = primitive.request.payload.options.find((option) => option.includes("A"))!;
+		authority.handleLegacyResponse({
+			lease: firstLease,
+			requestId: primitive.requestId,
+			connectionId: firstLease.connectionId,
+			response: { value: selectedA },
+		});
+		syncLegacy(mirror, "generation-b");
+		authority.handleUiClientsChanged();
+
+		const secondLease = acceptLatest(authority, messages, "legacy");
+		primitive = messages.at(-1);
+		if (primitive?.type !== "legacy_request" || primitive.request.method !== "select") {
+			throw new Error("missing requeued legacy request");
+		}
+		expect(primitive.request.payload.options.find((option) => option.includes("A"))).toContain("[ ]");
+		expect(secondLease.leaseEpoch).toBe(2);
+		expect(
+			authority.handleLegacyResponse({
+				lease: secondLease,
+				requestId: primitive.requestId,
+				connectionId: "wrong-connection",
+				response: { cancelled: true },
+			}),
+		).toBe("stale");
+		expect(
+			authority.handleLegacyResponse({
+				lease: secondLease,
+				requestId: primitive.requestId,
+				connectionId: secondLease.connectionId,
+				response: { cancelled: true },
+			}),
+		).toBe("accepted");
+		await expect(pending.outcome).resolves.toEqual({
+			status: "indeterminate",
+			reason: "legacy-cancelled-or-presentation-lost",
+		});
 	});
 
 	it("rejects an accepted lease that changes an already committed presentation mode", () => {

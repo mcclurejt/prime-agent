@@ -262,6 +262,13 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"shutdown",
 ]);
 
+interface PendingLegacyQuestionnaireRequest {
+	workerId: string;
+	activeSessionId: string;
+	lease: QuestionnaireLease;
+	responding?: boolean;
+}
+
 interface ResidentWorker {
 	descriptor: DaemonWorkerDescriptor;
 	descriptorPath: string;
@@ -416,8 +423,9 @@ function responseWithId(response: DaemonResponse, id: string | undefined): Daemo
 }
 
 export function isQuestionnaireClientPresentable(client: DaemonSocketClient, activeSessionId: string): boolean {
+	if (!client.attachedActiveSessionIds.has(activeSessionId) || !client.capabilities.has("extension_ui")) return false;
 	return (
-		client.attachedActiveSessionIds.has(activeSessionId) &&
+		!client.capabilities.has("questionnaire_v1") ||
 		client.questionnairePresentableActiveSessionIds?.has(activeSessionId) === true
 	);
 }
@@ -616,6 +624,7 @@ export class DaemonSupervisor {
 	private readonly descriptorDir: string;
 	private readonly generation = randomUUID();
 	private readonly questionnaireBroker: QuestionnaireBroker;
+	private readonly pendingLegacyQuestionnaireRequests = new Map<string, PendingLegacyQuestionnaireRequest>();
 	private readonly supervisorConfigPath: string;
 	private readonly defaultSessionConfig: AgentSessionRuntimeConfig;
 	private readonly snapshotCacheRoot: string;
@@ -651,19 +660,11 @@ export class DaemonSupervisor {
 		this.settingsManager = SettingsManager.create(process.cwd(), this.defaultSessionConfig.agentDir ?? agentDir);
 		this.questionnaireBroker = new QuestionnaireBroker(this.generation, {
 			deliverOffer: (connectionId, activeSessionId, lease) =>
-				this.deliverQuestionnaireBrokerEvent(connectionId, {
-					type: "questionnaire_offer",
-					activeSessionId,
-					lease,
-				}),
+				this.deliverQuestionnaireOffer(connectionId, activeSessionId, lease),
 			deliverWithdraw: (connectionId, activeSessionId, lease) =>
-				this.deliverQuestionnaireBrokerEvent(connectionId, {
-					type: "questionnaire_withdraw",
-					activeSessionId,
-					lease,
-				}),
+				this.deliverQuestionnaireWithdraw(connectionId, activeSessionId, lease),
 			onOfferResult: (workerId, result) => this.sendQuestionnaireOfferResult(workerId, result),
-			onLeaseRevoked: (workerId, lease, reason) => this.sendQuestionnaireLeaseRevoked(workerId, lease, reason),
+			onLeaseRevoked: (workerId, lease, reason) => this.handleQuestionnaireLeaseRevoked(workerId, lease, reason),
 			onWithdrawn: (workerId, lease) => this.sendQuestionnaireTerminalAck(workerId, lease.logicalRequestId),
 		});
 	}
@@ -1818,6 +1819,35 @@ export class DaemonSupervisor {
 					});
 				});
 			}
+			case "extension_ui_response": {
+				const pending = this.pendingLegacyQuestionnaireRequests.get(command.requestId);
+				if (!pending) break;
+				if (
+					client.connectionId !== pending.lease.connectionId ||
+					!client.attachedActiveSessionIds.has(pending.activeSessionId) ||
+					command.activeSessionId !== pending.activeSessionId
+				) {
+					return success(command.id, command.type, { status: "stale" as const });
+				}
+				if (pending.responding) return success(command.id, command.type, { status: "stale" as const });
+				const worker = this.workers.get(pending.workerId);
+				if (!worker?.client) throw new Error("Questionnaire session worker is not connected");
+				pending.responding = true;
+				try {
+					const response = await worker.client.requestWorker({
+						type: "worker_questionnaire_legacy_response",
+						lease: pending.lease,
+						requestId: command.requestId,
+						connectionId: client.connectionId,
+						response: command.response,
+					});
+					this.pendingLegacyQuestionnaireRequests.delete(command.requestId);
+					return { ...response, id: command.id, command: command.type };
+				} catch (error) {
+					pending.responding = false;
+					throw error;
+				}
+			}
 			case "questionnaire_presentability": {
 				if (
 					!client.attachedActiveSessionIds.has(command.activeSessionId) ||
@@ -2472,6 +2502,67 @@ export class DaemonSupervisor {
 		this.questionnaireBroker.synchronizePresenters(presenters);
 	}
 
+	private deliverQuestionnaireOffer(connectionId: string, activeSessionId: string, lease: QuestionnaireLease): void {
+		if (lease.mode === "legacy") {
+			const client = [...this.clients].find((candidate) => candidate.connectionId === connectionId);
+			if (
+				!client ||
+				!client.attachedActiveSessionIds.has(activeSessionId) ||
+				!client.capabilities.has("extension_ui") ||
+				client.socket.destroyed
+			) {
+				throw new Error("Legacy questionnaire presenter connection is unavailable");
+			}
+			this.questionnaireBroker.respondToOffer(connectionId, activeSessionId, lease, "accepted");
+			return;
+		}
+		this.deliverQuestionnaireBrokerEvent(connectionId, {
+			type: "questionnaire_offer",
+			activeSessionId,
+			lease,
+		});
+	}
+
+	private deliverQuestionnaireWithdraw(
+		connectionId: string,
+		activeSessionId: string,
+		lease: QuestionnaireLease,
+	): void {
+		this.clearPendingLegacyQuestionnaireRequests(lease);
+		if (lease.mode === "legacy") {
+			this.questionnaireBroker.acknowledgeWithdraw(connectionId, activeSessionId, lease);
+			return;
+		}
+		this.deliverQuestionnaireBrokerEvent(connectionId, {
+			type: "questionnaire_withdraw",
+			activeSessionId,
+			lease,
+		});
+	}
+
+	private handleQuestionnaireLeaseRevoked(
+		workerId: string,
+		lease: QuestionnaireLease,
+		reason: QuestionnaireLeaseRevocationReason,
+	): void {
+		this.clearPendingLegacyQuestionnaireRequests(lease);
+		this.sendQuestionnaireLeaseRevoked(workerId, lease, reason);
+	}
+
+	private clearPendingLegacyQuestionnaireRequests(lease: QuestionnaireLease): void {
+		for (const [requestId, pending] of this.pendingLegacyQuestionnaireRequests) {
+			if (
+				pending.lease.supervisorGeneration === lease.supervisorGeneration &&
+				pending.lease.logicalRequestId === lease.logicalRequestId &&
+				pending.lease.offerId === lease.offerId &&
+				pending.lease.leaseEpoch === lease.leaseEpoch &&
+				pending.lease.connectionId === lease.connectionId
+			) {
+				this.pendingLegacyQuestionnaireRequests.delete(requestId);
+			}
+		}
+	}
+
 	private deliverQuestionnaireBrokerEvent(
 		connectionId: string,
 		event: Extract<
@@ -2540,6 +2631,50 @@ export class DaemonSupervisor {
 	): void {
 		if (message.type === "withdraw") {
 			this.questionnaireBroker.withdraw(worker.descriptor.workerId, message.lease);
+			return;
+		}
+		if (message.type === "legacy_request") {
+			const belongsToWorker =
+				message.activeSessionId === worker.descriptor.rootActiveSessionId ||
+				worker.summaries.has(message.activeSessionId);
+			if (!belongsToWorker || this.pendingLegacyQuestionnaireRequests.has(message.requestId)) return;
+			let delivered = false;
+			const routed = this.questionnaireBroker.routeToLease(
+				worker.descriptor.workerId,
+				message.activeSessionId,
+				message.lease,
+				(connectionId) => {
+					const client = [...this.clients].find((candidate) => candidate.connectionId === connectionId);
+					if (
+						!client ||
+						!client.supportsExtensionUi ||
+						!client.attachedActiveSessionIds.has(message.activeSessionId) ||
+						client.socket.destroyed
+					) {
+						return;
+					}
+					this.pendingLegacyQuestionnaireRequests.set(message.requestId, {
+						workerId: worker.descriptor.workerId,
+						activeSessionId: message.activeSessionId,
+						lease: message.lease,
+					});
+					this.write(client, {
+						type: "extension_ui_request",
+						activeSessionId: message.activeSessionId,
+						id: message.requestId,
+						method: message.request.method,
+						payload: message.request.payload,
+					});
+					delivered = true;
+				},
+			);
+			if (routed && !delivered) {
+				this.questionnaireBroker.presentationError(
+					message.lease.connectionId,
+					message.activeSessionId,
+					message.lease,
+				);
+			}
 			return;
 		}
 		const activeSessionId = message.need.activeSessionId;

@@ -59,6 +59,7 @@ describe("daemon supervisor questionnaire brokerage", () => {
 			handleWorkerFrame(worker: unknown, frame: { header: DaemonWorkerFrameHeader; payload: Buffer }): void;
 			handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<DaemonResponse | undefined>;
 			questionnaireBroker: { disconnect(connectionId: string): void };
+			pendingLegacyQuestionnaireRequests: Map<string, unknown>;
 		};
 		internals.clients.add(target);
 		internals.clients.add(observer);
@@ -257,21 +258,76 @@ describe("daemon supervisor questionnaire brokerage", () => {
 			header: { kind: "questionnaire_broker", messageType: "presenter_needed" },
 			payload: Buffer.from(JSON.stringify(legacyMessage)),
 		});
-		expect(observer.socket.write).toHaveBeenCalledOnce();
-		expect(JSON.parse(String(vi.mocked(observer.socket.write).mock.calls[0]![0]))).toEqual({
-			type: "session_status",
-			activeSessionId: "session-a",
-			questionnaireState: "presenting",
-			questionnaireQueueDepth: 2,
-		});
+		const legacyLease = {
+			supervisorGeneration: internals.generation,
+			logicalRequestId: "request-legacy",
+			offerId: "offer-legacy",
+			leaseEpoch: 2,
+			logicalClientId: "logical-connection-b",
+			connectionId: "connection-b",
+			mode: "legacy" as const,
+		};
 		await vi.waitFor(() =>
 			expect(requestWorker).toHaveBeenCalledWith({
 				type: "worker_questionnaire_offer_result",
-				result: {
-					status: "rejected",
-					reason: "presentation_error",
-					offer: expect.objectContaining({ logicalRequestId: "request-legacy", mode: "legacy" }),
-				},
+				result: { status: "accepted", lease: legacyLease },
+			}),
+		);
+
+		const legacyRequest: WorkerQuestionnaireBrokerMessage = {
+			type: "legacy_request",
+			activeSessionId: "session-a",
+			lease: legacyLease,
+			requestId: "legacy-step-a",
+			request: { method: "select", payload: { title: "Private legacy prompt", options: ["Submit"] } },
+		};
+		internals.handleWorkerFrame(worker, {
+			header: { kind: "questionnaire_broker", messageType: "legacy_request" },
+			payload: Buffer.from(JSON.stringify(legacyRequest)),
+		});
+		expect(JSON.parse(String(vi.mocked(observer.socket.write).mock.calls.at(-1)![0]))).toEqual({
+			type: "extension_ui_request",
+			activeSessionId: "session-a",
+			id: "legacy-step-a",
+			method: "select",
+			payload: { title: "Private legacy prompt", options: ["Submit"] },
+		});
+
+		const staleLegacyResponse = await internals.handleCommand(target, {
+			type: "extension_ui_response",
+			activeSessionId: "session-a",
+			requestId: "legacy-step-a",
+			response: { value: "Submit" },
+		});
+		expect(staleLegacyResponse).toMatchObject({ success: true, data: { status: "stale" } });
+		requestWorker.mockClear();
+		await internals.handleCommand(observer, {
+			type: "extension_ui_response",
+			activeSessionId: "session-a",
+			requestId: "legacy-step-a",
+			response: { value: "Submit" },
+		});
+		expect(requestWorker).toHaveBeenCalledWith({
+			type: "worker_questionnaire_legacy_response",
+			lease: legacyLease,
+			requestId: "legacy-step-a",
+			connectionId: "connection-b",
+			response: { value: "Submit" },
+		});
+
+		internals.handleWorkerFrame(worker, {
+			header: { kind: "questionnaire_broker", messageType: "legacy_request" },
+			payload: Buffer.from(JSON.stringify({ ...legacyRequest, requestId: "legacy-step-b" })),
+		});
+		expect(internals.pendingLegacyQuestionnaireRequests.has("legacy-step-b")).toBe(true);
+		requestWorker.mockClear();
+		internals.questionnaireBroker.disconnect("connection-b");
+		expect(internals.pendingLegacyQuestionnaireRequests.size).toBe(0);
+		await vi.waitFor(() =>
+			expect(requestWorker).toHaveBeenCalledWith({
+				type: "worker_questionnaire_lease_revoked",
+				lease: legacyLease,
+				reason: "client_lost",
 			}),
 		);
 	});

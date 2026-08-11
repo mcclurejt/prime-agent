@@ -8,12 +8,18 @@ import type { IdleEvictionMinutes } from "../../core/session-action-store.js";
 
 export { SESSION_LEASE_OWNER_ID_ENV, SESSION_LEASES_ENABLED_ENV } from "../../core/session-lease.js";
 
-import type { DaemonClientCapability, DaemonCommand, DaemonOutbound } from "./daemon-protocol.js";
+import type {
+	DaemonClientCapability,
+	DaemonCommand,
+	DaemonExtensionUIResponse,
+	DaemonOutbound,
+} from "./daemon-protocol.js";
 import type {
 	QuestionnaireLease,
 	QuestionnaireOfferResult,
 	QuestionnaireWorkerOfferNeed,
 } from "./questionnaire-broker.js";
+import type { QuestionnaireLegacyPrimitiveRequest } from "./questionnaire-legacy-adapter.js";
 import type {
 	QuestionnairePresentationSnapshot,
 	QuestionnaireWorkerMutation,
@@ -30,7 +36,14 @@ export type DaemonWorkerLifecycle = "starting" | "ready" | "recovering" | "faile
 
 export type WorkerQuestionnaireBrokerMessage =
 	| { type: "presenter_needed"; need: Omit<QuestionnaireWorkerOfferNeed, "workerId"> }
-	| { type: "withdraw"; lease: QuestionnaireLease };
+	| { type: "withdraw"; lease: QuestionnaireLease }
+	| {
+			type: "legacy_request";
+			activeSessionId: string;
+			lease: QuestionnaireLease;
+			requestId: string;
+			request: QuestionnaireLegacyPrimitiveRequest;
+	  };
 
 export interface WorkerQuestionnairePresentationMessage {
 	activeSessionId: string;
@@ -121,6 +134,14 @@ export type DaemonWorkerCommand =
 			reason: "client_lost" | "presentability_lost" | "presentation_error";
 	  }
 	| { id?: string; type: "worker_questionnaire_dismiss"; lease: QuestionnaireLease }
+	| {
+			id?: string;
+			type: "worker_questionnaire_legacy_response";
+			lease: QuestionnaireLease;
+			requestId: string;
+			connectionId: string;
+			response: DaemonExtensionUIResponse;
+	  }
 	| ({
 			id?: string;
 			type: "worker_questionnaire_checkpoint" | "worker_questionnaire_submit";
@@ -223,7 +244,11 @@ export function isDaemonWorkerFrameHeader(value: unknown): value is DaemonWorker
 		return typeof candidate.requestId === "string" && typeof candidate.commandType === "string";
 	}
 	if (candidate.kind === "questionnaire_broker") {
-		return candidate.messageType === "presenter_needed" || candidate.messageType === "withdraw";
+		return (
+			candidate.messageType === "presenter_needed" ||
+			candidate.messageType === "withdraw" ||
+			candidate.messageType === "legacy_request"
+		);
 	}
 	if (candidate.kind === "questionnaire_presentation") {
 		return (
@@ -283,11 +308,52 @@ function isQuestionnaireLease(value: unknown): value is QuestionnaireLease {
 	);
 }
 
+function isQuestionnaireLegacyPrimitiveRequest(value: unknown): value is QuestionnaireLegacyPrimitiveRequest {
+	if (!value || typeof value !== "object") return false;
+	const candidate = value as Record<string, unknown>;
+	if (!candidate.payload || typeof candidate.payload !== "object") return false;
+	const payload = candidate.payload as Record<string, unknown>;
+	if (candidate.method === "select") {
+		return (
+			hasExactKeys(candidate, ["method", "payload"]) &&
+			hasExactKeys(payload, ["title", "options"]) &&
+			typeof payload.title === "string" &&
+			Array.isArray(payload.options) &&
+			payload.options.every((option) => typeof option === "string")
+		);
+	}
+	if (candidate.method === "input") {
+		return (
+			hasExactKeys(candidate, ["method", "payload"]) &&
+			Object.keys(payload).every((key) => key === "title" || key === "placeholder") &&
+			typeof payload.title === "string" &&
+			(payload.placeholder === undefined || typeof payload.placeholder === "string")
+		);
+	}
+	return (
+		candidate.method === "editor" &&
+		hasExactKeys(candidate, ["method", "payload"]) &&
+		hasExactKeys(payload, ["title", "prefill"]) &&
+		typeof payload.title === "string" &&
+		typeof payload.prefill === "string"
+	);
+}
+
 export function isWorkerQuestionnaireBrokerMessage(value: unknown): value is WorkerQuestionnaireBrokerMessage {
 	if (!value || typeof value !== "object") return false;
 	const candidate = value as Record<string, unknown>;
 	if (candidate.type === "withdraw") {
 		return hasExactKeys(candidate, ["type", "lease"]) && isQuestionnaireLease(candidate.lease);
+	}
+	if (candidate.type === "legacy_request") {
+		return (
+			hasExactKeys(candidate, ["type", "activeSessionId", "lease", "requestId", "request"]) &&
+			typeof candidate.activeSessionId === "string" &&
+			typeof candidate.requestId === "string" &&
+			isQuestionnaireLease(candidate.lease) &&
+			candidate.lease.mode === "legacy" &&
+			isQuestionnaireLegacyPrimitiveRequest(candidate.request)
+		);
 	}
 	if (
 		candidate.type !== "presenter_needed" ||

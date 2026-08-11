@@ -87,6 +87,32 @@ describe("worker questionnaire broker transport", () => {
 		).toBe(false);
 	});
 
+	it("accepts only typed private legacy primitive requests", () => {
+		const message = {
+			type: "legacy_request",
+			activeSessionId: "session-a",
+			lease: {
+				supervisorGeneration: "generation-a",
+				logicalRequestId: "request-a",
+				offerId: "offer-a",
+				leaseEpoch: 1,
+				logicalClientId: "logical-a",
+				connectionId: "connection-a",
+				mode: "legacy",
+			},
+			requestId: "step-a",
+			request: { method: "select", payload: { title: "private", options: ["A"] } },
+		};
+		expect(isWorkerQuestionnaireBrokerMessage(message)).toBe(true);
+		expect(
+			isWorkerQuestionnaireBrokerMessage({
+				...message,
+				request: { method: "select", payload: { title: "private", options: ["A"], extra: true } },
+			}),
+		).toBe(false);
+		expect(isDaemonWorkerFrameHeader({ kind: "questionnaire_broker", messageType: "legacy_request" })).toBe(true);
+	});
+
 	it("frames targeted presentation content separately with exact lease and revision stamps", () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-worker-questionnaire-presentation.sock", {
 			defaultSessionConfig: { agentDir: "/tmp/prime-agent-worker-questionnaire", cwd: "/tmp" },
