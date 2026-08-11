@@ -107,7 +107,8 @@ const SEARCH_PROMPT_PLACEHOLDER = "Search sessions";
 const REPLY_PROMPT_FALLBACK_PLACEHOLDER = "Write a reply to this agent";
 const RESUME_PROMPT_PLACEHOLDER = "Write a prompt to resume this session";
 const COMPLETED_ROW_ICON = "✓";
-const NEEDS_INPUT_ROW_ICON = "●";
+const IDLE_ROW_ICON = "●";
+const NEEDS_INPUT_ROW_ICON = "?";
 const SELECTED_ROW_MARKER = "\0agents-view-selected-row\0";
 // Tags a spawn-code line so finalize can wrap the whole row in a panel
 // background, visually segmenting the program from the agent rows.
@@ -2732,7 +2733,7 @@ export class AgentsViewMode implements Component, Focusable {
 			case "running":
 				return workingIconFrame(this.workingIconFrame);
 			case "idle":
-				return COMPLETED_ROW_ICON;
+				return IDLE_ROW_ICON;
 			case "inactive":
 				return COMPLETED_ROW_ICON;
 			default: {
