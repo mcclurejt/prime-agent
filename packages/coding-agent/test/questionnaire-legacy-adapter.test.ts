@@ -100,6 +100,30 @@ describe("QuestionnaireLegacyAdapter", () => {
 		expect(adapter.draft.states[2]).toMatchObject({ choiceIds: [] });
 	});
 
+	it("normalizes CRLF legacy text before committing the draft", () => {
+		const textRequest: ExtensionQuestionnaireRequestV1 = {
+			version: 1,
+			questions: [{ id: "text", prompt: "Text", kind: "multiline-text" }],
+		};
+		const adapter = new QuestionnaireLegacyAdapter(textRequest, createInitialQuestionnaireDraft(textRequest));
+		adapter.start();
+		adapter.respond({ value: "first\r\nsecond\rthird" });
+		expect(adapter.draft.states[0]).toMatchObject({ value: "first\nsecond\nthird" });
+	});
+
+	it("re-asks the same legacy step instead of wedging on invalid or oversized text", () => {
+		const textRequest: ExtensionQuestionnaireRequestV1 = {
+			version: 1,
+			questions: [{ id: "text", prompt: "Text", kind: "short-text" }],
+		};
+		for (const value of ["bad\u001btext", "x".repeat(128 * 1024 + 1)]) {
+			const adapter = new QuestionnaireLegacyAdapter(textRequest, createInitialQuestionnaireDraft(textRequest));
+			expect(requestAction(adapter.start())).toMatchObject({ method: "input" });
+			expect(requestAction(adapter.respond({ value }))).toMatchObject({ method: "input" });
+			expect(adapter.draft.states[0]).toMatchObject({ value: "" });
+		}
+	});
+
 	it("clears request and draft buffers on disposal", () => {
 		const adapter = new QuestionnaireLegacyAdapter(request, createInitialQuestionnaireDraft(request));
 		adapter.start();

@@ -4,7 +4,8 @@
 
 - Added typed questionnaire contracts, validation and canonical byte-budget helpers for extensions.
 - Added a responsive interactive questionnaire UI for in-process extensions.
-- Added additive daemon connection-incarnation metadata and a dormant questionnaire capability foundation without advertising questionnaire semantics.
+- Added daemon-brokered questionnaire presentation with connection-incarnation leases, worker-authoritative CAS drafts, targeted rich TUI rendering, brokered legacy UI fallback, lifecycle settlement, and capability-gated protocol advertisement.
+- Fixed daemon worker clients dropping questionnaire broker frames, transient busy responses permanently disabling presentation, reloads failing to restore presentation, and invalid legacy text wedging an active questionnaire.
 
 ## [0.7.0] - 2026-08-05
 

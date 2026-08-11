@@ -35,6 +35,102 @@ function socketClient(connectionId: string, activeSessionId: string, presentable
 }
 
 describe("daemon supervisor questionnaire brokerage", () => {
+	it("revokes a rich lease without tearing down the worker path when its presenter vanished", () => {
+		const root = mkdtempSync(join(tmpdir(), "prime-agent-questionnaire-vanished-"));
+		tempDirs.push(root);
+		const supervisor = new DaemonSupervisor(join(root, "daemon.sock"), {
+			descriptorDir: join(root, "workers"),
+			defaultSessionConfig: { agentDir: join(root, "agent"), cwd: root },
+		});
+		const internals = supervisor as unknown as {
+			handleWorkerFrame(worker: unknown, frame: { header: DaemonWorkerFrameHeader; payload: Buffer }): void;
+			questionnaireBroker: {
+				routeToLease: (...args: unknown[]) => boolean;
+				presentationError: (...args: unknown[]) => "accepted" | "stale";
+			};
+		};
+		vi.spyOn(internals.questionnaireBroker, "routeToLease").mockImplementation((...args: unknown[]) => {
+			const deliver = args[3] as (connectionId: string) => void;
+			deliver("vanished-connection");
+			return true;
+		});
+		const presentationError = vi
+			.spyOn(internals.questionnaireBroker, "presentationError")
+			.mockReturnValue("accepted");
+		const lease = {
+			supervisorGeneration: "generation-a",
+			logicalRequestId: "request-a",
+			offerId: "offer-a",
+			leaseEpoch: 1,
+			logicalClientId: "logical-a",
+			connectionId: "vanished-connection",
+			mode: "rich" as const,
+		};
+		const frame = {
+			header: {
+				kind: "questionnaire_presentation" as const,
+				supervisorGeneration: lease.supervisorGeneration,
+				activeSessionId: "session-a",
+				connectionId: lease.connectionId,
+				logicalRequestId: lease.logicalRequestId,
+				offerId: lease.offerId,
+				leaseEpoch: lease.leaseEpoch,
+				authoritativeRevision: 0,
+			},
+			payload: Buffer.from(
+				JSON.stringify({
+					activeSessionId: "session-a",
+					snapshot: {
+						lease,
+						authoritativeRevision: 0,
+						request: { version: 1, questions: [{ id: "q", kind: "short-text", prompt: "private" }] },
+						draft: {
+							version: 1,
+							currentStep: { kind: "question", questionId: "q" },
+							states: [{ questionId: "q", kind: "short-text", value: "" }],
+						},
+					},
+				}),
+			),
+		};
+
+		expect(() => internals.handleWorkerFrame({ descriptor: { workerId: "worker-a" } }, frame)).not.toThrow();
+		expect(presentationError).toHaveBeenCalledWith("vanished-connection", "session-a", lease);
+	});
+
+	it("keeps a presentable client eligible after a transient busy offer response", async () => {
+		const root = mkdtempSync(join(tmpdir(), "prime-agent-questionnaire-busy-"));
+		tempDirs.push(root);
+		const supervisor = new DaemonSupervisor(join(root, "daemon.sock"), {
+			descriptorDir: join(root, "workers"),
+			defaultSessionConfig: { agentDir: join(root, "agent"), cwd: root },
+		});
+		const client = socketClient("connection-a", "session-a", true);
+		const internals = supervisor as unknown as {
+			handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<DaemonResponse | undefined>;
+			questionnaireBroker: { respondToOffer: (...args: unknown[]) => "accepted" | "stale" };
+		};
+		vi.spyOn(internals.questionnaireBroker, "respondToOffer").mockReturnValue("accepted");
+		const lease = {
+			supervisorGeneration: "generation-a",
+			logicalRequestId: "request-a",
+			offerId: "offer-a",
+			leaseEpoch: 1,
+			logicalClientId: client.logicalClientId,
+			connectionId: client.connectionId,
+			mode: "rich" as const,
+		};
+
+		await internals.handleCommand(client, {
+			type: "questionnaire_offer_response",
+			activeSessionId: "session-a",
+			lease,
+			response: "busy",
+		});
+
+		expect(client.questionnairePresentableActiveSessionIds).toContain("session-a");
+	});
+
 	it("targets one presentable socket and stamps responses from the real connection", async () => {
 		const root = mkdtempSync(join(tmpdir(), "prime-agent-questionnaire-broker-"));
 		tempDirs.push(root);

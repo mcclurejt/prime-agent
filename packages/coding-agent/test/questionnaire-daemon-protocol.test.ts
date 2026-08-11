@@ -8,8 +8,8 @@ import {
 } from "../src/modes/daemon/daemon-protocol.js";
 
 describe("questionnaire daemon wire gates", () => {
-	it("keeps broker commands and targeted events capability-gated while questionnaire_v1 is dormant", () => {
-		expect(DAEMON_DEFAULT_SERVER_CAPABILITIES).not.toContain("questionnaire_v1");
+	it("advertises questionnaire_v1 while keeping broker commands and targeted events capability-gated", () => {
+		expect(DAEMON_DEFAULT_SERVER_CAPABILITIES).toContain("questionnaire_v1");
 		expect(DAEMON_COMMAND_COMPATIBILITY.questionnaire_presentability.capability).toBe("questionnaire_v1");
 		expect(DAEMON_COMMAND_COMPATIBILITY.questionnaire_offer_response.capability).toBe("questionnaire_v1");
 		expect(DAEMON_COMMAND_COMPATIBILITY.questionnaire_withdraw_ack.capability).toBe("questionnaire_v1");

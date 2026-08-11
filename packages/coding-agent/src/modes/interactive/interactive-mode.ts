@@ -8612,6 +8612,8 @@ export class InteractiveMode {
 		} catch (error) {
 			dismissReloadBox(previousEditor as Component);
 			this.showError(`Reload failed: ${error instanceof Error ? error.message : String(error)}`);
+		} finally {
+			await this.agentConnection.questionnaire?.setPresentable(true).catch(() => undefined);
 		}
 	}
 

@@ -51,6 +51,42 @@ describe("extensions discovery", () => {
 		expect(result.extensions.map((e) => path.basename(e.path)).sort()).toEqual(["bar.ts", "foo.ts"]);
 	});
 
+	it("loads a coding-agent namespace feature check without mangling package subpath aliases", async () => {
+		fs.writeFileSync(
+			path.join(extensionsDir, "namespace-feature.ts"),
+			`import * as CodingAgent from "@earendil-works/pi-coding-agent";
+		 export default function(pi) {
+			pi.registerCommand("feature-check", {
+				handler: async () => typeof CodingAgent.requestQuestionnaire,
+			});
+		 }`,
+		);
+
+		const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+
+		expect(result.errors).toEqual([]);
+		expect(result.extensions).toHaveLength(1);
+		expect(result.extensions[0]!.commands.has("feature-check")).toBe(true);
+	});
+
+	it("resolves pi-ai MCP subpaths to the workspace module", async () => {
+		fs.writeFileSync(
+			path.join(extensionsDir, "mcp-subpath.ts"),
+			`import { BUILTIN_MCP_CATALOG } from "@earendil-works/pi-ai/mcp";
+		 export default function(pi) {
+			pi.registerCommand("mcp-subpath", {
+				handler: async () => BUILTIN_MCP_CATALOG.length,
+			});
+		 }`,
+		);
+
+		const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+
+		expect(result.errors).toEqual([]);
+		expect(result.extensions).toHaveLength(1);
+		expect(result.extensions[0]!.commands.has("mcp-subpath")).toBe(true);
+	});
+
 	it("discovers direct .js files in extensions/", async () => {
 		fs.writeFileSync(path.join(extensionsDir, "foo.js"), extensionCode);
 

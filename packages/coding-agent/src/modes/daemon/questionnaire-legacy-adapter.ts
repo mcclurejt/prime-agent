@@ -1,3 +1,4 @@
+import { QUESTIONNAIRE_TEXT_FIELD_MAX_BYTES } from "../../core/extensions/questionnaire.js";
 import type {
 	ExtensionQuestionnaireDraftQuestionState,
 	ExtensionQuestionnaireDraftV1,
@@ -47,6 +48,22 @@ function indeterminate(): QuestionnaireLegacyAdapterAction {
 	return { status: "indeterminate", reason: "legacy-cancelled-or-presentation-lost" };
 }
 
+const LEGACY_DISALLOWED_CONTROL_PATTERN = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/u;
+const LEGACY_BIDIRECTIONAL_CONTROL_PATTERN = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u;
+const encoder = new TextEncoder();
+
+function normalizeLegacyValue(value: string): string | undefined {
+	const normalized = value.replace(/\r\n?/gu, "\n");
+	if (
+		LEGACY_DISALLOWED_CONTROL_PATTERN.test(normalized) ||
+		LEGACY_BIDIRECTIONAL_CONTROL_PATTERN.test(normalized) ||
+		encoder.encode(normalized).byteLength > QUESTIONNAIRE_TEXT_FIELD_MAX_BYTES
+	) {
+		return undefined;
+	}
+	return normalized;
+}
+
 /** Deterministic typed legacy questionnaire sequence. Only completed question states enter the authoritative draft. */
 export class QuestionnaireLegacyAdapter {
 	private questionIndex = 0;
@@ -83,7 +100,8 @@ export class QuestionnaireLegacyAdapter {
 	respond(response: DaemonExtensionUIResponse): QuestionnaireLegacyAdapterAction {
 		const phase = this.phase;
 		if (!phase || !hasValue(response)) return indeterminate();
-		const value = response.value;
+		const value = normalizeLegacyValue(response.value);
+		if (value === undefined) return this.requestForPhase();
 		switch (phase.kind) {
 			case "confirm": {
 				const selection = phase.options.get(value);

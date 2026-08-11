@@ -162,6 +162,7 @@ export class DaemonWorkerClient {
 
 	private handleFrame(frame: PrivateFrame<DaemonWorkerFrameHeader>): void {
 		if (frame.header.kind !== "outbound") {
+			this.notifyFrameListeners(frame);
 			return;
 		}
 		if (frame.header.outboundType === "response" && frame.header.requestId) {
@@ -199,8 +200,16 @@ export class DaemonWorkerClient {
 				// The malformed frame eventually fails the hello timeout.
 			}
 		}
+		this.notifyFrameListeners(frame);
+	}
+
+	private notifyFrameListeners(frame: PrivateFrame<DaemonWorkerFrameHeader>): void {
 		for (const listener of this.frameListeners) {
-			listener(frame);
+			try {
+				listener(frame);
+			} catch {
+				// One supervisor consumer must never tear down the authenticated worker channel.
+			}
 		}
 	}
 

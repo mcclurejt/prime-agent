@@ -1868,10 +1868,6 @@ export class DaemonSupervisor {
 					command.lease,
 					command.response,
 				);
-				if (status === "accepted" && command.response !== "accepted") {
-					client.questionnairePresentableActiveSessionIds?.delete(command.activeSessionId);
-					this.scheduleWorkerUiClientsSyncForClient(client);
-				}
 				return success(command.id, command.type, { status });
 			}
 			case "questionnaire_withdraw_ack": {
@@ -2516,11 +2512,12 @@ export class DaemonSupervisor {
 			this.questionnaireBroker.respondToOffer(connectionId, activeSessionId, lease, "accepted");
 			return;
 		}
-		this.deliverQuestionnaireBrokerEvent(connectionId, {
+		const delivered = this.deliverQuestionnaireBrokerEvent(connectionId, {
 			type: "questionnaire_offer",
 			activeSessionId,
 			lease,
 		});
+		if (!delivered) this.questionnaireBroker.respondToOffer(connectionId, activeSessionId, lease, "busy");
 	}
 
 	private deliverQuestionnaireWithdraw(
@@ -2533,11 +2530,12 @@ export class DaemonSupervisor {
 			this.questionnaireBroker.acknowledgeWithdraw(connectionId, activeSessionId, lease);
 			return;
 		}
-		this.deliverQuestionnaireBrokerEvent(connectionId, {
+		const delivered = this.deliverQuestionnaireBrokerEvent(connectionId, {
 			type: "questionnaire_withdraw",
 			activeSessionId,
 			lease,
 		});
+		if (!delivered) this.questionnaireBroker.presentationError(connectionId, activeSessionId, lease);
 	}
 
 	private handleQuestionnaireLeaseRevoked(
@@ -2569,7 +2567,7 @@ export class DaemonSupervisor {
 			DaemonOutbound,
 			{ type: "questionnaire_offer" | "questionnaire_withdraw" | "questionnaire_presentation_snapshot" }
 		>,
-	): void {
+	): boolean {
 		const client = [...this.clients].find((candidate) => candidate.connectionId === connectionId);
 		if (
 			!client ||
@@ -2577,9 +2575,10 @@ export class DaemonSupervisor {
 			!client.capabilities.has("questionnaire_v1") ||
 			client.socket.destroyed
 		) {
-			throw new Error("Questionnaire presenter connection is unavailable");
+			return false;
 		}
 		this.write(client, event);
+		return true;
 	}
 
 	private sendQuestionnaireOfferResult(workerId: string, result: QuestionnaireOfferResult): void {
@@ -2720,15 +2719,23 @@ export class DaemonSupervisor {
 		) {
 			return;
 		}
-		this.questionnaireBroker.routeToLease(worker.descriptor.workerId, header.activeSessionId, lease, (connectionId) =>
-			this.deliverQuestionnaireBrokerEvent(connectionId, {
-				type: "questionnaire_presentation_snapshot",
-				activeSessionId: header.activeSessionId,
-				lease,
-				authoritativeRevision: snapshot.authoritativeRevision!,
-				request: snapshot.request!,
-				draft: snapshot.draft!,
-			}),
+		this.questionnaireBroker.routeToLease(
+			worker.descriptor.workerId,
+			header.activeSessionId,
+			lease,
+			(connectionId) => {
+				const delivered = this.deliverQuestionnaireBrokerEvent(connectionId, {
+					type: "questionnaire_presentation_snapshot",
+					activeSessionId: header.activeSessionId,
+					lease,
+					authoritativeRevision: snapshot.authoritativeRevision!,
+					request: snapshot.request!,
+					draft: snapshot.draft!,
+				});
+				if (!delivered) {
+					this.questionnaireBroker.presentationError(connectionId, header.activeSessionId, lease);
+				}
+			},
 		);
 	}
 
@@ -4195,7 +4202,11 @@ export class DaemonSupervisor {
 
 	private handleWorkerFrame(worker: ResidentWorker, frame: PrivateFrame<DaemonWorkerFrameHeader>): void {
 		if (frame.header.kind === "questionnaire_presentation") {
-			this.handleWorkerQuestionnairePresentation(worker, frame.header, frame.payload);
+			try {
+				this.handleWorkerQuestionnairePresentation(worker, frame.header, frame.payload);
+			} catch {
+				// A vanished presenter is isolated from the authenticated worker connection.
+			}
 			return;
 		}
 		if (frame.header.kind === "questionnaire_broker") {
