@@ -1210,6 +1210,33 @@ describe("QuestionnaireComponent", () => {
 		expect(component.model.currentStep).toEqual({ kind: "question", questionId: "text" });
 	});
 
+	it("saves a note and advances to the next question when Enter is pressed", () => {
+		const tui = createFakeTui(24);
+		const component = new QuestionnaireComponent({
+			tui,
+			keybindings: new KeybindingsManager(),
+			request: {
+				version: 2,
+				questions: [
+					{ id: "first", kind: "confirm", prompt: "First decision?" },
+					{ id: "second", kind: "confirm", prompt: "Second decision?" },
+				],
+			},
+			getRows: () => tui.terminal.rows,
+			requestRender: tui.requestRender,
+			onSubmit: vi.fn(),
+			onDismiss: vi.fn(),
+		});
+
+		component.handleInput("n");
+		component.handleInput("record this rationale");
+		component.handleInput("\r");
+
+		expect(component.isNoteEditorOpen).toBe(false);
+		expect(component.model.getNote("first")).toBe("record this rationale");
+		expect(component.model.currentStep).toEqual({ kind: "question", questionId: "second" });
+	});
+
 	it("edits v2 notes with configured precedence and returns an unanswered note through review", () => {
 		const tui = createFakeTui(24);
 		const drafts: ExtensionQuestionnaireDraftV2[] = [];
