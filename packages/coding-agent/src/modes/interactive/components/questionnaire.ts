@@ -886,6 +886,11 @@ export class QuestionnaireComponent implements Component, Focusable {
 			this.renderRequested();
 			return;
 		}
+		if (kb.matches(data, "tui.select.confirm")) {
+			this.noteEditorQuestionId = undefined;
+			this.pageChanged(this.model.next());
+			return;
+		}
 		const previous = this.model.getNote(questionId);
 		editor.handleInput(data);
 		const result = this.model.updateNote(questionId, editor.getExpandedText());
