@@ -15,6 +15,8 @@ describe("questionnaire daemon wire gates", () => {
 		expect(DAEMON_COMMAND_COMPATIBILITY.questionnaire_withdraw_ack.capability).toBe("questionnaire_v1");
 		expect(DAEMON_COMMAND_COMPATIBILITY.questionnaire_checkpoint.capability).toBe("questionnaire_v1");
 		expect(DAEMON_COMMAND_COMPATIBILITY.questionnaire_submit.capability).toBe("questionnaire_v1");
+		expect(DAEMON_COMMAND_COMPATIBILITY.questionnaire_dismiss.capability).toBe("questionnaire_v1");
+		expect(DAEMON_COMMAND_COMPATIBILITY.questionnaire_presentation_error.capability).toBe("questionnaire_v1");
 		expect(DAEMON_OUTBOUND_COMPATIBILITY.questionnaire_offer.capability).toBe("questionnaire_v1");
 		expect(DAEMON_OUTBOUND_COMPATIBILITY.questionnaire_withdraw.capability).toBe("questionnaire_v1");
 		expect(DAEMON_OUTBOUND_COMPATIBILITY.questionnaire_presentation_snapshot.capability).toBe("questionnaire_v1");
@@ -76,6 +78,8 @@ describe("questionnaire daemon wire gates", () => {
 				clientMutationId: "mutation-b",
 				completeDraft,
 			},
+			{ type: "questionnaire_dismiss", activeSessionId: "session-a", lease },
+			{ type: "questionnaire_presentation_error", activeSessionId: "session-a", lease },
 		];
 		const presentation: DaemonOutbound = {
 			type: "questionnaire_presentation_snapshot",
@@ -86,7 +90,7 @@ describe("questionnaire daemon wire gates", () => {
 			draft: completeDraft,
 		};
 
-		expect(mutations).toHaveLength(2);
+		expect(mutations).toHaveLength(4);
 		expect(presentation.type).toBe("questionnaire_presentation_snapshot");
 	});
 });

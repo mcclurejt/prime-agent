@@ -188,6 +188,15 @@ describe("daemon supervisor questionnaire brokerage", () => {
 			clientMutationId: "mutation-a",
 			completeDraft: presentation.snapshot.draft,
 		});
+		await internals.handleCommand(target, {
+			type: "questionnaire_dismiss",
+			activeSessionId: "session-a",
+			lease: { ...outbound.lease, connectionId: "forged" } as never,
+		});
+		expect(requestWorker).toHaveBeenCalledWith({
+			type: "worker_questionnaire_dismiss",
+			lease: outbound.lease,
+		});
 
 		internals.handleWorkerFrame(worker, {
 			header: { kind: "outbound", outboundType: "session_status", activeSessionId: "session-a" },

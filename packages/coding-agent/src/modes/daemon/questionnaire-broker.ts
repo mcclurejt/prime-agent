@@ -47,11 +47,13 @@ export type QuestionnaireOfferResult =
 			offer: QuestionnaireLease | QuestionnaireWorkerOfferNeed;
 	  };
 
+export type QuestionnaireLeaseRevocationReason = "client_lost" | "presentability_lost" | "presentation_error";
+
 export interface QuestionnaireBrokerCallbacks {
 	deliverOffer(connectionId: string, activeSessionId: string, lease: QuestionnaireLease): void;
 	deliverWithdraw(connectionId: string, activeSessionId: string, lease: QuestionnaireLease): void;
 	onOfferResult(workerId: string, result: QuestionnaireOfferResult): void;
-	onLeaseRevoked(workerId: string, lease: QuestionnaireLease, reason: "client_lost" | "presentability_lost"): void;
+	onLeaseRevoked(workerId: string, lease: QuestionnaireLease, reason: QuestionnaireLeaseRevocationReason): void;
 	onWithdrawn(workerId: string, lease: QuestionnaireLease): void;
 }
 
@@ -223,6 +225,19 @@ export class QuestionnaireBroker {
 			this.callbacks.onLeaseRevoked(active.workerId, active.lease, "client_lost");
 		}
 		this.arbitrate();
+	}
+
+	presentationError(
+		connectionId: string,
+		activeSessionId: string,
+		stamp: QuestionnaireLeaseStamp,
+	): "accepted" | "stale" {
+		const active = this.activeLeasesByConnection.get(connectionId);
+		if (!active || active.activeSessionId !== activeSessionId || !sameStamp(active.lease, stamp)) return "stale";
+		this.activeLeasesByConnection.delete(connectionId);
+		this.callbacks.onLeaseRevoked(active.workerId, active.lease, "presentation_error");
+		this.arbitrate();
+		return "accepted";
 	}
 
 	validateLeaseMessage(connectionId: string, activeSessionId: string, stamp: QuestionnaireLeaseStamp): boolean {

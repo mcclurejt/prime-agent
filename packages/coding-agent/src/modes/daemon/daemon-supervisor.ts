@@ -125,6 +125,7 @@ import { MutationDrainLatch } from "./mutation-drain-latch.js";
 import {
 	QuestionnaireBroker,
 	type QuestionnaireLease,
+	type QuestionnaireLeaseRevocationReason,
 	type QuestionnaireOfferResult,
 	type QuestionnairePresenter,
 } from "./questionnaire-broker.js";
@@ -253,6 +254,8 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"questionnaire_withdraw_ack",
 	"questionnaire_checkpoint",
 	"questionnaire_submit",
+	"questionnaire_dismiss",
+	"questionnaire_presentation_error",
 	"prepare_update_restart",
 	"retry_worker",
 	"restart",
@@ -1849,6 +1852,29 @@ export class DaemonSupervisor {
 				);
 				return success(command.id, command.type, { status });
 			}
+			case "questionnaire_presentation_error": {
+				const status = this.questionnaireBroker.presentationError(
+					client.connectionId,
+					command.activeSessionId,
+					command.lease,
+				);
+				return success(command.id, command.type, { status });
+			}
+			case "questionnaire_dismiss": {
+				const lease = this.questionnaireBroker.leaseForMessage(
+					client.connectionId,
+					command.activeSessionId,
+					command.lease,
+				);
+				if (!lease) return success(command.id, command.type, { status: "stale-lease" as const });
+				const match = await this.findWorkerForClient(client, command.activeSessionId);
+				if (!match.worker.client) throw new Error("Session worker is not connected");
+				const response = await match.worker.client.requestWorker({
+					type: "worker_questionnaire_dismiss",
+					lease,
+				});
+				return { ...response, id: command.id, command: command.type };
+			}
 			case "questionnaire_checkpoint":
 			case "questionnaire_submit": {
 				const lease = this.questionnaireBroker.leaseForMessage(
@@ -2481,7 +2507,7 @@ export class DaemonSupervisor {
 	private sendQuestionnaireLeaseRevoked(
 		workerId: string,
 		lease: QuestionnaireLease,
-		reason: "client_lost" | "presentability_lost",
+		reason: QuestionnaireLeaseRevocationReason,
 	): void {
 		const worker = this.workers.get(workerId);
 		if (!worker?.client) return;

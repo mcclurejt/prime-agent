@@ -3403,6 +3403,9 @@ export class AgentDaemon {
 					this.questionnaireAuthority.handleLeaseRevoked(command.lease);
 					this.writeWorkerSuccess(client, command);
 					return;
+				case "worker_questionnaire_dismiss":
+					this.writeWorkerSuccess(client, command, this.questionnaireAuthority.dismiss(command.lease));
+					return;
 				case "worker_questionnaire_checkpoint":
 					this.writeWorkerSuccess(client, command, this.questionnaireAuthority.checkpoint(command));
 					return;

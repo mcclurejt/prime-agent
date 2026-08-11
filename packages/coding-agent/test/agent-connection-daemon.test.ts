@@ -461,6 +461,41 @@ class FakeDaemonClient {
 						filePath: "/tmp/not-found.jsonl",
 					},
 				};
+			case "questionnaire_presentability":
+			case "questionnaire_withdraw_ack":
+				return { type: "response", command: command.type, success: true };
+			case "questionnaire_presentation_error":
+				return { type: "response", command: command.type, success: true, data: { status: "accepted" } };
+			case "questionnaire_offer_response":
+				return { type: "response", command: command.type, success: true, data: { status: "accepted" } };
+			case "questionnaire_checkpoint":
+				return {
+					type: "response",
+					command: command.type,
+					success: true,
+					data: {
+						status: "ack",
+						ack: {
+							clientMutationId: command.clientMutationId,
+							authoritativeRevision: command.baseRevision + 1,
+							draftHash: "hash",
+						},
+					},
+				};
+			case "questionnaire_submit":
+				return {
+					type: "response",
+					command: command.type,
+					success: true,
+					data: { status: "terminal", outcome: { status: "submitted", responses: [] } },
+				};
+			case "questionnaire_dismiss":
+				return {
+					type: "response",
+					command: command.type,
+					success: true,
+					data: { status: "terminal", outcome: { status: "dismissed" } },
+				};
 			default:
 				throw new Error(`Unexpected command: ${command.type}`);
 		}
@@ -2617,6 +2652,95 @@ describe("DaemonAgentConnection", () => {
 			requestId: "request-1",
 			response: { confirmed: true },
 		});
+	});
+
+	it("negotiates and translates targeted questionnaire events and mutations", async () => {
+		const fakeClient = new FakeDaemonClient();
+		fakeClient.serverCapabilities.add("questionnaire_v1");
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");
+		const events: AgentConnectionEvent[] = [];
+		connection.subscribe((event) => {
+			events.push(event);
+		});
+		await connection.attach();
+		expect(fakeClient.requests[0]).toMatchObject({
+			type: "attach",
+			capabilities: [
+				"attach_snapshot",
+				"event_sequence",
+				"extension_ui",
+				"questionnaire_v1",
+				"slim_attach",
+				"chunked_snapshot",
+			],
+		});
+		const lease = {
+			supervisorGeneration: "generation-a",
+			logicalRequestId: "request-a",
+			offerId: "offer-a",
+			leaseEpoch: 1,
+			logicalClientId: "logical-a",
+			connectionId: "connection-a",
+			mode: "rich" as const,
+		};
+		const draft = {
+			version: 1 as const,
+			currentStep: { kind: "question" as const, questionId: "q" },
+			states: [{ questionId: "q", kind: "short-text" as const, value: "private" }],
+		};
+		fakeClient.emitMessage({ type: "questionnaire_offer", activeSessionId: "active-1", lease });
+		fakeClient.emitMessage({
+			type: "questionnaire_presentation_snapshot",
+			activeSessionId: "active-1",
+			lease,
+			authoritativeRevision: 3,
+			request: { version: 1, questions: [{ id: "q", kind: "short-text", prompt: "Private prompt" }] },
+			draft,
+		});
+		fakeClient.emitMessage({ type: "questionnaire_withdraw", activeSessionId: "active-1", lease });
+		await vi.waitFor(() => expect(events).toHaveLength(3));
+		expect(events).toEqual([
+			{ type: "questionnaire_offer", activeSessionId: "active-1", lease },
+			{
+				type: "questionnaire_presentation",
+				presentation: {
+					activeSessionId: "active-1",
+					lease,
+					authoritativeRevision: 3,
+					request: { version: 1, questions: [{ id: "q", kind: "short-text", prompt: "Private prompt" }] },
+					draft,
+				},
+			},
+			{ type: "questionnaire_withdraw", activeSessionId: "active-1", lease },
+		]);
+
+		const questionnaire = connection.questionnaire;
+		expect(questionnaire).toBeDefined();
+		await questionnaire!.setPresentable(true);
+		await expect(questionnaire!.respondToOffer(lease, "accepted")).resolves.toBe("accepted");
+		await expect(questionnaire!.checkpoint(lease, 3, "mutation-a", draft)).resolves.toMatchObject({
+			status: "ack",
+			ack: { authoritativeRevision: 4 },
+		});
+		await expect(questionnaire!.submit(lease, 4, "mutation-b", draft)).resolves.toMatchObject({
+			status: "terminal",
+			outcome: { status: "submitted" },
+		});
+		await expect(questionnaire!.dismiss(lease)).resolves.toMatchObject({
+			status: "terminal",
+			outcome: { status: "dismissed" },
+		});
+		await expect(questionnaire!.reportPresentationError(lease)).resolves.toBe("accepted");
+		await questionnaire!.acknowledgeWithdraw(lease);
+		expect(fakeClient.requests.slice(-7).map((command) => command.type)).toEqual([
+			"questionnaire_presentability",
+			"questionnaire_offer_response",
+			"questionnaire_checkpoint",
+			"questionnaire_submit",
+			"questionnaire_dismiss",
+			"questionnaire_presentation_error",
+			"questionnaire_withdraw_ack",
+		]);
 	});
 
 	it("uses an extended timeout for refine requests through the daemon protocol", async () => {

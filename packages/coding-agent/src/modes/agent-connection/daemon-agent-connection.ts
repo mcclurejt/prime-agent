@@ -59,6 +59,8 @@ import type {
 	AgentConnectionNavigateTreeResult,
 	AgentConnectionNewSessionOptions,
 	AgentConnectionPromptOptions,
+	AgentConnectionQuestionnaireMutationResult,
+	AgentConnectionQuestionnaireTransport,
 	AgentConnectionQueueMode,
 	AgentConnectionQueueState,
 	AgentConnectionResourceSnapshot,
@@ -229,6 +231,68 @@ export class DaemonAgentConnection implements AgentConnection {
 	private disposing = false;
 	private disposed = false;
 
+	private readonly questionnaireTransport: AgentConnectionQuestionnaireTransport = {
+		setPresentable: async (presentable) => {
+			await this.requestOk({
+				type: "questionnaire_presentability",
+				activeSessionId: this.activeSessionId,
+				presentable,
+			});
+		},
+		respondToOffer: async (lease, response) => {
+			const data = await this.requestData<{ status: "accepted" | "stale" }>({
+				type: "questionnaire_offer_response",
+				activeSessionId: this.activeSessionId,
+				lease,
+				response,
+			});
+			return data.status;
+		},
+		checkpoint: (lease, baseRevision, clientMutationId, completeDraft) =>
+			this.requestData<AgentConnectionQuestionnaireMutationResult>({
+				type: "questionnaire_checkpoint",
+				activeSessionId: this.activeSessionId,
+				lease,
+				baseRevision,
+				clientMutationId,
+				completeDraft,
+			}),
+		submit: (lease, baseRevision, clientMutationId, completeDraft) =>
+			this.requestData<AgentConnectionQuestionnaireMutationResult>({
+				type: "questionnaire_submit",
+				activeSessionId: this.activeSessionId,
+				lease,
+				baseRevision,
+				clientMutationId,
+				completeDraft,
+			}),
+		dismiss: (lease) =>
+			this.requestData<AgentConnectionQuestionnaireMutationResult>({
+				type: "questionnaire_dismiss",
+				activeSessionId: this.activeSessionId,
+				lease,
+			}),
+		reportPresentationError: async (lease) => {
+			const data = await this.requestData<{ status: "accepted" | "stale" }>({
+				type: "questionnaire_presentation_error",
+				activeSessionId: this.activeSessionId,
+				lease,
+			});
+			return data.status;
+		},
+		acknowledgeWithdraw: async (lease) => {
+			await this.requestOk({
+				type: "questionnaire_withdraw_ack",
+				activeSessionId: this.activeSessionId,
+				lease,
+			});
+		},
+	};
+
+	get questionnaire(): AgentConnectionQuestionnaireTransport | undefined {
+		return this.client.supportsServerCapability("questionnaire_v1") ? this.questionnaireTransport : undefined;
+	}
+
 	constructor(
 		private readonly client: DaemonClient,
 		private activeSessionId: string,
@@ -301,6 +365,9 @@ export class DaemonAgentConnection implements AgentConnection {
 				"attach_snapshot",
 				"event_sequence",
 				...(supportsExtensionUi ? (["extension_ui"] as const) : []),
+				...(supportsExtensionUi && this.client.supportsServerCapability("questionnaire_v1")
+					? (["questionnaire_v1"] as const)
+					: []),
 				"slim_attach",
 				"chunked_snapshot",
 				...(this.options.ownedSession ? (["client_owned_sessions"] as const) : []),
@@ -1133,6 +1200,9 @@ export class DaemonAgentConnection implements AgentConnection {
 					"attach_snapshot",
 					"event_sequence",
 					...(supportsExtensionUi ? (["extension_ui"] as const) : []),
+					...(supportsExtensionUi && this.client.supportsServerCapability("questionnaire_v1")
+						? (["questionnaire_v1"] as const)
+						: []),
 					"slim_attach",
 					"chunked_snapshot",
 					...(this.options.ownedSession ? (["client_owned_sessions"] as const) : []),
@@ -1480,7 +1550,12 @@ export class DaemonAgentConnection implements AgentConnection {
 					state: { ...this.latestSnapshot.state, recap: message.recap },
 				};
 			}
-			await this.emit({ type: "session_status", recap: message.recap });
+			await this.emit({
+				type: "session_status",
+				recap: message.recap,
+				questionnaireState: message.questionnaireState,
+				questionnaireQueueDepth: message.questionnaireQueueDepth,
+			});
 			return;
 		}
 		if (message.type === "session_resynced") {
@@ -1517,6 +1592,35 @@ export class DaemonAgentConnection implements AgentConnection {
 			this.latestSnapshot = latestSnapshot;
 			this.latestSnapshotIsFresh = true;
 			await this.emit({ type: "session_replaced", state: message.state, messages: message.messages });
+			return;
+		}
+		if (message.type === "questionnaire_offer") {
+			await this.emit({
+				type: "questionnaire_offer",
+				activeSessionId: message.activeSessionId,
+				lease: message.lease,
+			});
+			return;
+		}
+		if (message.type === "questionnaire_presentation_snapshot") {
+			await this.emit({
+				type: "questionnaire_presentation",
+				presentation: {
+					activeSessionId: message.activeSessionId,
+					lease: message.lease,
+					authoritativeRevision: message.authoritativeRevision,
+					request: message.request,
+					draft: message.draft,
+				},
+			});
+			return;
+		}
+		if (message.type === "questionnaire_withdraw") {
+			await this.emit({
+				type: "questionnaire_withdraw",
+				activeSessionId: message.activeSessionId,
+				lease: message.lease,
+			});
 			return;
 		}
 		if (message.type === "extension_ui_request") {

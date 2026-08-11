@@ -63,8 +63,9 @@ export const DAEMON_COMMAND_ENVELOPE_MIN_PROTOCOL_VERSION = 7;
 // Revision 14 adds additive public-socket connection incarnation metadata.
 // Revision 15 adds capability-gated questionnaire broker offer and withdrawal messages.
 // Revision 16 adds questionnaire CAS mutations and targeted presentation snapshots.
-export const DAEMON_SCHEMA_REVISION = 16;
-export const DAEMON_SCHEMA_ID = "protocol-7-schema-16-830c137d27a0";
+// Revision 17 adds rich dismissal and post-accept presentation-error commands.
+export const DAEMON_SCHEMA_REVISION = 17;
+export const DAEMON_SCHEMA_ID = "protocol-7-schema-17-da43cf72f300";
 
 export type DaemonProtocolName = typeof DAEMON_PROTOCOL_NAME;
 export type DaemonProtocolVersion = number;
@@ -695,6 +696,12 @@ export type DaemonCommand =
 			clientMutationId: string;
 			completeDraft: ExtensionQuestionnaireDraftV1;
 	  }
+	| {
+			id?: string;
+			type: "questionnaire_dismiss" | "questionnaire_presentation_error";
+			activeSessionId: string;
+			lease: DaemonQuestionnaireLease;
+	  }
 	| { id?: string; type: "ack_result"; commandId: string }
 	| { id?: string; type: "prepare_update_restart" }
 	| { id?: string; type: "retry_worker"; activeSessionId: string }
@@ -738,6 +745,11 @@ const QUESTIONNAIRE_BROKER_COMMAND = {
 const QUESTIONNAIRE_CAS_COMMAND = {
 	minProtocol: 7,
 	minSchemaRevision: 16,
+	capability: "questionnaire_v1",
+} as const;
+const QUESTIONNAIRE_RICH_LIFECYCLE_COMMAND = {
+	minProtocol: 7,
+	minSchemaRevision: 17,
 	capability: "questionnaire_v1",
 } as const;
 
@@ -841,6 +853,8 @@ export const DAEMON_COMMAND_COMPATIBILITY = {
 	questionnaire_withdraw_ack: QUESTIONNAIRE_BROKER_COMMAND,
 	questionnaire_checkpoint: QUESTIONNAIRE_CAS_COMMAND,
 	questionnaire_submit: QUESTIONNAIRE_CAS_COMMAND,
+	questionnaire_dismiss: QUESTIONNAIRE_RICH_LIFECYCLE_COMMAND,
+	questionnaire_presentation_error: QUESTIONNAIRE_RICH_LIFECYCLE_COMMAND,
 	prepare_update_restart: LEGACY_DAEMON_COMMAND,
 	retry_worker: LEGACY_DAEMON_COMMAND,
 	restart: LEGACY_DAEMON_COMMAND,
@@ -1153,6 +1167,8 @@ const READ_ONLY_DAEMON_COMMANDS: ReadonlySet<DaemonCommand["type"]> = new Set([
 	"questionnaire_withdraw_ack",
 	"questionnaire_checkpoint",
 	"questionnaire_submit",
+	"questionnaire_dismiss",
+	"questionnaire_presentation_error",
 	"agent_messages_status",
 	"wait_for_idle",
 	"get_session_header",

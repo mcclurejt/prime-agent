@@ -118,8 +118,9 @@ export type DaemonWorkerCommand =
 			id?: string;
 			type: "worker_questionnaire_lease_revoked";
 			lease: QuestionnaireLease;
-			reason: "client_lost" | "presentability_lost";
+			reason: "client_lost" | "presentability_lost" | "presentation_error";
 	  }
+	| { id?: string; type: "worker_questionnaire_dismiss"; lease: QuestionnaireLease }
 	| ({
 			id?: string;
 			type: "worker_questionnaire_checkpoint" | "worker_questionnaire_submit";

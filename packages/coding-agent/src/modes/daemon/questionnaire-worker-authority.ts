@@ -361,6 +361,16 @@ export class QuestionnaireWorkerAuthority {
 		this.pump(record.activeSessionId);
 	}
 
+	dismiss(lease: QuestionnaireLease): QuestionnaireWorkerMutationResult {
+		const record = this.requests.get(lease.logicalRequestId);
+		if (!record?.lease || record.lease.mode !== "rich" || !sameLease(record.lease, lease)) {
+			return { status: "stale-lease" };
+		}
+		const outcome: ExtensionQuestionnaireOutcome = { status: "dismissed" };
+		this.finish(record, outcome, false);
+		return { status: "terminal", outcome };
+	}
+
 	checkpoint(mutation: QuestionnaireWorkerMutation): QuestionnaireWorkerMutationResult {
 		return this.applyMutation("checkpoint", mutation);
 	}

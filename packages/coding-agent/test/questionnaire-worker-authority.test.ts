@@ -251,6 +251,19 @@ describe("QuestionnaireWorkerAuthority", () => {
 		expect(authority.submit(mutation(lease, 0, "submit-a", editedDraft()))).toEqual({ status: "stale-lease" });
 	});
 
+	it("settles explicit rich dismissal without exposing or retaining draft responses", async () => {
+		const { authority, mirror, messages } = harness();
+		syncRich(mirror);
+		const pending = authority.request("session-a", request);
+		const lease = acceptLatest(authority, messages);
+
+		expect(authority.dismiss({ ...lease, offerId: "stale" })).toEqual({ status: "stale-lease" });
+		expect(authority.dismiss(lease)).toEqual({ status: "terminal", outcome: { status: "dismissed" } });
+		await expect(pending.outcome).resolves.toEqual({ status: "dismissed" });
+		expect(messages.at(-1)).toEqual({ type: "withdraw", lease });
+		expect(authority.dismiss(lease)).toEqual({ status: "stale-lease" });
+	});
+
 	it("rejects an accepted lease that changes an already committed presentation mode", () => {
 		const { authority, mirror, messages } = harness();
 		syncRich(mirror);

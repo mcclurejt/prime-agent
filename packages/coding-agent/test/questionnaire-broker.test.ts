@@ -189,6 +189,18 @@ describe("QuestionnaireBroker", () => {
 		expect(offers).toHaveLength(2);
 	});
 
+	it("revokes a post-accept presentation error only from the exact leased socket", () => {
+		const { broker, callbacks, offers } = harness();
+		broker.synchronizePresenters([presenter("connection-a", "session-a")]);
+		broker.offer(need("worker-a", "session-a", 1, { logicalRequestId: "request-a", offerId: "offer-a" }));
+		const lease = acceptedLease(offers);
+		expect(broker.respondToOffer("connection-a", "session-a", lease, "accepted")).toBe("accepted");
+
+		expect(broker.presentationError("connection-b", "session-a", lease)).toBe("stale");
+		expect(broker.presentationError("connection-a", "session-a", lease)).toBe("accepted");
+		expect(callbacks.onLeaseRevoked).toHaveBeenCalledWith("worker-a", lease, "presentation_error");
+	});
+
 	it("revokes accepted leases on client loss without claiming a terminal answer", () => {
 		const { broker, callbacks, offers } = harness();
 		broker.synchronizePresenters([presenter("connection-a", "session-a")]);
