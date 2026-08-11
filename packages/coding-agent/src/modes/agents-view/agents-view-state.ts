@@ -677,7 +677,7 @@ export function buildAgentsViewRows(
 	const roots = baseRows.filter((row) => !nestedRows.has(row));
 	const scopedRootRow = scopeRoot ? baseRows.find((row) => row.summary === scopeRoot.summary) : undefined;
 	const needsInputRows = baseRows
-		.filter((row) => row.section === "needs-input" && row !== scopedRootRow)
+		.filter((row) => row.section === "needs-input" && row.kind === "agent" && row !== scopedRootRow)
 		.map((row) => {
 			const parent = parentByChild.get(row);
 			return {

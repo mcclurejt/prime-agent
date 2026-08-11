@@ -143,7 +143,7 @@ describe("agents view state", () => {
 		expect(classifyAgentsViewSession(makeSummary({ activity: "idle", taskState: undefined }))).toBe("idle");
 	});
 
-	test("surfaces nested needs-input sessions once with ancestor context", () => {
+	test("does not surface nested needs-input sessions in the global section", () => {
 		const rows = buildAgentsViewRows([
 			makeSummary({
 				id: "child-active",
@@ -164,10 +164,25 @@ describe("agents view state", () => {
 		]);
 
 		expect(rows.map((row) => [row.title, row.section, row.identity])).toEqual([
-			["Root › Child", "needs-input", "needs-input:active:child-active"],
 			["Root", "idle", "active:root-active"],
 		]);
-		expect(rows[0]).toMatchObject({ kind: "subagent", selectable: true });
+	});
+
+	test("keeps global Needs Input limited to top-level sessions", () => {
+		const rows = buildAgentsViewRows([
+			makeSummary({
+				id: "nested-input",
+				activeSessionId: "nested-input",
+				sessionId: "nested-input-session",
+				sessionName: "Nested input",
+				runtimeKind: "subagent",
+				parentActiveSessionId: "root",
+				taskState: "needs_input",
+			}),
+			makeSummary({ id: "root", activeSessionId: "root", sessionId: "root-session", sessionName: "Root" }),
+		]);
+
+		expect(rows.some((row) => row.section === "needs-input")).toBe(false);
 	});
 
 	test("retains ordinary descendants under a nonselectable needs-input context", () => {
