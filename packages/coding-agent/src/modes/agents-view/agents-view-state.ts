@@ -663,14 +663,12 @@ export function buildAgentsViewRows(
 		}
 		nestedRows.add(row);
 		parentByChild.set(row, parent);
-		if (row.section === "running") {
-			parent.runningSubagentCount += 1;
-		}
 		const siblings = childrenByParent.get(parent) ?? [];
 		siblings.push(row);
 		childrenByParent.set(parent, siblings);
 	}
-	propagateHeartbeatStateToAncestors(baseRows, parentByChild);
+	propagateRunningStateToAncestors(baseRows, parentByChild);
+	recomputeRunningSubagentCounts(baseRows, parentByChild);
 
 	const roots = baseRows.filter((row) => !nestedRows.has(row));
 	const flattened: AgentsViewRow[] = [];
@@ -712,21 +710,41 @@ function isUnifiedSessionRecord(value: SessionSummary | UnifiedSessionRecord): v
 	return "identityAliases" in value;
 }
 
-function propagateHeartbeatStateToAncestors(
+function propagateRunningStateToAncestors(
 	rows: readonly MutableAgentsViewRow[],
 	parentByChild: ReadonlyMap<MutableAgentsViewRow, MutableAgentsViewRow>,
 ): void {
 	for (const row of rows) {
-		if (!row.summary.hasActiveHeartbeat) {
+		if (row.section !== "running") {
 			continue;
 		}
+		const hasHeartbeat = row.summary.hasActiveHeartbeat === true;
 		const visited = new Set<MutableAgentsViewRow>([row]);
 		let ancestor = parentByChild.get(row);
 		while (ancestor && !visited.has(ancestor)) {
 			visited.add(ancestor);
+			const wasRunning = ancestor.section === "running";
 			ancestor.section = "running";
-			ancestor.statusLabel = getSessionStatusLabel(ancestor.summary, true);
+			if (hasHeartbeat) {
+				ancestor.statusLabel = getSessionStatusLabel(ancestor.summary, true);
+			} else if (!wasRunning) {
+				ancestor.statusLabel = "subagents running";
+			}
 			ancestor = parentByChild.get(ancestor);
+		}
+	}
+}
+
+function recomputeRunningSubagentCounts(
+	rows: readonly MutableAgentsViewRow[],
+	parentByChild: ReadonlyMap<MutableAgentsViewRow, MutableAgentsViewRow>,
+): void {
+	for (const row of rows) {
+		row.runningSubagentCount = 0;
+	}
+	for (const [child, parent] of parentByChild) {
+		if (child.section === "running") {
+			parent.runningSubagentCount += 1;
 		}
 	}
 }
