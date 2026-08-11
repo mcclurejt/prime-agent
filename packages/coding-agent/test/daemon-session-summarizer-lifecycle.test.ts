@@ -57,7 +57,7 @@ describe("DaemonSessionSummarizer lifecycle", () => {
 		expect(onStatusChanged).toHaveBeenCalled();
 	});
 
-	test("a failing model on an idle session settles to a needs_input fallback verdict", async () => {
+	test("a failing model on an idle session settles unclassified without persisting", async () => {
 		vi.useFakeTimers();
 		const generate = vi.fn().mockResolvedValue(undefined); // 404 / 401 / timeout / unparseable
 		const summarizer = new DaemonSessionSummarizer(() => [], undefined, generate);
@@ -66,23 +66,26 @@ describe("DaemonSessionSummarizer lifecycle", () => {
 		summarizer.notifyActivity(state);
 		await vi.advanceTimersByTimeAsync(SETTLE_MS + 500);
 		expect(generate).toHaveBeenCalledOnce();
-		// The activity axis holds an unjudged idle session at "working"; the fallback
-		// settles it to needs_input so it doesn't spin forever.
-		expect(state.summaryState).toMatchObject({ taskState: "needs_input", basedOnMessageCount: 2 });
+		// The current in-memory status lets the activity axis settle to idle without
+		// manufacturing an input request or appending a fallback session entry.
+		expect(state.summaryState).toMatchObject({ summary: "", basedOnMessageCount: 2 });
+		expect(state.summaryState?.taskState).toBeUndefined();
+		expect((state as unknown as { appendedStatuses: unknown[] }).appendedStatuses).toHaveLength(0);
 	});
 
-	test("retries after a needs_input fallback until a real summary lands", async () => {
+	test("retries after an unclassified fallback until a real summary lands", async () => {
 		vi.useFakeTimers();
 		const generate = vi
 			.fn()
-			.mockResolvedValueOnce(undefined) // transient failure → blank needs_input fallback
+			.mockResolvedValueOnce(undefined) // transient failure → blank unclassified fallback
 			.mockResolvedValue({ summary: "Reviewed the diff", taskState: "completed" });
 		const summarizer = new DaemonSessionSummarizer(() => [], undefined, generate);
 		const state = makeState({ working: false });
 
 		summarizer.notifyActivity(state);
 		await vi.advanceTimersByTimeAsync(SETTLE_MS + 500);
-		expect(state.summaryState).toMatchObject({ summary: "", taskState: "needs_input" });
+		expect(state.summaryState).toMatchObject({ summary: "" });
+		expect(state.summaryState?.taskState).toBeUndefined();
 
 		// A blank recap still owes a summary, so a later sweep retries and records it.
 		summarizer.notifyActivity(state);

@@ -5,12 +5,17 @@ import type { ModelRegistry } from "../../core/model-registry.js";
 import type { AgentStatus, AgentTaskState } from "../../core/session-manager.js";
 import type { ActiveSessionState } from "./active-session-state.js";
 
-const SWEEP_INTERVAL_MS = 25_000;
 // Collapse a tool-use loop's rapid turn_end bursts into one summarization.
 const SETTLE_DEBOUNCE_MS = 2_000;
 
-const SUMMARY_MODEL_PROVIDER = "prime-inference";
-const SUMMARY_MODEL_ID = "qwen/qwen3-30b-a3b-instruct-2507";
+const DEFAULT_WORKING_SUMMARY_INTERVAL_MS = 25_000;
+const MIN_WORKING_SUMMARY_INTERVAL_MS = 10_000;
+
+export interface DaemonSessionSummaryConfig {
+	provider?: string;
+	model?: string;
+	workingIntervalMs?: number;
+}
 
 const SUMMARY_CONTEXT_MESSAGES = 8;
 const SUMMARY_MAX_CHARS_PER_MESSAGE = 600;
@@ -38,12 +43,19 @@ export interface AgentStatusResult {
 }
 
 /** Resolve the cheap summary model, or undefined when it has no configured auth. */
-export function resolveSummaryModel(registry: ModelRegistry): Model<Api> | undefined {
-	const model = registry.find(SUMMARY_MODEL_PROVIDER, SUMMARY_MODEL_ID);
-	if (model && registry.hasConfiguredAuth(model)) {
-		return model;
-	}
-	return undefined;
+export function resolveSummaryModel(
+	registry: ModelRegistry,
+	config: DaemonSessionSummaryConfig = {},
+): Model<Api> | undefined {
+	if (!config.provider || !config.model) return undefined;
+	const model = registry.find(config.provider, config.model);
+	return model && registry.hasConfiguredAuth(model) ? model : undefined;
+}
+
+function workingSummaryIntervalMs(config: DaemonSessionSummaryConfig): number {
+	return typeof config.workingIntervalMs === "number" && config.workingIntervalMs >= MIN_WORKING_SUMMARY_INTERVAL_MS
+		? config.workingIntervalMs
+		: DEFAULT_WORKING_SUMMARY_INTERVAL_MS;
 }
 
 function messageText(content: unknown): { text: string; tools: string[] } {
@@ -136,12 +148,14 @@ export function parseAgentStatusResponse(text: string, isWorking: boolean): Agen
 	}
 	const statusMatch = [...cleaned.matchAll(/<status>\s*([a-z_]+)\s*<\/status>/gi)].at(-1);
 	const status = statusMatch ? statusMatch[1]!.toUpperCase() : undefined;
-	const taskState: AgentTaskState = status === "COMPLETED" ? "completed" : "needs_input";
-	return { summary, taskState };
+	if (status === "COMPLETED") return { summary, taskState: "completed" };
+	if (status === "NEEDS_INPUT") return { summary, taskState: "needs_input" };
+	return { summary };
 }
 
 export interface GenerateAgentStatusParams {
 	registry: ModelRegistry;
+	config?: DaemonSessionSummaryConfig;
 	messages: readonly AgentMessage[];
 	isWorking: boolean;
 	signal?: AbortSignal;
@@ -153,7 +167,7 @@ export async function generateAgentStatus(params: GenerateAgentStatusParams): Pr
 	if (messages.length === 0) {
 		return undefined;
 	}
-	const model = resolveSummaryModel(registry);
+	const model = resolveSummaryModel(registry, params.config);
 	if (!model) {
 		return undefined;
 	}
@@ -174,7 +188,13 @@ export async function generateAgentStatus(params: GenerateAgentStatusParams): Pr
 					},
 				],
 			},
-			{ maxTokens: SUMMARY_MAX_TOKENS, apiKey: auth.apiKey, headers: auth.headers, signal },
+			{
+				maxTokens: SUMMARY_MAX_TOKENS,
+				reasoning: "low",
+				apiKey: auth.apiKey,
+				headers: auth.headers,
+				signal,
+			},
 		);
 		if (response.stopReason === "error") {
 			return undefined;
@@ -223,6 +243,7 @@ export class DaemonSessionSummarizer {
 		private readonly generate: (
 			params: GenerateAgentStatusParams,
 		) => Promise<AgentStatusResult | undefined> = generateAgentStatus,
+		private readonly config: DaemonSessionSummaryConfig = {},
 	) {}
 
 	start(): void {
@@ -233,7 +254,7 @@ export class DaemonSessionSummarizer {
 			for (const state of this.listSessions()) {
 				void this.summarize(state);
 			}
-		}, SWEEP_INTERVAL_MS);
+		}, workingSummaryIntervalMs(this.config));
 		this.interval.unref?.();
 	}
 
@@ -269,7 +290,7 @@ export class DaemonSessionSummarizer {
 			return;
 		}
 		const persisted = state.runtime.session.sessionManager.getLatestAgentStatus();
-		if (persisted) {
+		if (persisted && !(persisted.taskState === "needs_input" && !persisted.summary)) {
 			state.summaryState = persisted;
 		}
 	}
@@ -319,22 +340,23 @@ export class DaemonSessionSummarizer {
 		const contextMessages = streaming ? [...messages, streaming] : messages;
 
 		const controller = new AbortController();
+		const timeoutMs = Math.min(20_000, Math.max(1_000, workingSummaryIntervalMs(this.config) - 1_000));
+		const timeout = setTimeout(() => controller.abort(), timeoutMs);
+		timeout.unref?.();
 		this.inFlight.set(id, controller);
 		try {
 			const generated = await this.generate({
 				registry: session.modelRegistry,
+				config: this.config,
 				messages: contextMessages,
 				isWorking,
 				signal: controller.signal,
 			});
-			// A failed classification on an idle session would spin at "working"
-			// forever (the activity axis holds unjudged idle sessions there), so
-			// settle it to needs_input.
+			// A failed classification still records current in-memory activity so an
+			// idle session does not remain indefinitely classified as working.
 			const result =
 				generated ??
-				(!isWorking && (owesIdleVerdict || owesSummary)
-					? { summary: previous?.summary ?? "", taskState: "needs_input" as const }
-					: undefined);
+				(!isWorking && (owesIdleVerdict || owesSummary) ? { summary: previous?.summary ?? "" } : undefined);
 			if (!result) {
 				return;
 			}
@@ -360,7 +382,7 @@ export class DaemonSessionSummarizer {
 			const changed = previous?.summary !== status.summary || previous?.taskState !== status.taskState;
 			state.summaryState = status;
 			// Persist only settled idle verdicts, never mid-stream.
-			if (!isWorking) {
+			if (!isWorking && generated) {
 				try {
 					session.sessionManager.appendAgentStatus(status);
 				} catch {
@@ -371,6 +393,7 @@ export class DaemonSessionSummarizer {
 				this.onStatusChanged?.(state);
 			}
 		} finally {
+			clearTimeout(timeout);
 			this.inFlight.delete(id);
 			// Re-debounce a request that arrived mid-pass instead of dropping it.
 			if (this.rerunRequested.delete(id)) {

@@ -3,7 +3,7 @@ import { canonicalizePath } from "../../utils/paths.js";
 import type { AgentConnectionHeartbeat, AgentConnectionSavedSessionInfo } from "../agent-connection/index.js";
 import { classifySessionRosterStatus, type SessionSummary } from "../daemon/daemon-session-list.js";
 
-export type AgentsViewSection = "running" | "idle" | "inactive";
+export type AgentsViewSection = "needs-input" | "running" | "idle" | "inactive";
 
 export interface UnifiedSessionHeartbeat {
 	activeCount: number;
@@ -59,7 +59,7 @@ export interface UnattachableChildOpenResult {
 	statusMessage: string;
 }
 
-export type AgentsViewRowKind = "agent" | "subagent-summary" | "subagent" | "subagent-code";
+export type AgentsViewRowKind = "agent" | "context" | "subagent-summary" | "subagent" | "subagent-code";
 
 // Hard cap on spawn-code lines shown so a large program never floods the view.
 const MAX_SPAWN_CODE_LINES = 10;
@@ -88,7 +88,9 @@ export interface AgentsViewRow {
 }
 
 export function classifyAgentsViewSession(summary: SessionSummary): AgentsViewSection {
-	return classifySessionRosterStatus(summary);
+	const rosterStatus = classifySessionRosterStatus(summary);
+	if (rosterStatus !== "idle") return rosterStatus;
+	return summary.taskState === "needs_input" ? "needs-input" : "idle";
 }
 
 export function classifyUnifiedSession(record: Pick<UnifiedSessionRecord, "daemon" | "heartbeat">): AgentsViewSection {
@@ -111,6 +113,8 @@ export function shouldShowAgentsViewSession(summary: SessionSummary, manuallyIna
 
 export function sectionTitle(section: AgentsViewSection): string {
 	switch (section) {
+		case "needs-input":
+			return "Needs Input";
 		case "running":
 			return "Running";
 		case "idle":
@@ -671,18 +675,64 @@ export function buildAgentsViewRows(
 	recomputeRunningSubagentCounts(baseRows, parentByChild);
 
 	const roots = baseRows.filter((row) => !nestedRows.has(row));
-	const flattened: AgentsViewRow[] = [];
+	const scopedRootRow = scopeRoot ? baseRows.find((row) => row.summary === scopeRoot.summary) : undefined;
+	const needsInputRows = baseRows
+		.filter((row) => row.section === "needs-input" && row !== scopedRootRow)
+		.map((row) => {
+			const parent = parentByChild.get(row);
+			return {
+				...row,
+				// The flattened presentation must retain the source session's interaction
+				// semantics: a subagent still uses parent-aware open and cancellation.
+				kind: row.kind,
+				depth: 0,
+				identity: `needs-input:${row.identity}`,
+				...(parent
+					? {
+							parentIdentity:
+								parent.section === "needs-input" ? `needs-input:${parent.identity}` : parent.identity,
+						}
+					: {}),
+				title: getNeedsInputRowTitle(row, parentByChild),
+			};
+		});
+	const flattened: AgentsViewRow[] = [...needsInputRows.sort(compareAgentsViewRows)];
+	const hasOrdinaryDescendant = (row: MutableAgentsViewRow): boolean =>
+		(childrenByParent.get(row) ?? []).some(
+			(child) => child.section !== "needs-input" || hasOrdinaryDescendant(child),
+		);
 	const emit = (row: MutableAgentsViewRow, depth: number): void => {
-		row.depth = depth;
-		flattened.push(row);
 		const children = childrenByParent.get(row) ?? [];
-		if (children.length === 0) {
+		if (row.section === "needs-input") {
+			if (!hasOrdinaryDescendant(row)) return;
+			const context: MutableAgentsViewRow = {
+				...row,
+				kind: "context",
+				section: "idle",
+				statusLabel: "idle",
+				selectable: false,
+				identity: `context:${row.identity}`,
+			};
+			context.depth = depth;
+			flattened.push(context);
+			for (const child of children.sort(compareAgentsViewRows)) {
+				child.parentIdentity = context.identity;
+				emit(child, depth + 1);
+			}
 			return;
 		}
-		const childHasSpawnCode = children.some((child) => hasSpawnCode(child.summary));
+		row.depth = depth;
+		flattened.push(row);
+		const ordinaryChildren = children.filter(
+			(child) => child.section !== "needs-input" || hasOrdinaryDescendant(child),
+		);
+		if (ordinaryChildren.length === 0) {
+			return;
+		}
+		const childHasSpawnCode = ordinaryChildren.some((child) => hasSpawnCode(child.summary));
 		if (expandedSubagentParents.has(row.identity)) {
 			const showProgram = programShownParents.has(row.identity);
-			const groups = groupChildrenBySpawnCode(children.sort(compareAgentsViewRows));
+			const groups = groupChildrenBySpawnCode(ordinaryChildren.sort(compareAgentsViewRows));
 			for (const [groupIndex, group] of groups.entries()) {
 				if (showProgram && group.spawnCode) {
 					for (const codeRow of buildSpawnCodeRows(row, group.spawnCode, depth + 1, groupIndex)) {
@@ -695,15 +745,29 @@ export function buildAgentsViewRows(
 				}
 			}
 		} else {
-			flattened.push(createSubagentSummaryRow(row, children, depth + 1, childHasSpawnCode));
+			flattened.push(createSubagentSummaryRow(row, ordinaryChildren, depth + 1, childHasSpawnCode));
 		}
 	};
-	const scopedRootRow = scopeRoot ? baseRows.find((row) => row.summary === scopeRoot.summary) : undefined;
 	const visibleRoots = scopedRootRow ? roots.filter((row) => row !== scopedRootRow) : roots;
 	for (const root of visibleRoots.sort(compareAgentsViewRows)) {
 		emit(root, 0);
 	}
 	return flattened;
+}
+
+function getNeedsInputRowTitle(
+	row: MutableAgentsViewRow,
+	parentByChild: ReadonlyMap<MutableAgentsViewRow, MutableAgentsViewRow>,
+): string {
+	const ancestors: string[] = [];
+	const visited = new Set<MutableAgentsViewRow>([row]);
+	let ancestor = parentByChild.get(row);
+	while (ancestor && !visited.has(ancestor)) {
+		visited.add(ancestor);
+		ancestors.unshift(ancestor.title);
+		ancestor = parentByChild.get(ancestor);
+	}
+	return [...ancestors, row.title].join(" › ");
 }
 
 function isUnifiedSessionRecord(value: SessionSummary | UnifiedSessionRecord): value is UnifiedSessionRecord {
@@ -912,12 +976,14 @@ function isSubagentSummary(summary: SessionSummary): boolean {
 
 function sectionRank(section: AgentsViewSection): number {
 	switch (section) {
-		case "running":
+		case "needs-input":
 			return 0;
-		case "idle":
+		case "running":
 			return 1;
-		case "inactive":
+		case "idle":
 			return 2;
+		case "inactive":
+			return 3;
 		default: {
 			const _exhaustive: never = section;
 			return _exhaustive;
@@ -989,5 +1055,6 @@ function getSessionStatusLabel(summary: SessionSummary, hasActiveHeartbeat = sum
 	if (summary.activity === "working") {
 		return "classifying";
 	}
-	return summary.taskState === "completed" ? "completed" : "needs input";
+	if (summary.taskState === "needs_input") return "needs input";
+	return summary.taskState === "completed" ? "completed" : "idle";
 }

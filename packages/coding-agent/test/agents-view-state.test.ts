@@ -131,15 +131,70 @@ describe("agents view state", () => {
 		expect(child).toMatchObject({ runtimeKind: "subagent", rlmDepth: 1, lifecycle: "archived" });
 	});
 
-	test("places all non-busy resident sessions in Idle", () => {
+	test("places explicit input requests in Needs Input and other non-busy sessions in Idle", () => {
 		// Working is heuristic and ignores taskState.
 		expect(
-			classifyAgentsViewSession(makeSummary({ isStreaming: true, activity: "working", taskState: "completed" })),
+			classifyAgentsViewSession(makeSummary({ isStreaming: true, activity: "working", taskState: "needs_input" })),
 		).toBe("running");
-		// Secondary completion verdicts do not create extra sections.
-		expect(classifyAgentsViewSession(makeSummary({ activity: "idle", taskState: "needs_input" }))).toBe("idle");
+		expect(classifyAgentsViewSession(makeSummary({ activity: "idle", taskState: "needs_input" }))).toBe(
+			"needs-input",
+		);
 		expect(classifyAgentsViewSession(makeSummary({ activity: "idle", taskState: "completed" }))).toBe("idle");
 		expect(classifyAgentsViewSession(makeSummary({ activity: "idle", taskState: undefined }))).toBe("idle");
+	});
+
+	test("surfaces nested needs-input sessions once with ancestor context", () => {
+		const rows = buildAgentsViewRows([
+			makeSummary({
+				id: "child-active",
+				activeSessionId: "child-active",
+				sessionId: "child-session",
+				sessionName: "Child",
+				runtimeKind: "subagent",
+				parentActiveSessionId: "root-active",
+				taskState: "needs_input",
+			}),
+			makeSummary({
+				id: "root-active",
+				activeSessionId: "root-active",
+				sessionId: "root-session",
+				sessionName: "Root",
+				taskState: "completed",
+			}),
+		]);
+
+		expect(rows.map((row) => [row.title, row.section, row.identity])).toEqual([
+			["Root › Child", "needs-input", "needs-input:active:child-active"],
+			["Root", "idle", "active:root-active"],
+		]);
+		expect(rows[0]).toMatchObject({ kind: "subagent", selectable: true });
+	});
+
+	test("retains ordinary descendants under a nonselectable needs-input context", () => {
+		const rows = buildAgentsViewRows([
+			makeSummary({
+				id: "completed-child",
+				activeSessionId: "completed-child",
+				sessionId: "completed-child-session",
+				sessionName: "Completed child",
+				runtimeKind: "subagent",
+				parentActiveSessionId: "input-root",
+				taskState: "completed",
+			}),
+			makeSummary({
+				id: "input-root",
+				activeSessionId: "input-root",
+				sessionId: "input-root-session",
+				sessionName: "Input root",
+				taskState: "needs_input",
+			}),
+		]);
+
+		expect(rows.map((row) => [row.title, row.kind, row.section, row.selectable])).toEqual([
+			["Input root", "agent", "needs-input", true],
+			["Input root", "context", "idle", false],
+			["Completed child", "subagent", "idle", true],
+		]);
 	});
 
 	test("active heartbeats make sessions Running regardless of current activity", () => {

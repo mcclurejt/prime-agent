@@ -119,6 +119,12 @@ export type McpServerConfig =
 			disabledTools?: string[];
 	  };
 
+export interface SessionSummarySettings {
+	provider?: string;
+	model?: string;
+	workingIntervalMs?: number;
+}
+
 export interface Settings {
 	onboardingShown?: boolean;
 	onboardingCompleted?: boolean;
@@ -127,6 +133,7 @@ export interface Settings {
 	recentModels?: string[]; // "provider/id" keys, most-recently-used first
 	defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	defaultServiceTier?: ServiceTier;
+	sessionSummary?: SessionSummarySettings;
 	rlmMaxDepth?: number; // default for new sessions; unset falls through to RLM_MAX_DEPTH, then 1
 	idleEvictionMinutes?: number | "off"; // global daemon policy; default: 90
 	transport?: TransportSetting; // default: "auto"
