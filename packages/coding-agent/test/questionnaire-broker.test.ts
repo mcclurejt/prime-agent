@@ -92,6 +92,24 @@ describe("QuestionnaireBroker", () => {
 		});
 	});
 
+	it("waits for an unfocused rich presenter instead of falling back to legacy", () => {
+		const { broker, offers } = harness();
+		const rich = { ...presenter("rich", "session-a"), presentable: false };
+		broker.synchronizePresenters([rich, presenter("legacy", "session-a", ["extension_ui"])]);
+
+		broker.offer(need("worker-a", "session-a", 1));
+
+		expect(offers).toEqual([]);
+		expect(broker.debugContentFreeState().queued).toBe(1);
+		broker.synchronizePresenters([
+			{ ...rich, presentable: true },
+			presenter("legacy", "session-a", ["extension_ui"]),
+		]);
+		expect(offers).toHaveLength(1);
+		expect(offers[0]!.connectionId).toBe("rich");
+		expect(acceptedLease(offers).mode).toBe("rich");
+	});
+
 	it("enforces one global focus lease per connection without head-of-line blocking", () => {
 		const { broker, offers } = harness();
 		broker.synchronizePresenters([

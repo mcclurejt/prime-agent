@@ -554,16 +554,19 @@ export class QuestionnaireComponent implements Component, Focusable {
 			this.handleReviewInput(data);
 			return;
 		}
-		if (kb.matches(data, "app.questionnaire.next")) {
+		const question = this.currentQuestion();
+		if (!question) return;
+		const textEditorOwnsHorizontalArrow =
+			(question.kind === "short-text" || question.kind === "multiline-text") &&
+			(kb.matches(data, "tui.editor.cursorLeft") || kb.matches(data, "tui.editor.cursorRight"));
+		if (!textEditorOwnsHorizontalArrow && kb.matches(data, "app.questionnaire.next")) {
 			this.pageChanged(this.model.next());
 			return;
 		}
-		if (kb.matches(data, "app.questionnaire.previous")) {
+		if (!textEditorOwnsHorizontalArrow && kb.matches(data, "app.questionnaire.previous")) {
 			this.pageChanged(this.model.previous());
 			return;
 		}
-		const question = this.currentQuestion();
-		if (!question) return;
 		if (kb.matches(data, "tui.select.pageUp")) {
 			this.scrollPage(-1);
 			return;
@@ -676,7 +679,9 @@ export class QuestionnaireComponent implements Component, Focusable {
 			this.scrollPage(-1);
 		} else if (kb.matches(data, "tui.select.pageDown")) {
 			this.scrollPage(1);
-		} else if (kb.matches(data, "tui.select.confirm")) {
+		} else if (question.kind === "multi-select" && kb.matches(data, "app.questionnaire.toggle")) {
+			this.activateChoice(question, cursor);
+		} else if (question.kind !== "multi-select" && kb.matches(data, "tui.select.confirm")) {
 			this.activateChoice(question, cursor);
 		}
 		this.renderRequested();
@@ -858,12 +863,12 @@ export class QuestionnaireComponent implements Component, Focusable {
 	}
 
 	private renderCompactHeader(width: number): string[] {
-		if (this.model.currentStep.kind === "review") return wrapTextWithAnsi(theme.bold("Review / Submit"), width);
+		if (this.model.currentStep.kind === "review")
+			return wrapTextWithAnsi(theme.bold("Review / Submit"), width).slice(0, 1);
 		const index = this.model.currentQuestionIndex ?? 0;
 		const question = this.model.request.questions[index]!;
-		const text = `Q${index + 1}/${this.model.request.questions.length}: ${question.label ?? `Q${index + 1}`}`;
-		const wrapped = wrapTextWithAnsi(theme.fg("muted", text), width);
-		return wrapped.length <= 2 ? wrapped : [];
+		const text = `[${index + 1}/${this.model.request.questions.length}] ${question.label ?? `Q${index + 1}`}`;
+		return wrapTextWithAnsi(theme.fg("muted", text), width).slice(0, 1);
 	}
 
 	private renderQuestion(width: number): { lines: string[]; anchor: number } {
@@ -1024,7 +1029,7 @@ export class QuestionnaireComponent implements Component, Focusable {
 				} else if (this.model.currentStep.kind === "review") {
 					hint = `${previous}/${next} Edit/Submit · ${up}/${down} answer · ${confirm} choose · ${pageUp}/${pageDown} scroll · ${cancel} dismiss`;
 				} else if (currentQuestion?.kind === "multi-select") {
-					hint = `${up}/${down} move · ${confirm} toggle · ${previous}/${next} previous/next · ${pageUp}/${pageDown} scroll · ${cancel} dismiss`;
+					hint = `${up}/${down} move · ${this.keyText("app.questionnaire.toggle")} toggle · ${previous}/${next} previous/next · ${pageUp}/${pageDown} scroll · ${cancel} dismiss`;
 				} else if (currentQuestion?.kind === "multiline-text") {
 					const newline = this.keyText("tui.input.newLine");
 					hint = `${newline} newline · ${previous}/${next} previous/next · ${pageUp}/${pageDown} scroll · ${cancel} dismiss`;

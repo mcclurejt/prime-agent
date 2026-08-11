@@ -217,6 +217,96 @@ describe("QuestionnaireComponent", () => {
 		expect(submit).toHaveBeenCalledWith({ status: "submitted", responses: expect.any(Array) });
 	});
 
+	it("uses Space for multi-select toggles and left/right arrows for persistent page navigation", () => {
+		const tui = createFakeTui(18);
+		const component = new QuestionnaireComponent({
+			tui,
+			keybindings: new KeybindingsManager(),
+			request,
+			getRows: () => tui.terminal.rows,
+			requestRender: tui.requestRender,
+			onSubmit: vi.fn(),
+			onDismiss: vi.fn(),
+		});
+
+		component.handleInput("\x1b[C");
+		expect(component.model.currentStep).toEqual({ kind: "question", questionId: "single" });
+		component.handleInput("\x1b[C");
+		expect(component.model.currentStep).toEqual({ kind: "question", questionId: "multi" });
+
+		component.handleInput("\r");
+		expect(component.model.currentStep).toEqual({ kind: "question", questionId: "multi" });
+		expect(component.model.getState("multi")).toMatchObject({ choiceIds: [] });
+		component.handleInput(" ");
+		expect(component.model.getState("multi")).toMatchObject({ choiceIds: ["east"] });
+
+		component.handleInput("\x1b[B");
+		component.handleInput("\x1b[B");
+		component.handleInput(" ");
+		expect(component.isOtherEditorOpen).toBe(true);
+		component.handleInput("custom region");
+		component.handleInput("\r");
+		expect(component.isOtherEditorOpen).toBe(false);
+		component.handleInput("\x1b[D");
+		expect(component.model.currentStep).toEqual({ kind: "question", questionId: "single" });
+		component.handleInput("\x1b[C");
+		expect(component.model.currentStep).toEqual({ kind: "question", questionId: "multi" });
+		expect(component.model.getOtherText("multi")).toBe("custom region");
+		const output = stripAnsi(component.render(80).join("\n"));
+		expect(output).toContain("Space toggle");
+		expect(output).toContain("[▶ Regions]");
+		component.handleInput("\x1b[C");
+		expect(component.model.currentStep).toEqual({ kind: "question", questionId: "short" });
+	});
+
+	it("preserves cursor arrows inside text answers while Tab still changes pages", () => {
+		const tui = createFakeTui(18);
+		const component = new QuestionnaireComponent({
+			tui,
+			keybindings: new KeybindingsManager(),
+			request: {
+				version: 1,
+				questions: [
+					{ id: "text", kind: "short-text", prompt: "Text?", initialValue: "hello" },
+					{ id: "next", kind: "confirm", prompt: "Next?" },
+				],
+			},
+			getRows: () => tui.terminal.rows,
+			requestRender: tui.requestRender,
+			onSubmit: vi.fn(),
+			onDismiss: vi.fn(),
+		});
+
+		component.handleInput("\x1b[D");
+		component.handleInput("X");
+		expect(component.model.getText("text")).toBe("hellXo");
+		expect(component.model.currentStep).toEqual({ kind: "question", questionId: "text" });
+		component.handleInput("\t");
+		expect(component.model.currentStep).toEqual({ kind: "question", questionId: "next" });
+	});
+
+	it("uses the configured multi-select toggle key instead of hardcoding Space", () => {
+		const tui = createFakeTui(18);
+		const component = new QuestionnaireComponent({
+			tui,
+			keybindings: new KeybindingsManager({ "app.questionnaire.toggle": "ctrl+x" }),
+			request: {
+				version: 1,
+				questions: [{ id: "multi", kind: "multi-select", prompt: "Pick", choices: [{ id: "x", label: "X" }] }],
+			},
+			getRows: () => tui.terminal.rows,
+			requestRender: tui.requestRender,
+			onSubmit: vi.fn(),
+			onDismiss: vi.fn(),
+		});
+
+		component.handleInput(" ");
+		expect(component.model.getState("multi")).toMatchObject({ choiceIds: [] });
+		component.handleInput("\x18");
+		expect(component.model.getState("multi")).toMatchObject({ choiceIds: ["x"] });
+		expect(stripAnsi(component.render(80).join("\n"))).toContain("Ctrl+X toggle");
+	});
+
 	it("fills through keystrokes to zero reserved bytes and navigates review round trips without throwing", () => {
 		const tui = createFakeTui(24);
 		const component = new QuestionnaireComponent({
@@ -483,7 +573,12 @@ describe("QuestionnaireComponent", () => {
 			onSubmit: vi.fn(),
 			onDismiss: vi.fn(),
 		});
-		expect(stripAnsi(component.render(96).join("\n"))).toContain("ACTIVE PROMPT");
+		const output = stripAnsi(component.render(96).join("\n"));
+		expect(output).toContain("ACTIVE PROMPT");
+		expect(output).toContain("[1/32]");
+		const narrow = stripAnsi(component.render(20).join("\n"));
+		expect(narrow).toContain("ACTIVE PROMPT");
+		expect(narrow).toMatch(/1\/32/);
 	});
 
 	it("appends to seeded short text and reopened Other through keystrokes", () => {
@@ -539,10 +634,10 @@ describe("QuestionnaireComponent", () => {
 		component.handleInput("\x0e");
 		component.handleInput("\r");
 		component.handleInput("\x0e");
-		component.handleInput("\r");
+		component.handleInput(" ");
 		component.handleInput("\x1b[B");
 		component.handleInput("\x1b[B");
-		component.handleInput("\r");
+		component.handleInput(" ");
 		component.handleInput("custom");
 		component.handleInput("\x1b");
 		component.handleInput("\x0e");

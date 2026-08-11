@@ -376,6 +376,15 @@ export class QuestionnaireBroker {
 			const rich = available.find(isRichPresenter);
 			if (rich) return { presenter: rich, mode: "rich" };
 			if (need.mode === "rich") return undefined;
+			const richPresenterAttached = [...this.presenters.values()].some(
+				(presenter) =>
+					presenter.activeSessionId === need.activeSessionId &&
+					isRichPresenter(presenter) &&
+					!this.suppressedPresenterKeys.has(presenterKey(presenter)) &&
+					!this.pendingOffersByConnection.has(presenter.connectionId) &&
+					!this.activeLeasesByConnection.has(presenter.connectionId),
+			);
+			if (richPresenterAttached) return undefined;
 		}
 		const legacy = available.find((presenter) => hasCapability(presenter, "extension_ui"));
 		return legacy ? { presenter: legacy, mode: "legacy" } : undefined;

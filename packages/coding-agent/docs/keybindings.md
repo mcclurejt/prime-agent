@@ -126,12 +126,13 @@ Use `tab` to cycle forward and `shift+tab` to cycle backward through Providers, 
 
 ### Questionnaire
 
-These actions move between questionnaire questions and switch the Review page between Edit and Submit. They are context-scoped, so their Tab defaults intentionally overlap generic input and configuration-menu bindings while a questionnaire owns focus.
+These actions move between questionnaire questions and switch the Review page between Edit and Submit. They are context-scoped, so their Tab and arrow defaults intentionally overlap generic input and configuration-menu bindings while a questionnaire owns focus. Left and Right continue to move the cursor inside text-answer editors; use Tab and Shift+Tab to change pages while editing text.
 
 | Keybinding id | Default | Description |
 |--------|---------|-------------|
-| `app.questionnaire.next` | `tab` | Move to the next questionnaire page or select Submit on Review |
-| `app.questionnaire.previous` | `shift+tab` | Move to the previous questionnaire page or select Edit on Review |
+| `app.questionnaire.next` | `tab`, `right` | Move to the next questionnaire page or select Submit on Review |
+| `app.questionnaire.previous` | `shift+tab`, `left` | Move to the previous questionnaire page or select Edit on Review |
+| `app.questionnaire.toggle` | `space` | Toggle the focused checkbox in a multi-select question |
 
 ### Display and Message Queue
 

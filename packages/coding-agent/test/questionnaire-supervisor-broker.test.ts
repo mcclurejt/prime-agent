@@ -98,6 +98,30 @@ describe("daemon supervisor questionnaire brokerage", () => {
 		expect(presentationError).toHaveBeenCalledWith("vanished-connection", "session-a", lease);
 	});
 
+	it("re-arbitrates queued questionnaires when a rich client becomes presentable", async () => {
+		const root = mkdtempSync(join(tmpdir(), "prime-agent-questionnaire-refocus-"));
+		tempDirs.push(root);
+		const supervisor = new DaemonSupervisor(join(root, "daemon.sock"), {
+			descriptorDir: join(root, "workers"),
+			defaultSessionConfig: { agentDir: join(root, "agent"), cwd: root },
+		});
+		const client = socketClient("connection-a", "session-a", false);
+		const internals = supervisor as unknown as {
+			handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<DaemonResponse | undefined>;
+			synchronizeQuestionnairePresenters(): void;
+		};
+		const synchronize = vi.spyOn(internals, "synchronizeQuestionnairePresenters");
+
+		await internals.handleCommand(client, {
+			type: "questionnaire_presentability",
+			activeSessionId: "session-a",
+			presentable: true,
+		});
+
+		expect(client.questionnairePresentableActiveSessionIds).toContain("session-a");
+		expect(synchronize).toHaveBeenCalledOnce();
+	});
+
 	it("keeps a presentable client eligible after a transient busy offer response", async () => {
 		const root = mkdtempSync(join(tmpdir(), "prime-agent-questionnaire-busy-"));
 		tempDirs.push(root);
