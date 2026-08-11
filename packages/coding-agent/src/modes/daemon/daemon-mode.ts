@@ -199,6 +199,7 @@ import {
 	isDaemonWorkerFrameHeader,
 	SESSION_LEASE_OWNER_ID_ENV,
 	SESSION_LEASES_ENABLED_ENV,
+	type WorkerQuestionnaireBrokerMessage,
 } from "./daemon-worker-protocol.js";
 import { WorkerUiClientsMirror } from "./daemon-worker-ui-clients.js";
 import { MutationDrainLatch } from "./mutation-drain-latch.js";
@@ -2997,6 +2998,7 @@ export class AgentDaemon {
 			detachInput: () => {},
 			supportsExtensionUi: false,
 			capabilities: new Set(DAEMON_DEFAULT_CLIENT_CAPABILITIES),
+			questionnairePresentableActiveSessionIds: new Set(),
 		};
 		this.clients.add(client);
 		this.write(client, {
@@ -3361,6 +3363,11 @@ export class AgentDaemon {
 					return;
 				case "worker_ui_client_delta":
 					this.workerUiClients.applyDelta(command);
+					this.writeWorkerSuccess(client, command);
+					return;
+				case "worker_questionnaire_offer_result":
+				case "worker_questionnaire_lease_revoked":
+					// Phase 3D binds these authenticated broker results to worker-owned request authority.
 					this.writeWorkerSuccess(client, command);
 					return;
 				case "worker_sync_agent_peers":
@@ -6510,6 +6517,20 @@ export class AgentDaemon {
 		);
 		state.lastEventSequence = meta.sequence ?? state.lastEventSequence;
 		return { ...message, meta };
+	}
+
+	sendWorkerQuestionnaireBrokerMessage(message: WorkerQuestionnaireBrokerMessage): boolean {
+		const supervisor = [...this.supervisorClaims.keys()].find(
+			(client) => client.authenticated === true && !client.socket.destroyed,
+		);
+		if (!supervisor) return false;
+		const frame = encodePrivateFrame<DaemonWorkerFrameHeader>(
+			{ kind: "questionnaire_broker", messageType: message.type },
+			Buffer.from(serializeJsonLine(message)),
+		);
+		const accepted = supervisor.socket.write(frame);
+		if (!accepted) supervisor.backpressured = true;
+		return true;
 	}
 
 	private write(client: DaemonSocketClient, message: DaemonOutbound): boolean {

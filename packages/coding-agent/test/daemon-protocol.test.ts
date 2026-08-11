@@ -28,6 +28,10 @@ import {
 describe("daemon protocol helpers", () => {
 	it("keeps the advertised schema identity synchronized with wire type shapes", () => {
 		const source = readFileSync(resolve(__dirname, "../src/modes/daemon/daemon-protocol.ts"), "utf8");
+		const questionnaireSource = source.slice(
+			source.indexOf("export type DaemonQuestionnairePresentationMode"),
+			source.indexOf("export type DaemonClientCapability"),
+		);
 		const commandSource = source.slice(
 			source.indexOf("export type DaemonCommand ="),
 			source.indexOf("type DaemonCommandName"),
@@ -45,7 +49,9 @@ describe("daemon protocol helpers", () => {
 			source.indexOf("export const DAEMON_OUTBOUND_COMPATIBILITY"),
 		);
 		const digest = createHash("sha256")
-			.update(`${commandSource}\n${attachResultSource}\n${savedSessionSource}\n${outboundSource}`)
+			.update(
+				`${questionnaireSource}\n${commandSource}\n${attachResultSource}\n${savedSessionSource}\n${outboundSource}`,
+			)
 			.digest("hex")
 			.slice(0, 12);
 		expect(DAEMON_SCHEMA_ID).toBe(`protocol-${DAEMON_PROTOCOL_VERSION}-schema-${DAEMON_SCHEMA_REVISION}-${digest}`);

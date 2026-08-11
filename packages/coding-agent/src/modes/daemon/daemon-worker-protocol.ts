@@ -9,6 +9,11 @@ import type { IdleEvictionMinutes } from "../../core/session-action-store.js";
 export { SESSION_LEASE_OWNER_ID_ENV, SESSION_LEASES_ENABLED_ENV } from "../../core/session-lease.js";
 
 import type { DaemonClientCapability, DaemonCommand, DaemonOutbound } from "./daemon-protocol.js";
+import type {
+	QuestionnaireLease,
+	QuestionnaireOfferResult,
+	QuestionnaireWorkerOfferNeed,
+} from "./questionnaire-broker.js";
 
 export const DAEMON_WORKER_ROLE_ENV = "PRIME_AGENT_INTERNAL_DAEMON_WORKER";
 export const DAEMON_WORKER_TOKEN_ENV = "PRIME_AGENT_INTERNAL_DAEMON_WORKER_TOKEN";
@@ -19,11 +24,19 @@ export const DAEMON_WORKER_STARTUP_GATE_FD_ENV = "PRIME_AGENT_INTERNAL_DAEMON_WO
 export const DAEMON_WORKER_STARTUP_GATE_COMMIT = "start\n";
 export type DaemonWorkerLifecycle = "starting" | "ready" | "recovering" | "failed";
 
+export type WorkerQuestionnaireBrokerMessage =
+	| { type: "presenter_needed"; need: Omit<QuestionnaireWorkerOfferNeed, "workerId"> }
+	| { type: "withdraw"; lease: QuestionnaireLease };
+
 export type DaemonWorkerFrameHeader =
 	| {
 			kind: "command";
 			requestId: string;
 			commandType: string;
+	  }
+	| {
+			kind: "questionnaire_broker";
+			messageType: WorkerQuestionnaireBrokerMessage["type"];
 	  }
 	| {
 			kind: "outbound";
@@ -81,6 +94,13 @@ export type DaemonWorkerCommand =
 	| { id?: string; type: "worker_unsubscribe"; activeSessionId: string }
 	| ({ id?: string; type: "worker_ui_clients_sync" } & WorkerUiClientsSync)
 	| ({ id?: string; type: "worker_ui_client_delta" } & WorkerUiClientDelta)
+	| { id?: string; type: "worker_questionnaire_offer_result"; result: QuestionnaireOfferResult }
+	| {
+			id?: string;
+			type: "worker_questionnaire_lease_revoked";
+			lease: QuestionnaireLease;
+			reason: "client_lost" | "presentability_lost";
+	  }
 	| { id?: string; type: "worker_sync_agent_peers"; peers: AgentSessionMessageAgentSummary[] }
 	| { id?: string; type: "worker_archive_and_shutdown" }
 	| {
@@ -177,6 +197,9 @@ export function isDaemonWorkerFrameHeader(value: unknown): value is DaemonWorker
 	if (candidate.kind === "command") {
 		return typeof candidate.requestId === "string" && typeof candidate.commandType === "string";
 	}
+	if (candidate.kind === "questionnaire_broker") {
+		return candidate.messageType === "presenter_needed" || candidate.messageType === "withdraw";
+	}
 	return (
 		candidate.kind === "outbound" &&
 		typeof candidate.outboundType === "string" &&
@@ -191,5 +214,72 @@ export function isDaemonWorkerFrameHeader(value: unknown): value is DaemonWorker
 		(candidate.payloadEncoding === undefined ||
 			candidate.payloadEncoding === "jsonl" ||
 			candidate.payloadEncoding === "assistant-delta")
+	);
+}
+
+function hasExactKeys(candidate: Record<string, unknown>, expected: readonly string[]): boolean {
+	const actual = Object.keys(candidate).sort();
+	const sortedExpected = [...expected].sort();
+	return actual.length === sortedExpected.length && actual.every((key, index) => key === sortedExpected[index]);
+}
+
+function isQuestionnaireLease(value: unknown): value is QuestionnaireLease {
+	if (!value || typeof value !== "object") return false;
+	const candidate = value as Record<string, unknown>;
+	return (
+		hasExactKeys(candidate, [
+			"supervisorGeneration",
+			"logicalRequestId",
+			"offerId",
+			"leaseEpoch",
+			"logicalClientId",
+			"connectionId",
+			"mode",
+		]) &&
+		typeof candidate.supervisorGeneration === "string" &&
+		typeof candidate.logicalRequestId === "string" &&
+		typeof candidate.offerId === "string" &&
+		Number.isInteger(candidate.leaseEpoch) &&
+		(candidate.leaseEpoch as number) >= 0 &&
+		typeof candidate.logicalClientId === "string" &&
+		typeof candidate.connectionId === "string" &&
+		(candidate.mode === "rich" || candidate.mode === "legacy")
+	);
+}
+
+export function isWorkerQuestionnaireBrokerMessage(value: unknown): value is WorkerQuestionnaireBrokerMessage {
+	if (!value || typeof value !== "object") return false;
+	const candidate = value as Record<string, unknown>;
+	if (candidate.type === "withdraw") {
+		return hasExactKeys(candidate, ["type", "lease"]) && isQuestionnaireLease(candidate.lease);
+	}
+	if (
+		candidate.type !== "presenter_needed" ||
+		!hasExactKeys(candidate, ["type", "need"]) ||
+		!candidate.need ||
+		typeof candidate.need !== "object"
+	) {
+		return false;
+	}
+	const need = candidate.need as Record<string, unknown>;
+	return (
+		hasExactKeys(need, [
+			"supervisorGeneration",
+			"activeSessionId",
+			"logicalRequestId",
+			"offerId",
+			"leaseEpoch",
+			"createdAt",
+			"mode",
+		]) &&
+		typeof need.supervisorGeneration === "string" &&
+		typeof need.activeSessionId === "string" &&
+		typeof need.logicalRequestId === "string" &&
+		typeof need.offerId === "string" &&
+		Number.isInteger(need.leaseEpoch) &&
+		(need.leaseEpoch as number) >= 0 &&
+		typeof need.createdAt === "number" &&
+		Number.isFinite(need.createdAt) &&
+		(need.mode === "undecided" || need.mode === "rich" || need.mode === "legacy")
 	);
 }

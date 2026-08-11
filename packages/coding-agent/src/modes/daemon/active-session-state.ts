@@ -40,6 +40,8 @@ export interface DaemonSocketClient {
 	supportsExtensionUi: boolean;
 	capabilities: Set<DaemonClientCapability>;
 	capabilitiesByActiveSessionId?: Map<string, Set<DaemonClientCapability>>;
+	/** Explicit focus-UI readiness; attachment alone never implies presentability. */
+	questionnairePresentableActiveSessionIds?: Set<string>;
 }
 
 export interface ActiveSessionState {

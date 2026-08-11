@@ -57,8 +57,9 @@ export const DAEMON_COMMAND_ENVELOPE_MIN_PROTOCOL_VERSION = 7;
 // Revision 12 publishes idle-residency metadata on session summary rows.
 // Revision 13 narrows agent-origin reach and roster wire shapes to the nuclear family.
 // Revision 14 adds additive public-socket connection incarnation metadata.
-export const DAEMON_SCHEMA_REVISION = 14;
-export const DAEMON_SCHEMA_ID = "protocol-7-schema-14-5a680475d2cf";
+// Revision 15 adds capability-gated questionnaire broker offer and withdrawal messages.
+export const DAEMON_SCHEMA_REVISION = 15;
+export const DAEMON_SCHEMA_ID = "protocol-7-schema-15-4a79f41da462";
 
 export type DaemonProtocolName = typeof DAEMON_PROTOCOL_NAME;
 export type DaemonProtocolVersion = number;
@@ -72,6 +73,17 @@ export interface DaemonEventCursor {
 export type DaemonClientId = string;
 /** Daemon/supervisor-owned socket incarnation, distinct from the caller-supplied logical client ID. */
 export type DaemonConnectionId = string;
+export type DaemonQuestionnairePresentationMode = "rich" | "legacy";
+export interface DaemonQuestionnaireLease {
+	supervisorGeneration: string;
+	logicalRequestId: string;
+	offerId: string;
+	leaseEpoch: number;
+	logicalClientId: string;
+	connectionId: string;
+	mode: DaemonQuestionnairePresentationMode;
+}
+export type DaemonQuestionnaireOfferResponse = "accepted" | "busy" | "rejected" | "presentation_error";
 export type DaemonClientCapability =
 	| "attach_snapshot"
 	| "event_sequence"
@@ -655,6 +667,20 @@ export type DaemonCommand =
 			requestId: string;
 			response: DaemonExtensionUIResponse;
 	  }
+	| { id?: string; type: "questionnaire_presentability"; activeSessionId: string; presentable: boolean }
+	| {
+			id?: string;
+			type: "questionnaire_offer_response";
+			activeSessionId: string;
+			lease: DaemonQuestionnaireLease;
+			response: DaemonQuestionnaireOfferResponse;
+	  }
+	| {
+			id?: string;
+			type: "questionnaire_withdraw_ack";
+			activeSessionId: string;
+			lease: DaemonQuestionnaireLease;
+	  }
 	| { id?: string; type: "ack_result"; commandId: string }
 	| { id?: string; type: "prepare_update_restart" }
 	| { id?: string; type: "retry_worker"; activeSessionId: string }
@@ -690,6 +716,7 @@ const DELETE_RLM_SUBAGENT_COMMAND = {
 	capability: "delete_rlm_subagent",
 } as const;
 const FLAT_SESSION_TREE_COMMAND = { minProtocol: 7 } as const;
+const QUESTIONNAIRE_COMMAND = { minProtocol: 7, minSchemaRevision: 15, capability: "questionnaire_v1" } as const;
 
 export const DAEMON_COMMAND_COMPATIBILITY = {
 	ack_result: LEGACY_DAEMON_COMMAND,
@@ -786,6 +813,9 @@ export const DAEMON_COMMAND_COMPATIBILITY = {
 	get_tool_definition: LEGACY_DAEMON_COMMAND,
 	set_session_entry_label: LEGACY_DAEMON_COMMAND,
 	extension_ui_response: LEGACY_DAEMON_COMMAND,
+	questionnaire_presentability: QUESTIONNAIRE_COMMAND,
+	questionnaire_offer_response: QUESTIONNAIRE_COMMAND,
+	questionnaire_withdraw_ack: QUESTIONNAIRE_COMMAND,
 	prepare_update_restart: LEGACY_DAEMON_COMMAND,
 	retry_worker: LEGACY_DAEMON_COMMAND,
 	restart: LEGACY_DAEMON_COMMAND,
@@ -976,6 +1006,8 @@ export type DaemonOutbound =
 			payload: Record<string, unknown>;
 			meta?: DaemonEventMeta;
 	  }
+	| { type: "questionnaire_offer"; activeSessionId: string; lease: DaemonQuestionnaireLease }
+	| { type: "questionnaire_withdraw"; activeSessionId: string; lease: DaemonQuestionnaireLease }
 	| {
 			type: "extension_error";
 			activeSessionId: string;
@@ -1006,6 +1038,8 @@ export const DAEMON_OUTBOUND_COMPATIBILITY = {
 	session_detached: LEGACY_DAEMON_COMMAND,
 	session_closed: LEGACY_DAEMON_COMMAND,
 	extension_ui_request: LEGACY_DAEMON_COMMAND,
+	questionnaire_offer: QUESTIONNAIRE_COMMAND,
+	questionnaire_withdraw: QUESTIONNAIRE_COMMAND,
 	extension_error: LEGACY_DAEMON_COMMAND,
 } as const satisfies Record<DaemonOutbound["type"], DaemonCommandCompatibility>;
 
@@ -1073,6 +1107,9 @@ const READ_ONLY_DAEMON_COMMANDS: ReadonlySet<DaemonCommand["type"]> = new Set([
 	"list_saved_sessions",
 	"attach",
 	"reattach",
+	"questionnaire_presentability",
+	"questionnaire_offer_response",
+	"questionnaire_withdraw_ack",
 	"agent_messages_status",
 	"wait_for_idle",
 	"get_session_header",

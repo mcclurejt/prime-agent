@@ -1,0 +1,176 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import type { Socket } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { DaemonSocketClient } from "../src/modes/daemon/active-session-state.js";
+import type { DaemonCommand, DaemonResponse } from "../src/modes/daemon/daemon-protocol.js";
+import { DaemonSupervisor } from "../src/modes/daemon/daemon-supervisor.js";
+import type {
+	DaemonWorkerCommand,
+	WorkerQuestionnaireBrokerMessage,
+} from "../src/modes/daemon/daemon-worker-protocol.js";
+import { SupervisorWorkerUiClientsSync } from "../src/modes/daemon/daemon-worker-ui-clients.js";
+
+const tempDirs: string[] = [];
+afterEach(() => {
+	for (const path of tempDirs.splice(0)) rmSync(path, { recursive: true, force: true });
+});
+
+function socketClient(connectionId: string, activeSessionId: string, presentable: boolean): DaemonSocketClient {
+	return {
+		connectionId,
+		logicalClientId: `logical-${connectionId}`,
+		socket: { destroyed: false, write: vi.fn(() => true) } as unknown as Socket,
+		attachedActiveSessionIds: new Set([activeSessionId]),
+		catchupActiveSessionIds: new Set(),
+		backpressured: false,
+		authenticated: true,
+		detachInput: () => {},
+		supportsExtensionUi: true,
+		capabilities: new Set(["extension_ui", "questionnaire_v1"]),
+		questionnairePresentableActiveSessionIds: new Set(presentable ? [activeSessionId] : []),
+	};
+}
+
+describe("daemon supervisor questionnaire brokerage", () => {
+	it("targets one presentable socket and stamps responses from the real connection", async () => {
+		const root = mkdtempSync(join(tmpdir(), "prime-agent-questionnaire-broker-"));
+		tempDirs.push(root);
+		const supervisor = new DaemonSupervisor(join(root, "daemon.sock"), {
+			descriptorDir: join(root, "workers"),
+			defaultSessionConfig: { agentDir: join(root, "agent"), cwd: root },
+		});
+		const target = socketClient("connection-a", "session-a", true);
+		const observer = socketClient("connection-b", "session-a", false);
+		const requestWorker = vi.fn(
+			async (_command: DaemonWorkerCommand): Promise<DaemonResponse> => ({
+				type: "response",
+				command: _command.type,
+				success: true,
+			}),
+		);
+		const internals = supervisor as unknown as {
+			generation: string;
+			clients: Set<DaemonSocketClient>;
+			workers: Map<string, unknown>;
+			synchronizeQuestionnairePresenters(): void;
+			handleWorkerFrame(
+				worker: unknown,
+				frame: { header: { kind: "questionnaire_broker"; messageType: string }; payload: Buffer },
+			): void;
+			handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<DaemonResponse | undefined>;
+			questionnaireBroker: { disconnect(connectionId: string): void };
+		};
+		internals.clients.add(target);
+		internals.clients.add(observer);
+		const worker = {
+			descriptor: {
+				workerId: "worker-a",
+				rootActiveSessionId: "session-a",
+				lifecycle: "ready",
+			},
+			client: { requestWorker },
+			summaries: new Map([["session-a", { id: "session-a", activeSessionId: "session-a" }]]),
+			uiClientsSync: new SupervisorWorkerUiClientsSync(internals.generation),
+			uiClientsSyncQueue: Promise.resolve(),
+			uiClientsNeedsFullSync: false,
+		};
+		internals.workers.set("worker-a", worker);
+		internals.synchronizeQuestionnairePresenters();
+		const brokerMessage: WorkerQuestionnaireBrokerMessage = {
+			type: "presenter_needed",
+			need: {
+				supervisorGeneration: internals.generation,
+				activeSessionId: "session-a",
+				logicalRequestId: "request-a",
+				offerId: "offer-a",
+				leaseEpoch: 1,
+				createdAt: 1,
+				mode: "undecided",
+			},
+		};
+		internals.handleWorkerFrame(worker, {
+			header: { kind: "questionnaire_broker", messageType: "presenter_needed" },
+			payload: Buffer.from(JSON.stringify(brokerMessage)),
+		});
+
+		expect(target.socket.write).toHaveBeenCalledOnce();
+		expect(observer.socket.write).not.toHaveBeenCalled();
+		const outbound = JSON.parse(String(vi.mocked(target.socket.write).mock.calls[0]![0])) as {
+			type: string;
+			activeSessionId: string;
+			lease: {
+				supervisorGeneration: string;
+				logicalRequestId: string;
+				offerId: string;
+				leaseEpoch: number;
+				connectionId: string;
+				logicalClientId: string;
+				mode: string;
+			};
+		};
+		expect(outbound).toMatchObject({
+			type: "questionnaire_offer",
+			activeSessionId: "session-a",
+			lease: { connectionId: "connection-a", logicalClientId: "logical-connection-a", mode: "rich" },
+		});
+
+		const stale = await internals.handleCommand(observer, {
+			type: "questionnaire_offer_response",
+			activeSessionId: "session-a",
+			lease: outbound.lease as never,
+			response: "accepted",
+		});
+		expect(stale).toMatchObject({ success: true, data: { status: "stale" } });
+		expect(requestWorker).not.toHaveBeenCalled();
+
+		const accepted = await internals.handleCommand(target, {
+			type: "questionnaire_offer_response",
+			activeSessionId: "session-a",
+			lease: outbound.lease as never,
+			response: "accepted",
+		});
+		expect(accepted).toMatchObject({ success: true, data: { status: "accepted" } });
+		await vi.waitFor(() =>
+			expect(requestWorker).toHaveBeenCalledWith({
+				type: "worker_questionnaire_offer_result",
+				result: { status: "accepted", lease: outbound.lease },
+			}),
+		);
+		internals.questionnaireBroker.disconnect("connection-a");
+		await vi.waitFor(() => expect(requestWorker).toHaveBeenCalledTimes(2));
+		requestWorker.mockClear();
+		internals.clients.delete(target);
+		observer.capabilities = new Set(["extension_ui"]);
+		observer.questionnairePresentableActiveSessionIds = new Set(["session-a"]);
+		internals.synchronizeQuestionnairePresenters();
+		const legacyMessage: WorkerQuestionnaireBrokerMessage = {
+			type: "presenter_needed",
+			need: {
+				supervisorGeneration: internals.generation,
+				activeSessionId: "session-a",
+				logicalRequestId: "request-legacy",
+				offerId: "offer-legacy",
+				leaseEpoch: 2,
+				createdAt: 2,
+				mode: "undecided",
+			},
+		};
+		internals.handleWorkerFrame(worker, {
+			header: { kind: "questionnaire_broker", messageType: "presenter_needed" },
+			payload: Buffer.from(JSON.stringify(legacyMessage)),
+		});
+		expect(observer.socket.write).not.toHaveBeenCalled();
+		await vi.waitFor(() =>
+			expect(requestWorker).toHaveBeenCalledWith({
+				type: "worker_questionnaire_offer_result",
+				result: {
+					status: "rejected",
+					reason: "presentation_error",
+					offer: expect.objectContaining({ logicalRequestId: "request-legacy", mode: "legacy" }),
+				},
+			}),
+		);
+	});
+});
