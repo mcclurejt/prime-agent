@@ -355,6 +355,7 @@ export class DaemonAgentConnection implements AgentConnection {
 	}
 
 	async attach(): Promise<void> {
+		await this.client.waitForHello();
 		const supportsExtensionUi = this.options.supportsExtensionUi !== false;
 		const result = await this.requestData<SessionSummary | DaemonAttachResult>({
 			type: "attach",

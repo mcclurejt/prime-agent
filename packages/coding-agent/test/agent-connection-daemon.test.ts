@@ -54,6 +54,8 @@ class FakeDaemonClient {
 	promptResponseError: string | undefined;
 	cancelPromptAdmissionStatus: "cancelled" | "owned" | "unknown" = "owned";
 	serverCapabilities = new Set<string>();
+	serverCapabilitiesOnHello: string[] = [];
+	waitForHelloCount = 0;
 	updateRestartSessions: Array<Record<string, unknown>> = [];
 	hello: DaemonHello | undefined = {
 		type: "daemon_hello",
@@ -545,6 +547,8 @@ class FakeDaemonClient {
 	}
 
 	async waitForHello(): Promise<DaemonHello> {
+		this.waitForHelloCount++;
+		for (const capability of this.serverCapabilitiesOnHello) this.serverCapabilities.add(capability);
 		return this.hello!;
 	}
 
@@ -2651,6 +2655,20 @@ describe("DaemonAgentConnection", () => {
 			activeSessionId: "active-1",
 			requestId: "request-1",
 			response: { confirmed: true },
+		});
+	});
+
+	it("waits for the daemon hello before advertising negotiated attach capabilities", async () => {
+		const fakeClient = new FakeDaemonClient();
+		fakeClient.serverCapabilitiesOnHello.push("questionnaire_v1");
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");
+
+		await connection.attach();
+
+		expect(fakeClient.waitForHelloCount).toBe(1);
+		expect(fakeClient.requests[0]).toMatchObject({
+			type: "attach",
+			capabilities: expect.arrayContaining(["extension_ui", "questionnaire_v1"]),
 		});
 	});
 

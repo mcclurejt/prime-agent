@@ -13,6 +13,7 @@
 - Fixed heartbeat skills being exposed when their required host controllers were unavailable.
 - Fixed daemon worker clients dropping questionnaire broker frames, transient busy responses permanently disabling presentation, reloads failing to restore presentation, and invalid legacy text wedging an active questionnaire.
 - Fixed questionnaire multi-select toggling and page navigation, preserved compact current/total progress, and kept temporarily unfocused rich clients from losing queued questionnaires to legacy fallback.
+- Fixed daemon clients racing the capability handshake during attach, which could silently downgrade rich questionnaires to legacy dialogs.
 
 ## [0.7.0] - 2026-08-05
 
