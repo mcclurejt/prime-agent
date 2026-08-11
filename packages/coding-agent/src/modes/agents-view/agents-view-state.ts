@@ -676,27 +676,32 @@ export function buildAgentsViewRows(
 
 	const roots = baseRows.filter((row) => !nestedRows.has(row));
 	const scopedRootRow = scopeRoot ? baseRows.find((row) => row.summary === scopeRoot.summary) : undefined;
-	const needsInputRows = baseRows
-		.filter((row) => row.section === "needs-input" && row.kind === "agent" && row !== scopedRootRow)
-		.map((row) => {
-			const parent = parentByChild.get(row);
-			return {
-				...row,
-				// The flattened presentation must retain the source session's interaction
-				// semantics: a subagent still uses parent-aware open and cancellation.
-				kind: row.kind,
-				depth: 0,
-				identity: `needs-input:${row.identity}`,
-				...(parent
-					? {
-							parentIdentity:
-								parent.section === "needs-input" ? `needs-input:${parent.identity}` : parent.identity,
-						}
-					: {}),
-				title: getNeedsInputRowTitle(row, parentByChild),
-			};
-		});
-	const flattened: AgentsViewRow[] = [...needsInputRows.sort(compareAgentsViewRows)];
+	const needsInputRowsBySource = new Map(
+		baseRows
+			.filter((row) => row.section === "needs-input" && row.kind === "agent" && row !== scopedRootRow)
+			.map((row) => {
+				const parent = parentByChild.get(row);
+				return [
+					row,
+					{
+						...row,
+						// The flattened presentation must retain the source session's interaction
+						// semantics: a subagent still uses parent-aware open and cancellation.
+						kind: row.kind,
+						depth: 0,
+						identity: `needs-input:${row.identity}`,
+						...(parent
+							? {
+									parentIdentity:
+										parent.section === "needs-input" ? `needs-input:${parent.identity}` : parent.identity,
+								}
+							: {}),
+						title: getNeedsInputRowTitle(row, parentByChild),
+					},
+				] as const;
+			}),
+	);
+	const flattened: AgentsViewRow[] = [];
 	const hasOrdinaryDescendant = (row: MutableAgentsViewRow): boolean =>
 		(childrenByParent.get(row) ?? []).some(
 			(child) => child.section !== "needs-input" || hasOrdinaryDescendant(child),
@@ -704,37 +709,30 @@ export function buildAgentsViewRows(
 	const emit = (row: MutableAgentsViewRow, depth: number): void => {
 		const children = childrenByParent.get(row) ?? [];
 		if (row.section === "needs-input") {
-			if (!hasOrdinaryDescendant(row)) return;
-			const context: MutableAgentsViewRow = {
-				...row,
-				kind: "context",
-				section: "needs-input",
-				statusLabel: "idle",
-				selectable: false,
-				identity: `context:${row.identity}`,
-			};
-			context.depth = depth;
-			flattened.push(context);
-			const contextChildren = children.filter(
+			const needsInputRow = needsInputRowsBySource.get(row);
+			if (!needsInputRow) return;
+			flattened.push(needsInputRow);
+			const ordinaryChildren = children.filter(
 				(child) => child.section !== "needs-input" || hasOrdinaryDescendant(child),
 			);
-			const childHasSpawnCode = contextChildren.some((child) => hasSpawnCode(child.summary));
-			if (expandedSubagentParents.has(context.identity)) {
-				const showProgram = programShownParents.has(context.identity);
-				const groups = groupChildrenBySpawnCode(contextChildren.sort(compareAgentsViewRows));
+			if (ordinaryChildren.length === 0) return;
+			const childHasSpawnCode = ordinaryChildren.some((child) => hasSpawnCode(child.summary));
+			if (expandedSubagentParents.has(needsInputRow.identity)) {
+				const showProgram = programShownParents.has(needsInputRow.identity);
+				const groups = groupChildrenBySpawnCode(ordinaryChildren.sort(compareAgentsViewRows));
 				for (const [groupIndex, group] of groups.entries()) {
 					if (showProgram && group.spawnCode) {
-						for (const codeRow of buildSpawnCodeRows(context, group.spawnCode, depth + 1, groupIndex)) {
+						for (const codeRow of buildSpawnCodeRows(needsInputRow, group.spawnCode, depth + 1, groupIndex)) {
 							flattened.push(codeRow);
 						}
 					}
 					for (const child of group.children) {
-						child.parentIdentity = context.identity;
+						child.parentIdentity = needsInputRow.identity;
 						emit(child, depth + 1);
 					}
 				}
 			} else {
-				flattened.push(createSubagentSummaryRow(context, contextChildren, depth + 1, childHasSpawnCode));
+				flattened.push(createSubagentSummaryRow(needsInputRow, ordinaryChildren, depth + 1, childHasSpawnCode));
 			}
 			return;
 		}

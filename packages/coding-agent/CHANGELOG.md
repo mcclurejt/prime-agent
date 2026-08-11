@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Fixed Needs Input parents with subagents rendering as a duplicate context row.
 - Fixed Needs Input session descendants starting expanded instead of using the normal toggle.
 - Fixed children of Needs Input sessions appearing under Idle.
 - Fixed session-list icons for Needs Input and idle sessions.
