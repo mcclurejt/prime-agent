@@ -1851,10 +1851,13 @@ export class DaemonSupervisor {
 			case "questionnaire_presentability": {
 				if (
 					!client.attachedActiveSessionIds.has(command.activeSessionId) ||
-					!client.capabilities.has("questionnaire_v1")
+					!client.capabilities.has("extension_ui")
 				) {
-					throw new Error("Questionnaire presentability requires an attached questionnaire_v1 client");
+					throw new Error("Questionnaire presentability requires an attached extension_ui client");
 				}
+				// Reaching this capability-gated command proves the client supports the
+				// questionnaire protocol. Heal attaches that raced or predated negotiation.
+				client.capabilities.add("questionnaire_v1");
 				client.questionnairePresentableActiveSessionIds ??= new Set();
 				if (command.presentable) client.questionnairePresentableActiveSessionIds.add(command.activeSessionId);
 				else client.questionnairePresentableActiveSessionIds.delete(command.activeSessionId);

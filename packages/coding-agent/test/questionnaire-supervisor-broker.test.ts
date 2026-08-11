@@ -98,6 +98,30 @@ describe("daemon supervisor questionnaire brokerage", () => {
 		expect(presentationError).toHaveBeenCalledWith("vanished-connection", "session-a", lease);
 	});
 
+	it("upgrades an attached extension UI client when it proves questionnaire support", async () => {
+		const root = mkdtempSync(join(tmpdir(), "prime-agent-questionnaire-upgrade-"));
+		tempDirs.push(root);
+		const supervisor = new DaemonSupervisor(join(root, "daemon.sock"), {
+			descriptorDir: join(root, "workers"),
+			defaultSessionConfig: { agentDir: join(root, "agent"), cwd: root },
+		});
+		const client = socketClient("connection-a", "session-a", false);
+		client.capabilities.delete("questionnaire_v1");
+		const internals = supervisor as unknown as {
+			handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<DaemonResponse | undefined>;
+		};
+
+		const response = await internals.handleCommand(client, {
+			type: "questionnaire_presentability",
+			activeSessionId: "session-a",
+			presentable: true,
+		});
+
+		expect(response).toMatchObject({ success: true, data: { presentable: true } });
+		expect(client.capabilities).toContain("questionnaire_v1");
+		expect(client.questionnairePresentableActiveSessionIds).toContain("session-a");
+	});
+
 	it("re-arbitrates queued questionnaires when a rich client becomes presentable", async () => {
 		const root = mkdtempSync(join(tmpdir(), "prime-agent-questionnaire-refocus-"));
 		tempDirs.push(root);
