@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Fixed children of Needs Input sessions appearing under Idle.
 - Fixed session-list icons for Needs Input and idle sessions.
 - Fixed Needs Input to show only sessions at the current view depth.
 - Added rich questionnaire context, recommendations, previews, universal custom answers, and per-question notes to the interactive decision wizard.
