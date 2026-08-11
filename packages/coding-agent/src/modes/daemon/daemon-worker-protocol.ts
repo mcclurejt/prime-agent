@@ -287,16 +287,18 @@ function hasExactKeys(candidate: Record<string, unknown>, expected: readonly str
 function isQuestionnaireLease(value: unknown): value is QuestionnaireLease {
 	if (!value || typeof value !== "object") return false;
 	const candidate = value as Record<string, unknown>;
+	const leaseKeys = [
+		"supervisorGeneration",
+		"logicalRequestId",
+		"offerId",
+		"leaseEpoch",
+		"logicalClientId",
+		"connectionId",
+		"mode",
+		...(candidate.questionnaireVersion === undefined ? [] : ["questionnaireVersion"]),
+	];
 	return (
-		hasExactKeys(candidate, [
-			"supervisorGeneration",
-			"logicalRequestId",
-			"offerId",
-			"leaseEpoch",
-			"logicalClientId",
-			"connectionId",
-			"mode",
-		]) &&
+		hasExactKeys(candidate, leaseKeys) &&
 		typeof candidate.supervisorGeneration === "string" &&
 		typeof candidate.logicalRequestId === "string" &&
 		typeof candidate.offerId === "string" &&
@@ -304,7 +306,11 @@ function isQuestionnaireLease(value: unknown): value is QuestionnaireLease {
 		(candidate.leaseEpoch as number) >= 0 &&
 		typeof candidate.logicalClientId === "string" &&
 		typeof candidate.connectionId === "string" &&
-		(candidate.mode === "rich" || candidate.mode === "legacy")
+		(candidate.mode === "rich" || candidate.mode === "legacy") &&
+		(candidate.questionnaireVersion === undefined ||
+			candidate.questionnaireVersion === 1 ||
+			candidate.questionnaireVersion === 2) &&
+		(candidate.questionnaireVersion !== 2 || candidate.mode === "rich")
 	);
 }
 
@@ -364,16 +370,18 @@ export function isWorkerQuestionnaireBrokerMessage(value: unknown): value is Wor
 		return false;
 	}
 	const need = candidate.need as Record<string, unknown>;
+	const needKeys = [
+		"supervisorGeneration",
+		"activeSessionId",
+		"logicalRequestId",
+		"offerId",
+		"leaseEpoch",
+		"createdAt",
+		"mode",
+		...(need.questionnaireVersion === undefined ? [] : ["questionnaireVersion"]),
+	];
 	return (
-		hasExactKeys(need, [
-			"supervisorGeneration",
-			"activeSessionId",
-			"logicalRequestId",
-			"offerId",
-			"leaseEpoch",
-			"createdAt",
-			"mode",
-		]) &&
+		hasExactKeys(need, needKeys) &&
 		typeof need.supervisorGeneration === "string" &&
 		typeof need.activeSessionId === "string" &&
 		typeof need.logicalRequestId === "string" &&
@@ -382,6 +390,8 @@ export function isWorkerQuestionnaireBrokerMessage(value: unknown): value is Wor
 		(need.leaseEpoch as number) >= 0 &&
 		typeof need.createdAt === "number" &&
 		Number.isFinite(need.createdAt) &&
-		(need.mode === "undecided" || need.mode === "rich" || need.mode === "legacy")
+		(need.mode === "undecided" || need.mode === "rich" || need.mode === "legacy") &&
+		(need.questionnaireVersion === undefined || need.questionnaireVersion === 1 || need.questionnaireVersion === 2) &&
+		(need.questionnaireVersion !== 2 || need.mode !== "legacy")
 	);
 }

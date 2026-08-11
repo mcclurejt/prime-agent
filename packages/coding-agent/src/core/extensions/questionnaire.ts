@@ -3,10 +3,14 @@ import type {
 	ExtensionQuestionnaireDraftQuestionState,
 	ExtensionQuestionnaireDraftStep,
 	ExtensionQuestionnaireDraftV1,
+	ExtensionQuestionnaireDraftV2,
 	ExtensionQuestionnaireOptions,
 	ExtensionQuestionnaireOutcome,
+	ExtensionQuestionnaireOutcomeV2,
 	ExtensionQuestionnaireQuestion,
+	ExtensionQuestionnaireQuestionV2,
 	ExtensionQuestionnaireRequestV1,
+	ExtensionQuestionnaireRequestV2,
 	ExtensionUIContext,
 } from "./types.js";
 
@@ -71,6 +75,20 @@ function optionalString(
 	options: { minLength?: number; maxLength?: number; editable?: boolean } = {},
 ): string | undefined {
 	return value === undefined ? undefined : stringValue(value, path, options);
+}
+
+function richTextValue(value: unknown, path: string, options: { minLength?: number; maxLength?: number } = {}): string {
+	const normalized = stringValue(value, path, options);
+	if (normalized.includes("\t")) fail(path, "contains a tab; use spaces for stable rich-text alignment");
+	return normalized;
+}
+
+function optionalRichText(
+	value: unknown,
+	path: string,
+	options: { minLength?: number; maxLength?: number } = {},
+): string | undefined {
+	return value === undefined ? undefined : richTextValue(value, path, options);
 }
 
 function booleanValue(value: unknown, path: string): boolean {
@@ -231,6 +249,131 @@ export function normalizeExtensionQuestionnaireRequest(value: unknown): Extensio
 	return normalized;
 }
 
+export const QUESTIONNAIRE_DEFAULT_OTHER = {
+	label: "Something else…",
+	placeholder: "Describe your answer and the key tradeoff",
+} as const;
+
+function normalizePreview(value: unknown, path: string) {
+	if (value === undefined) return undefined;
+	const input = record(value, path);
+	assertKnownKeys(input, ["title", "markdown", "alt"], path);
+	const title = optionalString(input.title, `${path}.title`, { minLength: 1, maxLength: 256 });
+	const markdown = richTextValue(input.markdown, `${path}.markdown`, { maxLength: 32_768 });
+	const alt = stringValue(input.alt, `${path}.alt`, { maxLength: 4_096 });
+	return { ...(title === undefined ? {} : { title }), markdown, alt };
+}
+
+function normalizeChoiceV2(value: unknown, path: string) {
+	const input = record(value, path);
+	assertKnownKeys(input, ["id", "label", "description", "detail", "preview"], path);
+	const base = normalizeChoice(
+		{
+			id: input.id,
+			label: input.label,
+			...(input.description === undefined ? {} : { description: input.description }),
+		},
+		path,
+	);
+	const detail = optionalRichText(input.detail, `${path}.detail`, { maxLength: 16_384 });
+	const preview = normalizePreview(input.preview, `${path}.preview`);
+	return { ...base, ...(detail === undefined ? {} : { detail }), ...(preview === undefined ? {} : { preview }) };
+}
+
+function normalizeQuestionV2(value: unknown, index: number): ExtensionQuestionnaireQuestionV2 {
+	const path = `questions[${index}]`;
+	const input = record(value, path);
+	const kind = input.kind;
+	if (typeof kind !== "string") fail(`${path}.kind`, "must be a supported question kind");
+	const baseV1 = normalizeQuestionBase(input, path);
+	const context = optionalRichText(input.context, `${path}.context`, { maxLength: 65_536 });
+	let recommendation: { choiceId?: string; rationale: string } | undefined;
+	if (input.recommendation !== undefined) {
+		const rec = record(input.recommendation, `${path}.recommendation`);
+		assertKnownKeys(rec, ["choiceId", "rationale"], `${path}.recommendation`);
+		const choiceId = optionalString(rec.choiceId, `${path}.recommendation.choiceId`);
+		const rationale = richTextValue(rec.rationale, `${path}.recommendation.rationale`, { maxLength: 16_384 });
+		recommendation = { ...(choiceId === undefined ? {} : { choiceId }), rationale };
+	}
+	const base = {
+		...baseV1,
+		...(context === undefined ? {} : { context }),
+		...(recommendation === undefined ? {} : { recommendation }),
+	};
+	if (kind === "confirm") {
+		assertKnownKeys(
+			input,
+			["id", "label", "prompt", "context", "recommendation", "kind", "yesLabel", "noLabel", "other"],
+			path,
+		);
+		if (recommendation?.choiceId !== undefined)
+			fail(`${path}.recommendation.choiceId`, "must reference a choice in the same question");
+		const yesLabel = optionalString(input.yesLabel, `${path}.yesLabel`, { minLength: 1, maxLength: 256 });
+		const noLabel = optionalString(input.noLabel, `${path}.noLabel`, { minLength: 1, maxLength: 256 });
+		const custom = normalizeOther(input.other, `${path}.other`);
+		return {
+			...base,
+			kind,
+			...(yesLabel === undefined ? {} : { yesLabel }),
+			...(noLabel === undefined ? {} : { noLabel }),
+			other: { ...QUESTIONNAIRE_DEFAULT_OTHER, ...custom },
+		};
+	}
+	if (kind === "single-select" || kind === "multi-select") {
+		assertKnownKeys(input, ["id", "label", "prompt", "context", "recommendation", "kind", "choices", "other"], path);
+		if (!Array.isArray(input.choices) || input.choices.length < 1 || input.choices.length > 100)
+			fail(`${path}.choices`, "must contain 1 to 100 choices");
+		const choices = input.choices.map((choice, choiceIndex) =>
+			normalizeChoiceV2(choice, `${path}.choices[${choiceIndex}]`),
+		);
+		if (new Set(choices.map((choice) => choice.id)).size !== choices.length)
+			fail(`${path}.choices`, "choice IDs must be unique within a question");
+		if (recommendation?.choiceId !== undefined && !choices.some((choice) => choice.id === recommendation.choiceId))
+			fail(`${path}.recommendation.choiceId`, "must reference a choice in the same question");
+		const custom = normalizeOther(input.other, `${path}.other`);
+		return { ...base, kind, choices, other: { ...QUESTIONNAIRE_DEFAULT_OTHER, ...custom } };
+	}
+	if (kind === "short-text" || kind === "multiline-text") {
+		assertKnownKeys(
+			input,
+			["id", "label", "prompt", "context", "recommendation", "kind", "placeholder", "initialValue"],
+			path,
+		);
+		if (recommendation?.choiceId !== undefined)
+			fail(`${path}.recommendation.choiceId`, "must reference a choice in the same question");
+		const placeholder = optionalString(input.placeholder, `${path}.placeholder`, { maxLength: 1024 });
+		const initialValue = optionalString(input.initialValue, `${path}.initialValue`, { editable: true });
+		return {
+			...base,
+			kind,
+			...(placeholder === undefined ? {} : { placeholder }),
+			...(initialValue === undefined ? {} : { initialValue }),
+		};
+	}
+	return fail(`${path}.kind`, `unsupported value ${JSON.stringify(kind)}`);
+}
+
+export function normalizeExtensionQuestionnaireRequestV2(value: unknown): ExtensionQuestionnaireRequestV2 {
+	const input = record(value, "request");
+	assertKnownKeys(input, ["version", "title", "questions", "submitLabel"], "request");
+	if (input.version !== 2) fail("request.version", "must equal 2");
+	if (!Array.isArray(input.questions) || input.questions.length < 1 || input.questions.length > 32)
+		fail("request.questions", "must contain 1 to 32 questions");
+	const title = optionalString(input.title, "request.title", { minLength: 1, maxLength: 256 });
+	const submitLabel = optionalString(input.submitLabel, "request.submitLabel", { minLength: 1, maxLength: 256 });
+	const questions = input.questions.map(normalizeQuestionV2);
+	if (new Set(questions.map((question) => question.id)).size !== questions.length)
+		fail("request.questions", "question IDs must be unique");
+	const normalized = {
+		version: 2 as const,
+		...(title === undefined ? {} : { title }),
+		questions,
+		...(submitLabel === undefined ? {} : { submitLabel }),
+	};
+	assertQuestionnaireEnvelopeBudget(normalized);
+	return normalized;
+}
+
 function normalizeDraftStep(value: unknown, request: ExtensionQuestionnaireRequestV1): ExtensionQuestionnaireDraftStep {
 	const input = record(value, "draft.currentStep");
 	if (input.kind === "review") {
@@ -379,13 +522,110 @@ export function normalizeExtensionQuestionnaireDraftForValidatedRequest(
 	return normalizeDraftForRequest(request, draftValue);
 }
 
+/** Lossily project a rich v2 request to the plain v1 contract for legacy presentation. */
+export function projectExtensionQuestionnaireRequestV2ToV1(value: unknown): ExtensionQuestionnaireRequestV1 {
+	const request = normalizeExtensionQuestionnaireRequestV2(value);
+	const questions: ExtensionQuestionnaireQuestion[] = request.questions.map((question) => {
+		const additions = [
+			question.context,
+			question.recommendation === undefined ? undefined : `Recommendation: ${question.recommendation.rationale}`,
+		].filter((part): part is string => part !== undefined);
+		const prompt = additions.length === 0 ? question.prompt : `${question.prompt}\n\n${additions.join("\n\n")}`;
+		if (question.kind === "confirm")
+			return {
+				id: question.id,
+				...(question.label === undefined ? {} : { label: question.label }),
+				prompt,
+				kind: question.kind,
+				...(question.yesLabel === undefined ? {} : { yesLabel: question.yesLabel }),
+				...(question.noLabel === undefined ? {} : { noLabel: question.noLabel }),
+				other: question.other,
+			};
+		if (question.kind === "single-select" || question.kind === "multi-select") {
+			const choices = question.choices.map((choice) => {
+				const detail = [choice.description, choice.detail, choice.preview?.alt].filter(
+					(part): part is string => part !== undefined,
+				);
+				return {
+					id: choice.id,
+					label: choice.label,
+					...(detail.length === 0 ? {} : { description: detail.join("\n\n") }),
+				};
+			});
+			return {
+				id: question.id,
+				...(question.label === undefined ? {} : { label: question.label }),
+				prompt,
+				kind: question.kind,
+				choices,
+				other: question.other,
+			};
+		}
+		return {
+			id: question.id,
+			...(question.label === undefined ? {} : { label: question.label }),
+			prompt,
+			kind: question.kind,
+			...(question.placeholder === undefined ? {} : { placeholder: question.placeholder }),
+			...(question.initialValue === undefined ? {} : { initialValue: question.initialValue }),
+		};
+	});
+	const projected: ExtensionQuestionnaireRequestV1 = {
+		version: 1,
+		...(request.title === undefined ? {} : { title: request.title }),
+		questions,
+		...(request.submitLabel === undefined ? {} : { submitLabel: request.submitLabel }),
+	};
+	return normalizeExtensionQuestionnaireRequest(projected);
+}
+
+/** Validate a v2 draft, including independent per-question notes. */
+export function normalizeExtensionQuestionnaireDraftV2(
+	requestValue: ExtensionQuestionnaireRequestV2,
+	draftValue: unknown,
+): ExtensionQuestionnaireDraftV2 {
+	const request = normalizeExtensionQuestionnaireRequestV2(requestValue);
+	const input = record(draftValue, "draft");
+	assertKnownKeys(input, ["version", "currentStep", "states"], "draft");
+	if (input.version !== 2) fail("draft.version", "must equal 2");
+	if (!Array.isArray(input.states) || input.states.length !== request.questions.length)
+		fail("draft.states", "must contain exactly one state per request question");
+	const stateInputs = input.states;
+	const requestForState = {
+		version: 1 as const,
+		questions: request.questions,
+		...(request.title === undefined ? {} : { title: request.title }),
+		...(request.submitLabel === undefined ? {} : { submitLabel: request.submitLabel }),
+	};
+	const states = request.questions.map((question, index) => {
+		const stateInput = record(stateInputs[index], `draft.states[${index}]`);
+		const note = optionalString(stateInput.note, `draft.states[${index}].note`, {
+			maxLength: 16_384,
+			editable: true,
+		});
+		const withoutNote = Object.fromEntries(Object.entries(stateInput).filter(([key]) => key !== "note"));
+		const state = normalizeDraftState(withoutNote, question, index);
+		return { ...state, ...(note === undefined ? {} : { note }) };
+	});
+	const normalized: ExtensionQuestionnaireDraftV2 = {
+		version: 2,
+		currentStep: normalizeDraftStep(input.currentStep, requestForState),
+		states,
+	};
+	assertQuestionnaireEnvelopeBudget(normalized);
+	return normalized;
+}
+
 /** Use questionnaire when available while preserving compatibility with older structural UI contexts. */
 export async function requestQuestionnaire(
 	ui: ExtensionUIContext,
-	request: ExtensionQuestionnaireRequestV1,
+	request: ExtensionQuestionnaireRequestV1 | ExtensionQuestionnaireRequestV2,
 	options?: ExtensionQuestionnaireOptions,
-): Promise<ExtensionQuestionnaireOutcome> {
+): Promise<ExtensionQuestionnaireOutcome | ExtensionQuestionnaireOutcomeV2> {
 	if (typeof ui.questionnaire !== "function") return { status: "unsupported" };
-	const normalized = normalizeExtensionQuestionnaireRequest(request);
+	const normalized =
+		request.version === 2
+			? normalizeExtensionQuestionnaireRequestV2(request)
+			: normalizeExtensionQuestionnaireRequest(request);
 	return ui.questionnaire(normalized, options);
 }

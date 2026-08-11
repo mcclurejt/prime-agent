@@ -3,8 +3,12 @@ import {
 	DAEMON_COMMAND_COMPATIBILITY,
 	DAEMON_DEFAULT_SERVER_CAPABILITIES,
 	DAEMON_OUTBOUND_COMPATIBILITY,
+	DAEMON_SCHEMA_REVISION,
 	type DaemonCommand,
 	type DaemonOutbound,
+	getDaemonCommandCompatibilities,
+	getDaemonOutboundCompatibilities,
+	normalizeDaemonClientCapabilities,
 } from "../src/modes/daemon/daemon-protocol.js";
 
 describe("questionnaire daemon wire gates", () => {
@@ -20,6 +24,56 @@ describe("questionnaire daemon wire gates", () => {
 		expect(DAEMON_OUTBOUND_COMPATIBILITY.questionnaire_offer.capability).toBe("questionnaire_v1");
 		expect(DAEMON_OUTBOUND_COMPATIBILITY.questionnaire_withdraw.capability).toBe("questionnaire_v1");
 		expect(DAEMON_OUTBOUND_COMPATIBILITY.questionnaire_presentation_snapshot.capability).toBe("questionnaire_v1");
+	});
+
+	it("requires schema 18 and questionnaire_v2 for v2 CAS while retaining the v1 gate", () => {
+		expect(DAEMON_SCHEMA_REVISION).toBe(18);
+		expect(DAEMON_DEFAULT_SERVER_CAPABILITIES).toEqual(
+			expect.arrayContaining(["extension_ui", "questionnaire_v1", "questionnaire_v2"]),
+		);
+		const command: DaemonCommand = {
+			type: "questionnaire_checkpoint",
+			activeSessionId: "session-a",
+			lease: {
+				supervisorGeneration: "generation-a",
+				logicalRequestId: "request-a",
+				offerId: "offer-a",
+				leaseEpoch: 1,
+				logicalClientId: "logical-a",
+				connectionId: "connection-a",
+				mode: "rich",
+				questionnaireVersion: 2,
+			},
+			baseRevision: 0,
+			clientMutationId: "mutation-v2",
+			completeDraft: {
+				version: 2,
+				currentStep: { kind: "review" },
+				states: [{ questionId: "q", kind: "short-text", value: "answer", note: "private note" }],
+			},
+		};
+		expect(getDaemonCommandCompatibilities(command)).toContainEqual({
+			minProtocol: 7,
+			minSchemaRevision: 18,
+			capability: "questionnaire_v2",
+		});
+		expect(
+			getDaemonOutboundCompatibilities({
+				type: "questionnaire_offer",
+				activeSessionId: "session-a",
+				lease: command.lease,
+			}),
+		).toContainEqual({ minProtocol: 7, minSchemaRevision: 18, capability: "questionnaire_v2" });
+		expect(DAEMON_COMMAND_COMPATIBILITY.questionnaire_checkpoint).toEqual({
+			minProtocol: 7,
+			minSchemaRevision: 16,
+			capability: "questionnaire_v1",
+		});
+		const server = new Set(DAEMON_DEFAULT_SERVER_CAPABILITIES);
+		expect(normalizeDaemonClientCapabilities(["questionnaire_v2"], true, server)).not.toContain("questionnaire_v2");
+		expect(
+			normalizeDaemonClientCapabilities(["extension_ui", "questionnaire_v1", "questionnaire_v2"], false, server),
+		).toContain("questionnaire_v2");
 	});
 
 	it("keeps offer and withdraw payloads content-free", () => {

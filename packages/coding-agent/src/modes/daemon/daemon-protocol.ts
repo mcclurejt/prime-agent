@@ -18,7 +18,9 @@ import type {
 } from "../../core/cron-jobs.js";
 import type {
 	ExtensionQuestionnaireDraftV1,
+	ExtensionQuestionnaireDraftV2,
 	ExtensionQuestionnaireRequestV1,
+	ExtensionQuestionnaireRequestV2,
 	InputSource,
 } from "../../core/extensions/types.js";
 import type { CustomMessage } from "../../core/messages.js";
@@ -64,8 +66,9 @@ export const DAEMON_COMMAND_ENVELOPE_MIN_PROTOCOL_VERSION = 7;
 // Revision 15 adds capability-gated questionnaire broker offer and withdrawal messages.
 // Revision 16 adds questionnaire CAS mutations and targeted presentation snapshots.
 // Revision 17 adds rich dismissal and post-accept presentation-error commands.
-export const DAEMON_SCHEMA_REVISION = 17;
-export const DAEMON_SCHEMA_ID = "protocol-7-schema-17-da43cf72f300";
+// Revision 18 adds capability-gated questionnaire v2 requests and drafts.
+export const DAEMON_SCHEMA_REVISION = 18;
+export const DAEMON_SCHEMA_ID = "protocol-7-schema-18-2bb0a36e87f0";
 
 export type DaemonProtocolName = typeof DAEMON_PROTOCOL_NAME;
 export type DaemonProtocolVersion = number;
@@ -88,6 +91,8 @@ export interface DaemonQuestionnaireLease {
 	logicalClientId: string;
 	connectionId: string;
 	mode: DaemonQuestionnairePresentationMode;
+	/** Present for v2 leases; omitted leases are v1 for backward compatibility. */
+	questionnaireVersion?: 1 | 2;
 }
 export type DaemonQuestionnaireOfferResponse = "accepted" | "busy" | "rejected" | "presentation_error";
 export type DaemonClientCapability =
@@ -95,6 +100,7 @@ export type DaemonClientCapability =
 	| "event_sequence"
 	| "extension_ui"
 	| "questionnaire_v1"
+	| "questionnaire_v2"
 	| "slim_attach"
 	| "chunked_snapshot"
 	| "client_owned_sessions";
@@ -141,6 +147,7 @@ export const DAEMON_SUPPORTED_CLIENT_CAPABILITIES: readonly DaemonClientCapabili
 	"event_sequence",
 	"extension_ui",
 	"questionnaire_v1",
+	"questionnaire_v2",
 	"slim_attach",
 	"chunked_snapshot",
 	"client_owned_sessions",
@@ -175,6 +182,7 @@ const DAEMON_CLIENT_CAPABILITY_REQUIREMENTS: Partial<
 	Record<DaemonClientCapability, readonly DaemonClientCapability[]>
 > = {
 	questionnaire_v1: ["extension_ui"],
+	questionnaire_v2: ["questionnaire_v1"],
 };
 
 /**
@@ -694,7 +702,7 @@ export type DaemonCommand =
 			lease: DaemonQuestionnaireLease;
 			baseRevision: number;
 			clientMutationId: string;
-			completeDraft: ExtensionQuestionnaireDraftV1;
+			completeDraft: ExtensionQuestionnaireDraftV1 | ExtensionQuestionnaireDraftV2;
 	  }
 	| {
 			id?: string;
@@ -751,6 +759,11 @@ const QUESTIONNAIRE_RICH_LIFECYCLE_COMMAND = {
 	minProtocol: 7,
 	minSchemaRevision: 17,
 	capability: "questionnaire_v1",
+} as const;
+const QUESTIONNAIRE_V2_COMMAND = {
+	minProtocol: 7,
+	minSchemaRevision: 18,
+	capability: "questionnaire_v2",
 } as const;
 
 export const DAEMON_COMMAND_COMPATIBILITY = {
@@ -865,6 +878,17 @@ export function getDaemonCommandCompatibilities(command: DaemonCommand): readonl
 	const compatibility = DAEMON_COMMAND_COMPATIBILITY[command.type];
 	if ((command.type === "prompt" || command.type === "prompt_and_wait") && command.admissionId !== undefined) {
 		return [PROMPT_ADMISSION_CANCELLATION_COMMAND, compatibility];
+	}
+	if (
+		((command.type === "questionnaire_checkpoint" || command.type === "questionnaire_submit") &&
+			command.completeDraft.version === 2) ||
+		((command.type === "questionnaire_offer_response" ||
+			command.type === "questionnaire_withdraw_ack" ||
+			command.type === "questionnaire_dismiss" ||
+			command.type === "questionnaire_presentation_error") &&
+			command.lease.questionnaireVersion === 2)
+	) {
+		return [QUESTIONNAIRE_V2_COMMAND, compatibility];
 	}
 	return [compatibility];
 }
@@ -1059,8 +1083,8 @@ export type DaemonOutbound =
 			activeSessionId: string;
 			lease: DaemonQuestionnaireLease;
 			authoritativeRevision: number;
-			request: ExtensionQuestionnaireRequestV1;
-			draft: ExtensionQuestionnaireDraftV1;
+			request: ExtensionQuestionnaireRequestV1 | ExtensionQuestionnaireRequestV2;
+			draft: ExtensionQuestionnaireDraftV1 | ExtensionQuestionnaireDraftV2;
 	  }
 	| {
 			type: "extension_error";
@@ -1097,6 +1121,20 @@ export const DAEMON_OUTBOUND_COMPATIBILITY = {
 	questionnaire_presentation_snapshot: QUESTIONNAIRE_CAS_COMMAND,
 	extension_error: LEGACY_DAEMON_COMMAND,
 } as const satisfies Record<DaemonOutbound["type"], DaemonCommandCompatibility>;
+
+export function getDaemonOutboundCompatibilities(outbound: DaemonOutbound): readonly DaemonCommandCompatibility[] {
+	const compatibility = DAEMON_OUTBOUND_COMPATIBILITY[outbound.type];
+	if (
+		(outbound.type === "questionnaire_offer" ||
+			outbound.type === "questionnaire_withdraw" ||
+			outbound.type === "questionnaire_presentation_snapshot") &&
+		(outbound.lease.questionnaireVersion === 2 ||
+			(outbound.type === "questionnaire_presentation_snapshot" && outbound.request.version === 2))
+	) {
+		return [QUESTIONNAIRE_V2_COMMAND, compatibility];
+	}
+	return [compatibility];
+}
 
 export function createDaemonCommandEnvelope<TCommand extends DaemonCommand>(
 	command: TCommand,

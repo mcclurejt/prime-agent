@@ -23,6 +23,9 @@ export interface AppKeybindings {
 	"app.questionnaire.next": true;
 	"app.questionnaire.previous": true;
 	"app.questionnaire.toggle": true;
+	"app.questionnaire.notes": true;
+	"app.questionnaire.focusNotes": true;
+	"app.questionnaire.togglePreview": true;
 	"app.tools.expand": true;
 	"app.thinking.toggle": true;
 	"app.subagents.focus": true;
@@ -90,6 +93,12 @@ export const KEYBINDINGS = {
 		description: "Move to the previous questionnaire page",
 	},
 	"app.questionnaire.toggle": { defaultKeys: "space", description: "Toggle a questionnaire checkbox" },
+	"app.questionnaire.notes": { defaultKeys: "n", description: "Edit the current questionnaire note" },
+	"app.questionnaire.focusNotes": {
+		defaultKeys: "alt+n",
+		description: "Move from an answer editor to questionnaire notes",
+	},
+	"app.questionnaire.togglePreview": { defaultKeys: "p", description: "Expand or collapse the active choice preview" },
 	"app.tools.expand": { defaultKeys: "ctrl+o", description: "Toggle tool output" },
 	"app.thinking.toggle": {
 		defaultKeys: "ctrl+t",

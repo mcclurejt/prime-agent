@@ -2,17 +2,22 @@ import type { OverlayHandle, TUI } from "@earendil-works/pi-tui";
 import type {
 	ExtensionQuestionnaireOptions,
 	ExtensionQuestionnaireOutcome,
+	ExtensionQuestionnaireOutcomeV2,
 	ExtensionQuestionnaireRequestV1,
+	ExtensionQuestionnaireRequestV2,
 	ExtensionUIContext,
 } from "../../core/extensions/types.js";
 import type { KeybindingsManager } from "../../core/keybindings.js";
 import { showFullPaneOverlay } from "./components/centered-overlay.js";
 import { QuestionnaireComponent } from "./components/questionnaire.js";
 
+type QuestionnaireRequest = ExtensionQuestionnaireRequestV1 | ExtensionQuestionnaireRequestV2;
+type QuestionnaireOutcome = ExtensionQuestionnaireOutcome | ExtensionQuestionnaireOutcomeV2;
+
 interface PendingQuestionnaire {
-	request: ExtensionQuestionnaireRequestV1;
+	request: QuestionnaireRequest;
 	signal: AbortSignal | undefined;
-	resolve: (outcome: ExtensionQuestionnaireOutcome) => void;
+	resolve: (outcome: QuestionnaireOutcome) => void;
 	reject: (error: unknown) => void;
 	onAbort: () => void;
 	settled: boolean;
@@ -37,10 +42,7 @@ export class InteractiveQuestionnaireHost {
 		private readonly keybindings: KeybindingsManager,
 	) {}
 
-	request(
-		request: ExtensionQuestionnaireRequestV1,
-		options?: ExtensionQuestionnaireOptions,
-	): Promise<ExtensionQuestionnaireOutcome> {
+	request(request: QuestionnaireRequest, options?: ExtensionQuestionnaireOptions): Promise<QuestionnaireOutcome> {
 		if (options?.signal?.aborted) return Promise.resolve({ status: "aborted", reason: "signal" });
 		return new Promise((resolve, reject) => {
 			const pending: PendingQuestionnaire = {
@@ -57,8 +59,8 @@ export class InteractiveQuestionnaireHost {
 		});
 	}
 
-	terminate(reason: Extract<ExtensionQuestionnaireOutcome, { status: "terminated" }>["reason"]): void {
-		const outcome: ExtensionQuestionnaireOutcome = { status: "terminated", reason };
+	terminate(reason: Extract<QuestionnaireOutcome, { status: "terminated" }>["reason"]): void {
+		const outcome: QuestionnaireOutcome = { status: "terminated", reason };
 		const active = this.active;
 		this.active = undefined;
 		if (active) {
@@ -80,7 +82,7 @@ export class InteractiveQuestionnaireHost {
 		let component: QuestionnaireComponent | undefined;
 		let handle: OverlayHandle | undefined;
 		try {
-			const finish = (outcome: ExtensionQuestionnaireOutcome) => this.finishActive(pending, outcome);
+			const finish = (outcome: QuestionnaireOutcome) => this.finishActive(pending, outcome);
 			component = new QuestionnaireComponent({
 				tui: this.ui,
 				keybindings: this.keybindings,
@@ -100,7 +102,7 @@ export class InteractiveQuestionnaireHost {
 		}
 	}
 
-	private finishActive(pending: PendingQuestionnaire, outcome: ExtensionQuestionnaireOutcome): void {
+	private finishActive(pending: PendingQuestionnaire, outcome: QuestionnaireOutcome): void {
 		const active = this.active;
 		if (!active || active.pending !== pending || pending.settled) return;
 		this.active = undefined;
@@ -121,7 +123,7 @@ export class InteractiveQuestionnaireHost {
 		this.settlePending(pending, { status: "aborted", reason: "signal" });
 	}
 
-	private settlePending(pending: PendingQuestionnaire, outcome: ExtensionQuestionnaireOutcome): void {
+	private settlePending(pending: PendingQuestionnaire, outcome: QuestionnaireOutcome): void {
 		if (pending.settled) return;
 		pending.settled = true;
 		pending.signal?.removeEventListener("abort", pending.onAbort);

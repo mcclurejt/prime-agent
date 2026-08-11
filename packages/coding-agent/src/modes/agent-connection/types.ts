@@ -15,8 +15,11 @@ import type {
 import type { ReplayBuiltInToolName } from "../../core/extensions/index.js";
 import type {
 	ExtensionQuestionnaireDraftV1,
+	ExtensionQuestionnaireDraftV2,
 	ExtensionQuestionnaireOutcome,
+	ExtensionQuestionnaireOutcomeV2,
 	ExtensionQuestionnaireRequestV1,
+	ExtensionQuestionnaireRequestV2,
 	InputSource,
 } from "../../core/extensions/types.js";
 import type { GoalState } from "../../core/goals.js";
@@ -540,14 +543,15 @@ export interface AgentConnectionQuestionnaireLease {
 	logicalClientId: string;
 	connectionId: string;
 	mode: "rich" | "legacy";
+	questionnaireVersion?: 1 | 2;
 }
 
 export interface AgentConnectionQuestionnairePresentation {
 	activeSessionId: string;
 	lease: AgentConnectionQuestionnaireLease;
 	authoritativeRevision: number;
-	request: ExtensionQuestionnaireRequestV1;
-	draft: ExtensionQuestionnaireDraftV1;
+	request: ExtensionQuestionnaireRequestV1 | ExtensionQuestionnaireRequestV2;
+	draft: ExtensionQuestionnaireDraftV1 | ExtensionQuestionnaireDraftV2;
 }
 
 export type AgentConnectionQuestionnaireMutationResult =
@@ -555,7 +559,7 @@ export type AgentConnectionQuestionnaireMutationResult =
 			status: "ack";
 			ack: { clientMutationId: string; authoritativeRevision: number; draftHash: string };
 	  }
-	| { status: "terminal"; outcome: ExtensionQuestionnaireOutcome }
+	| { status: "terminal"; outcome: ExtensionQuestionnaireOutcome | ExtensionQuestionnaireOutcomeV2 }
 	| {
 			status: "conflict";
 			authoritativeRevision: number;
@@ -574,13 +578,13 @@ export interface AgentConnectionQuestionnaireTransport {
 		lease: AgentConnectionQuestionnaireLease,
 		baseRevision: number,
 		clientMutationId: string,
-		completeDraft: ExtensionQuestionnaireDraftV1,
+		completeDraft: ExtensionQuestionnaireDraftV1 | ExtensionQuestionnaireDraftV2,
 	): Promise<AgentConnectionQuestionnaireMutationResult>;
 	submit(
 		lease: AgentConnectionQuestionnaireLease,
 		baseRevision: number,
 		clientMutationId: string,
-		completeDraft: ExtensionQuestionnaireDraftV1,
+		completeDraft: ExtensionQuestionnaireDraftV1 | ExtensionQuestionnaireDraftV2,
 	): Promise<AgentConnectionQuestionnaireMutationResult>;
 	dismiss(lease: AgentConnectionQuestionnaireLease): Promise<AgentConnectionQuestionnaireMutationResult>;
 	reportPresentationError(lease: AgentConnectionQuestionnaireLease): Promise<"accepted" | "stale">;

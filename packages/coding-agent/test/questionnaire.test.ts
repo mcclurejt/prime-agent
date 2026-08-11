@@ -4,7 +4,11 @@ import {
 	assertQuestionnaireTextFieldBudget,
 	canonicalQuestionnaireJsonBytes,
 	normalizeExtensionQuestionnaireDraft,
+	normalizeExtensionQuestionnaireDraftV2,
 	normalizeExtensionQuestionnaireRequest,
+	normalizeExtensionQuestionnaireRequestV2,
+	projectExtensionQuestionnaireRequestV2ToV1,
+	QUESTIONNAIRE_DEFAULT_OTHER,
 	QUESTIONNAIRE_ENVELOPE_MAX_BYTES,
 	QUESTIONNAIRE_TEXT_FIELD_MAX_BYTES,
 	requestQuestionnaire,
@@ -12,7 +16,10 @@ import {
 import type {
 	ExtensionQuestionnaireDraftV1,
 	ExtensionQuestionnaireOutcome,
+	ExtensionQuestionnaireOutcomePresentation,
+	ExtensionQuestionnaireOutcomeV2,
 	ExtensionQuestionnaireRequestV1,
+	ExtensionQuestionnaireRequestV2,
 	ExtensionQuestionnaireResponse,
 	ExtensionUIContext,
 } from "../src/core/extensions/types.js";
@@ -52,6 +59,17 @@ describe("questionnaire public contract", () => {
 		expectTypeOf<LegacyExtensionUIContext>().toExtend<ExtensionUIContext>();
 	});
 
+	it("represents v1-projection terminal outcome metadata in v1 and v2", () => {
+		const presentation = {
+			mode: "v1-projection",
+			unavailableFeatures: ["notes", "previews"],
+		} satisfies ExtensionQuestionnaireOutcomePresentation;
+		const dismissed = { status: "dismissed", presentation } satisfies ExtensionQuestionnaireOutcome;
+		const submitted = { status: "submitted", responses: [], presentation } satisfies ExtensionQuestionnaireOutcomeV2;
+		expect(dismissed.presentation).toBe(presentation);
+		expect(submitted.presentation.unavailableFeatures).toEqual(["notes", "previews"]);
+	});
+
 	it("exports the request, draft, response, and outcome unions", () => {
 		expectTypeOf(request).toMatchTypeOf<ExtensionQuestionnaireRequestV1>();
 		expectTypeOf<ExtensionQuestionnaireDraftV1>().toBeObject();
@@ -61,6 +79,25 @@ describe("questionnaire public contract", () => {
 
 	it("exports the helper from the package root", () => {
 		expect(packageRootRequestQuestionnaire).toBe(requestQuestionnaire);
+	});
+
+	it("accepts v2 requests through the public helper", async () => {
+		const ui = {
+			...({} as Omit<ExtensionUIContext, "questionnaire">),
+			questionnaire: vi.fn(async (): Promise<ExtensionQuestionnaireOutcome> => ({ status: "dismissed" })),
+		} satisfies ExtensionUIContext;
+		const v2Request: ExtensionQuestionnaireRequestV2 = {
+			version: 2,
+			questions: [{ id: "q", kind: "confirm", prompt: "Continue?" }],
+		};
+		await expect(requestQuestionnaire(ui, v2Request)).resolves.toEqual({ status: "dismissed" });
+		expect(ui.questionnaire).toHaveBeenCalledWith(
+			expect.objectContaining({
+				version: 2,
+				questions: [expect.objectContaining({ other: QUESTIONNAIRE_DEFAULT_OTHER })],
+			}),
+			undefined,
+		);
 	});
 
 	it("returns unsupported before validating when the optional method is absent", async () => {
@@ -337,5 +374,118 @@ describe("questionnaire draft validation", () => {
 				})),
 			}),
 		).toThrow(/512 KiB/i);
+	});
+});
+
+describe("questionnaire v2 core", () => {
+	const v2: ExtensionQuestionnaireRequestV2 = {
+		version: 2,
+		questions: [
+			{
+				id: "q",
+				kind: "single-select",
+				prompt: "Choose",
+				context: "**Tradeoff**",
+				recommendation: { choiceId: "a", rationale: "Best *fit*" },
+				choices: [
+					{
+						id: "a",
+						label: "A",
+						detail: "- Fast",
+						preview: { title: "Preview", markdown: "```text\nok\n```", alt: "ok" },
+					},
+				],
+			},
+		],
+	};
+	it("normalizes rich fields and injects canonical Other", () => {
+		expect(normalizeExtensionQuestionnaireRequestV2(v2)).toEqual({
+			...v2,
+			questions: [
+				{
+					...v2.questions[0],
+					other: { label: "Something else…", placeholder: "Describe your answer and the key tradeoff" },
+				},
+			],
+		});
+	});
+	it("normalizes v2 draft notes without treating them as answers", () => {
+		const normalized = normalizeExtensionQuestionnaireDraftV2(v2, {
+			version: 2,
+			currentStep: { kind: "review" },
+			states: [
+				{
+					questionId: "q",
+					kind: "single-select",
+					selection: null,
+					otherEditorOpen: false,
+					otherText: "",
+					note: "Keep undecided",
+				},
+			],
+		});
+		expect(normalized.states[0]).toMatchObject({ selection: null, note: "Keep undecided" });
+		expect(() =>
+			normalizeExtensionQuestionnaireDraftV2(v2, {
+				...normalized,
+				states: [{ ...normalized.states[0], note: "x".repeat(16_385) }],
+			}),
+		).toThrow(/note/i);
+	});
+	it("projects v2 to a v1-only plain shape", () => {
+		const projected = projectExtensionQuestionnaireRequestV2ToV1(v2);
+		expect(projected.version).toBe(1);
+		expect(projected.questions[0]).not.toHaveProperty("context");
+		expect(projected.questions[0]).not.toHaveProperty("recommendation");
+		expect(projected.questions[0]).toMatchObject({ other: QUESTIONNAIRE_DEFAULT_OTHER });
+		expect(JSON.stringify(projected)).not.toContain("preview");
+	});
+	it.each([
+		[
+			"context",
+			(base: ExtensionQuestionnaireRequestV2) => ({
+				...base,
+				questions: [{ ...base.questions[0], context: "bad\talignment" }],
+			}),
+		],
+		[
+			"recommendation rationale",
+			(base: ExtensionQuestionnaireRequestV2) => ({
+				...base,
+				questions: [{ ...base.questions[0], recommendation: { choiceId: "a", rationale: "bad\talignment" } }],
+			}),
+		],
+		[
+			"choice detail",
+			(base: ExtensionQuestionnaireRequestV2) => ({
+				...base,
+				questions: [{ ...base.questions[0], choices: [{ id: "a", label: "A", detail: "bad\talignment" }] }],
+			}),
+		],
+		[
+			"preview markdown",
+			(base: ExtensionQuestionnaireRequestV2) => ({
+				...base,
+				questions: [
+					{
+						...base.questions[0],
+						choices: [{ id: "a", label: "A", preview: { markdown: "bad\talignment", alt: "safe" } }],
+					},
+				],
+			}),
+		],
+	] as const)("rejects tabs in v2 rich %s", (_name, mutate) => {
+		expect(() => normalizeExtensionQuestionnaireRequestV2(mutate(v2))).toThrow(/tab/i);
+	});
+	it("rejects invalid recommendation references and unsafe rich text", () => {
+		expect(() =>
+			normalizeExtensionQuestionnaireRequestV2({
+				...v2,
+				questions: [{ ...v2.questions[0], recommendation: { choiceId: "missing", rationale: "no" } }],
+			}),
+		).toThrow(/recommendation.*choice/i);
+		expect(() =>
+			normalizeExtensionQuestionnaireRequestV2({ ...v2, questions: [{ ...v2.questions[0], context: "bad\u001b" }] }),
+		).toThrow(/control/i);
 	});
 });

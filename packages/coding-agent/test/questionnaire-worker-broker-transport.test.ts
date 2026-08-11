@@ -69,6 +69,25 @@ describe("worker questionnaire broker transport", () => {
 		expect(JSON.parse(frames[0]!.payload.toString("utf8"))).toEqual(message);
 		expect(frames[0]!.payload.toString("utf8")).not.toMatch(/prompt|draft|answer/i);
 	});
+	it("accepts a content-free v2 need and rejects legacy v2 routing", () => {
+		const need = {
+			type: "presenter_needed",
+			need: {
+				supervisorGeneration: "generation-a",
+				activeSessionId: "session-a",
+				logicalRequestId: "request-a",
+				offerId: "offer-a",
+				leaseEpoch: 1,
+				createdAt: 1,
+				mode: "undecided",
+				questionnaireVersion: 2,
+			},
+		};
+		expect(isWorkerQuestionnaireBrokerMessage(need)).toBe(true);
+		expect(isWorkerQuestionnaireBrokerMessage({ ...need, need: { ...need.need, mode: "legacy" } })).toBe(false);
+		expect(JSON.stringify(need)).not.toMatch(/prompt|draft|note|preview/i);
+	});
+
 	it("rejects value-bearing or extra fields from the private broker control payload", () => {
 		expect(
 			isWorkerQuestionnaireBrokerMessage({

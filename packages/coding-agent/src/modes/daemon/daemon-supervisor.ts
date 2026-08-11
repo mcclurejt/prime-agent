@@ -2576,6 +2576,7 @@ export class DaemonSupervisor {
 			!client ||
 			!client.attachedActiveSessionIds.has(event.activeSessionId) ||
 			!client.capabilities.has("questionnaire_v1") ||
+			(event.lease.questionnaireVersion === 2 && !client.capabilities.has("questionnaire_v2")) ||
 			client.socket.destroyed
 		) {
 			return false;

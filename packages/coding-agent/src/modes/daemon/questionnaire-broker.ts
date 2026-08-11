@@ -28,6 +28,8 @@ export interface QuestionnaireWorkerOfferNeed extends QuestionnaireLeaseStamp {
 	activeSessionId: string;
 	createdAt: number;
 	mode: QuestionnaireRequestMode;
+	/** V2 requests must remain on v2-capable rich presenters across retries. */
+	questionnaireVersion?: 1 | 2;
 }
 
 export type QuestionnaireOfferResponse = "accepted" | "busy" | "rejected" | "presentation_error";
@@ -94,6 +96,10 @@ function isRichPresenter(presenter: QuestionnairePresenter): boolean {
 	return hasCapability(presenter, "extension_ui") && hasCapability(presenter, "questionnaire_v1");
 }
 
+function isV2Presenter(presenter: QuestionnairePresenter): boolean {
+	return isRichPresenter(presenter) && hasCapability(presenter, "questionnaire_v2");
+}
+
 function sameStamp(left: QuestionnaireLeaseStamp, right: QuestionnaireLeaseStamp): boolean {
 	return (
 		left.supervisorGeneration === right.supervisorGeneration &&
@@ -104,7 +110,11 @@ function sameStamp(left: QuestionnaireLeaseStamp, right: QuestionnaireLeaseStamp
 }
 
 function sameNeedOffer(left: QuestionnaireWorkerOfferNeed, right: QuestionnaireWorkerOfferNeed): boolean {
-	return left.activeSessionId === right.activeSessionId && sameStamp(left, right);
+	return (
+		left.activeSessionId === right.activeSessionId &&
+		left.questionnaireVersion === right.questionnaireVersion &&
+		sameStamp(left, right)
+	);
 }
 
 function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
@@ -338,6 +348,7 @@ export class QuestionnaireBroker {
 					logicalClientId: selection.presenter.logicalClientId,
 					connectionId: selection.presenter.connectionId,
 					mode: selection.mode,
+					...(queued.need.questionnaireVersion === 2 ? { questionnaireVersion: 2 as const } : {}),
 				};
 				const timer = setTimeout(
 					() => this.rejectPending(selection.presenter.connectionId, "timeout"),
@@ -364,32 +375,25 @@ export class QuestionnaireBroker {
 	private selectPresenter(
 		need: QuestionnaireWorkerOfferNeed,
 	): { presenter: QuestionnairePresenter; mode: QuestionnairePresentationMode } | undefined {
-		const available = [...this.presenters.values()].filter(
-			(presenter) =>
-				presenter.activeSessionId === need.activeSessionId &&
-				presenter.presentable &&
-				!this.suppressedPresenterKeys.has(presenterKey(presenter)) &&
-				!this.pendingOffersByConnection.has(presenter.connectionId) &&
-				!this.activeLeasesByConnection.has(presenter.connectionId),
-		);
+		const isAvailable = (presenter: QuestionnairePresenter): boolean =>
+			presenter.activeSessionId === need.activeSessionId &&
+			!this.suppressedPresenterKeys.has(presenterKey(presenter)) &&
+			!this.pendingOffersByConnection.has(presenter.connectionId) &&
+			!this.activeLeasesByConnection.has(presenter.connectionId);
+		const attached = [...this.presenters.values()].filter(isAvailable);
+		const available = attached.filter((presenter) => presenter.presentable);
+		if (need.questionnaireVersion === 2) {
+			const v2 = available.find(isV2Presenter);
+			return v2 ? { presenter: v2, mode: "rich" } : undefined;
+		}
 		if (need.mode !== "legacy") {
 			const rich = available.find(isRichPresenter);
 			if (rich) return { presenter: rich, mode: "rich" };
-			if (need.mode === "rich") return undefined;
-			const richPresenterAttached = [...this.presenters.values()].some(
-				(presenter) =>
-					presenter.activeSessionId === need.activeSessionId &&
-					isRichPresenter(presenter) &&
-					!this.suppressedPresenterKeys.has(presenterKey(presenter)) &&
-					!this.pendingOffersByConnection.has(presenter.connectionId) &&
-					!this.activeLeasesByConnection.has(presenter.connectionId),
-			);
-			if (richPresenterAttached) return undefined;
+			if (need.mode === "rich" || attached.some(isRichPresenter)) return undefined;
 		}
 		const legacy = available.find((presenter) => hasCapability(presenter, "extension_ui"));
 		return legacy ? { presenter: legacy, mode: "legacy" } : undefined;
 	}
-
 	private presenterForLease(activeSessionId: string, lease: QuestionnaireLease): QuestionnairePresenter | undefined {
 		return this.presenters.get(`${lease.connectionId}\0${activeSessionId}`);
 	}
@@ -401,6 +405,7 @@ export class QuestionnaireBroker {
 	): boolean {
 		const presenter = this.presenterForLease(activeSessionId, lease);
 		if (!presenter || presenter.connectionId !== connectionId || !presenter.presentable) return false;
+		if (lease.questionnaireVersion === 2) return lease.mode === "rich" && isV2Presenter(presenter);
 		return lease.mode === "rich" ? isRichPresenter(presenter) : hasCapability(presenter, "extension_ui");
 	}
 

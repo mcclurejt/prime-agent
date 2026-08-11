@@ -126,13 +126,16 @@ Use `tab` to cycle forward and `shift+tab` to cycle backward through Providers, 
 
 ### Questionnaire
 
-These actions move between questionnaire questions and switch the Review page between Edit and Submit. They are context-scoped, so their Tab and arrow defaults intentionally overlap generic input and configuration-menu bindings while a questionnaire owns focus. Left and Right continue to move the cursor inside text-answer editors; use Tab and Shift+Tab to change pages while editing text.
+These actions move between questionnaire questions and switch the Review page between Edit and Submit. They are context-scoped, so their Tab and arrow defaults intentionally overlap generic input and configuration-menu bindings while a questionnaire owns focus. Left and Right continue to move the cursor inside text-answer editors; use Tab and Shift+Tab to change pages while editing text. Rich questionnaires also provide notes and optional choice previews. The plain `n` note action applies when an answer editor does not own input; use `alt+n` to move from a text or Other editor into notes without stealing literal `n` typing.
 
 | Keybinding id | Default | Description |
 |--------|---------|-------------|
 | `app.questionnaire.next` | `tab`, `right` | Move to the next questionnaire page or select Submit on Review |
 | `app.questionnaire.previous` | `shift+tab`, `left` | Move to the previous questionnaire page or select Edit on Review |
 | `app.questionnaire.toggle` | `space` | Toggle the focused checkbox in a multi-select question; the confirm key (Enter by default) also toggles |
+| `app.questionnaire.notes` | `n` | Edit the current rich-questionnaire note when no answer editor owns input |
+| `app.questionnaire.focusNotes` | `alt+n` | Move from a rich-questionnaire answer or Other editor into notes |
+| `app.questionnaire.togglePreview` | `p` | Expand or collapse the active choice preview in a compact layout |
 
 ### Display and Message Queue
 

@@ -2,7 +2,8 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai";
-import { afterEach, describe, expect, it } from "vitest";
+import type { Component, Focusable, OverlayHandle, TUI } from "@earendil-works/pi-tui";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.js";
 import {
 	type CreateAgentSessionRuntimeFactory,
@@ -12,12 +13,18 @@ import {
 } from "../src/core/agent-session-runtime.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import type { AgentCronJob } from "../src/core/cron-jobs.js";
+import { KeybindingsManager } from "../src/core/keybindings.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import type { ExtensionAPI, ExtensionFactory } from "../src/index.js";
 import { createAgentConnectionState } from "../src/modes/agent-connection/snapshot.js";
 import type { ActiveSessionState } from "../src/modes/daemon/active-session-state.js";
 import { bindActiveSessionState } from "../src/modes/daemon/daemon-extension-binding.js";
 import type { DaemonOutbound } from "../src/modes/daemon/daemon-protocol.js";
+import type { WorkerQuestionnaireBrokerMessage } from "../src/modes/daemon/daemon-worker-protocol.js";
+import { WorkerUiClientsMirror } from "../src/modes/daemon/daemon-worker-ui-clients.js";
+import { QuestionnaireWorkerAuthority } from "../src/modes/daemon/questionnaire-worker-authority.js";
+import { DaemonQuestionnaireHost } from "../src/modes/interactive/daemon-questionnaire-host.js";
+import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
 function getText(message: AgentSession["messages"][number]): string {
 	if (!("content" in message)) {
@@ -32,6 +39,7 @@ function getText(message: AgentSession["messages"][number]): string {
 }
 
 describe("daemon extension binding", () => {
+	beforeAll(() => initTheme("dark"));
 	const cleanups: Array<() => Promise<void> | void> = [];
 
 	afterEach(async () => {
@@ -150,6 +158,137 @@ describe("daemon extension binding", () => {
 		}
 	});
 
+	it("carries a negotiated v2 note through the real runtime, authority, and daemon host without control-plane leaks", async () => {
+		let commandOutcome: unknown;
+		const runtime = await createRuntimeForTest((pi) => {
+			pi.registerCommand("daemon-questionnaire-v2", {
+				description: "daemon questionnaire v2",
+				handler: async (_args, ctx) => {
+					commandOutcome = await ctx.ui.questionnaire?.({
+						version: 2,
+						title: "Private decision",
+						questions: [{ id: "q", kind: "confirm", prompt: "Proceed?", context: "Private context" }],
+					});
+				},
+			});
+		}, []);
+		const state: ActiveSessionState = {
+			activeSessionId: "active-questionnaire-v2",
+			runtime,
+			clients: new Set(),
+			pendingAttaches: 0,
+			extensionUiRequests: new Map(),
+			eventGeneration: "generation-questionnaire-v2",
+			lastEventSequence: 0,
+		};
+		const mirror = new WorkerUiClientsMirror();
+		mirror.applySync({
+			supervisorGeneration: "generation-questionnaire-v2",
+			syncRevision: 1,
+			clients: [
+				{
+					logicalClientId: "logical-v2",
+					connectionId: "connection-v2",
+					activeSessionId: state.activeSessionId,
+					capabilities: ["extension_ui", "questionnaire_v1", "questionnaire_v2"],
+					presentable: true,
+				},
+			],
+			complete: true,
+		});
+		const brokerMessages: WorkerQuestionnaireBrokerMessage[] = [];
+		let id = 0;
+		const authority = new QuestionnaireWorkerAuthority({
+			uiClients: mirror,
+			sendBrokerMessage: (message) => {
+				brokerMessages.push(message);
+				return true;
+			},
+			onStatusChanged: () => {},
+			createId: () => `vertical-${++id}`,
+			now: () => id,
+		});
+		await bindActiveSessionState(state, {
+			broadcast: () => {},
+			shutdown: () => {},
+			questionnaire: (_targetState, request, options) =>
+				authority.request(state.activeSessionId, request, options).outcome,
+			terminateQuestionnaires: () => {},
+		});
+
+		const prompt = runtime.session.prompt("/daemon-questionnaire-v2");
+		await vi.waitFor(() => expect(brokerMessages.at(-1)?.type).toBe("presenter_needed"));
+		const needMessage = brokerMessages.at(-1);
+		if (needMessage?.type !== "presenter_needed") throw new Error("missing v2 presenter need");
+		expect(needMessage.need.questionnaireVersion).toBe(2);
+		const lease = {
+			supervisorGeneration: needMessage.need.supervisorGeneration,
+			logicalRequestId: needMessage.need.logicalRequestId,
+			offerId: needMessage.need.offerId,
+			leaseEpoch: needMessage.need.leaseEpoch,
+			logicalClientId: "logical-v2",
+			connectionId: "connection-v2",
+			mode: "rich" as const,
+			questionnaireVersion: 2 as const,
+		};
+		let overlay: (Component & { handleInput(data: string): void }) | undefined;
+		const tui = {
+			terminal: { rows: 24 },
+			requestRender: vi.fn(),
+			showOverlay: vi.fn((component: Component) => {
+				overlay = component as Component & { handleInput(data: string): void };
+				(component as Component & Focusable).focused = true;
+				return {
+					hide: vi.fn(),
+					setHidden: vi.fn(),
+					isHidden: () => false,
+					focus: vi.fn(),
+					unfocus: vi.fn(),
+					isFocused: () => true,
+				} satisfies OverlayHandle;
+			}),
+		} as unknown as TUI;
+		const host = new DaemonQuestionnaireHost({
+			ui: tui,
+			keybindings: new KeybindingsManager({ "app.questionnaire.notes": "ctrl+y" }),
+			transport: {
+				setPresentable: async () => {},
+				respondToOffer: async (offeredLease) => {
+					authority.handleOfferResult({ status: "accepted", lease: offeredLease });
+					return "accepted";
+				},
+				checkpoint: async (offeredLease, baseRevision, clientMutationId, completeDraft) =>
+					authority.checkpoint({ lease: offeredLease, baseRevision, clientMutationId, completeDraft }),
+				submit: async (offeredLease, baseRevision, clientMutationId, completeDraft) =>
+					authority.submit({ lease: offeredLease, baseRevision, clientMutationId, completeDraft }),
+				dismiss: async (offeredLease) => authority.dismiss(offeredLease),
+				reportPresentationError: async () => "stale",
+				acknowledgeWithdraw: async () => {},
+			},
+			createMutationId: () => `mutation-${++id}`,
+		});
+		await host.offer(state.activeSessionId, lease);
+		const presentation = authority.presentationForLease(lease);
+		if (!presentation) throw new Error("missing v2 presentation");
+		await host.present({ activeSessionId: presentation.activeSessionId, ...presentation.snapshot });
+		if (!overlay) throw new Error("missing questionnaire overlay");
+		overlay.handleInput("\x19");
+		overlay.handleInput("private note");
+		overlay.handleInput("\x1b");
+		overlay.handleInput("\t");
+		overlay.handleInput("\x1b[C");
+		overlay.handleInput("\r");
+		await prompt;
+
+		expect(commandOutcome).toEqual({
+			status: "submitted",
+			responses: [{ questionId: "q", status: "unanswered", note: "private note" }],
+		});
+		expect(JSON.stringify(brokerMessages)).not.toMatch(/Private decision|Private context|private note/u);
+		const publicSnapshot = createAgentConnectionState(runtime, state.activeSessionId);
+		expect(JSON.stringify(publicSnapshot)).not.toMatch(/Private decision|Private context|private note/u);
+	});
+
 	it("routes extension questionnaires through the daemon worker authority callback", async () => {
 		let commandOutcome: unknown;
 		const runtime = await createRuntimeForTest((pi) => {
@@ -157,8 +296,8 @@ describe("daemon extension binding", () => {
 				description: "daemon questionnaire",
 				handler: async (_args, ctx) => {
 					commandOutcome = await ctx.ui.questionnaire?.({
-						version: 1,
-						questions: [{ id: "confirm", kind: "confirm", prompt: "Proceed?" }],
+						version: 2,
+						questions: [{ id: "confirm", kind: "confirm", prompt: "Proceed?", context: "Private context" }],
 					});
 				},
 			});
@@ -180,7 +319,10 @@ describe("daemon extension binding", () => {
 			questionnaire: async (targetState, request) => {
 				callbackState = targetState;
 				callbackRequest = request;
-				return { status: "submitted", responses: [{ questionId: "confirm", status: "unanswered" }] };
+				return {
+					status: "submitted",
+					responses: [{ questionId: "confirm", status: "unanswered", note: "private note" }],
+				};
 			},
 			terminateQuestionnaires: () => {},
 		});
@@ -189,12 +331,12 @@ describe("daemon extension binding", () => {
 
 		expect(callbackState).toBe(state);
 		expect(callbackRequest).toEqual({
-			version: 1,
-			questions: [{ id: "confirm", kind: "confirm", prompt: "Proceed?" }],
+			version: 2,
+			questions: [{ id: "confirm", kind: "confirm", prompt: "Proceed?", context: "Private context" }],
 		});
 		expect(commandOutcome).toEqual({
 			status: "submitted",
-			responses: [{ questionId: "confirm", status: "unanswered" }],
+			responses: [{ questionId: "confirm", status: "unanswered", note: "private note" }],
 		});
 	});
 

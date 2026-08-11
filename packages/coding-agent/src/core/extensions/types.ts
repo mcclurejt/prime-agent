@@ -84,44 +84,77 @@ export type ExtensionQuestionnaireChoice = {
 	description?: string;
 };
 
-export type ExtensionQuestionnaireQuestionBase = {
-	id: string;
-	label?: string;
-	prompt: string;
+export type ExtensionQuestionnaireMarkdownContent = string;
+export type ExtensionQuestionnaireRecommendation = {
+	choiceId?: string;
+	rationale: ExtensionQuestionnaireMarkdownContent;
+};
+export type ExtensionQuestionnairePreview = {
+	title?: string;
+	markdown: ExtensionQuestionnaireMarkdownContent;
+	alt: string;
+};
+export type ExtensionQuestionnaireChoiceV2 = ExtensionQuestionnaireChoice & {
+	detail?: ExtensionQuestionnaireMarkdownContent;
+	preview?: ExtensionQuestionnairePreview;
 };
 
+export type ExtensionQuestionnaireQuestionBase = { id: string; label?: string; prompt: string };
+export type ExtensionQuestionnaireQuestionBaseV2 = ExtensionQuestionnaireQuestionBase & {
+	context?: ExtensionQuestionnaireMarkdownContent;
+	recommendation?: ExtensionQuestionnaireRecommendation;
+};
+
+type QuestionnaireOther = { label?: string; placeholder?: string };
 export type ExtensionQuestionnaireQuestion =
 	| (ExtensionQuestionnaireQuestionBase & {
 			kind: "confirm";
 			yesLabel?: string;
 			noLabel?: string;
-			other?: { label?: string; placeholder?: string };
+			other?: QuestionnaireOther;
 	  })
 	| (ExtensionQuestionnaireQuestionBase & {
 			kind: "single-select";
 			choices: ExtensionQuestionnaireChoice[];
-			other?: { label?: string; placeholder?: string };
+			other?: QuestionnaireOther;
 	  })
 	| (ExtensionQuestionnaireQuestionBase & {
 			kind: "multi-select";
 			choices: ExtensionQuestionnaireChoice[];
-			other?: { label?: string; placeholder?: string };
+			other?: QuestionnaireOther;
 	  })
-	| (ExtensionQuestionnaireQuestionBase & {
-			kind: "short-text";
-			placeholder?: string;
-			initialValue?: string;
+	| (ExtensionQuestionnaireQuestionBase & { kind: "short-text"; placeholder?: string; initialValue?: string })
+	| (ExtensionQuestionnaireQuestionBase & { kind: "multiline-text"; placeholder?: string; initialValue?: string });
+export type ExtensionQuestionnaireQuestionV2 =
+	| (ExtensionQuestionnaireQuestionBaseV2 & {
+			kind: "confirm";
+			yesLabel?: string;
+			noLabel?: string;
+			other?: QuestionnaireOther;
 	  })
-	| (ExtensionQuestionnaireQuestionBase & {
-			kind: "multiline-text";
-			placeholder?: string;
-			initialValue?: string;
-	  });
+	| (ExtensionQuestionnaireQuestionBaseV2 & {
+			kind: "single-select";
+			choices: ExtensionQuestionnaireChoiceV2[];
+			other?: QuestionnaireOther;
+	  })
+	| (ExtensionQuestionnaireQuestionBaseV2 & {
+			kind: "multi-select";
+			choices: ExtensionQuestionnaireChoiceV2[];
+			other?: QuestionnaireOther;
+	  })
+	| (ExtensionQuestionnaireQuestionBaseV2 & { kind: "short-text"; placeholder?: string; initialValue?: string })
+	| (ExtensionQuestionnaireQuestionBaseV2 & { kind: "multiline-text"; placeholder?: string; initialValue?: string });
 
 export type ExtensionQuestionnaireRequestV1 = {
 	version: 1;
 	title?: string;
 	questions: ExtensionQuestionnaireQuestion[];
+	submitLabel?: string;
+};
+export type ExtensionQuestionnaireRequestV2 = {
+	version: 2;
+	title?: string;
+	questions: ExtensionQuestionnaireQuestionV2[];
 	submitLabel?: string;
 };
 
@@ -131,22 +164,20 @@ export type ExtensionQuestionnaireResponse =
 	| { questionId: string; status: "answered"; kind: "confirm"; otherText: string }
 	| { questionId: string; status: "answered"; kind: "single-select"; choiceId: string }
 	| { questionId: string; status: "answered"; kind: "single-select"; otherText: string }
-	| {
-			questionId: string;
-			status: "answered";
-			kind: "multi-select";
-			choiceIds: string[];
-			otherText?: string;
-	  }
-	| {
-			questionId: string;
-			status: "answered";
-			kind: "short-text" | "multiline-text";
-			value: string;
-	  };
+	| { questionId: string; status: "answered"; kind: "multi-select"; choiceIds: string[]; otherText?: string }
+	| { questionId: string; status: "answered"; kind: "short-text" | "multiline-text"; value: string };
+export type ExtensionQuestionnaireResponseV2 = ExtensionQuestionnaireResponse extends infer R
+	? R extends ExtensionQuestionnaireResponse
+		? R & { note?: string }
+		: never
+	: never;
 
-export type ExtensionQuestionnaireOutcome =
-	| { status: "submitted"; responses: ExtensionQuestionnaireResponse[] }
+export type ExtensionQuestionnaireOutcomePresentation = {
+	mode: "v1-projection";
+	unavailableFeatures: readonly ["notes", "previews"];
+};
+
+type ExtensionQuestionnaireTerminalOutcome =
 	| { status: "dismissed" }
 	| { status: "unsupported" }
 	| { status: "indeterminate"; reason: "legacy-cancelled-or-presentation-lost" }
@@ -162,8 +193,18 @@ export type ExtensionQuestionnaireOutcome =
 				| "daemon-update";
 	  };
 
-export type ExtensionQuestionnaireDraftStep = { kind: "question"; questionId: string } | { kind: "review" };
+type WithQuestionnaireOutcomePresentation<T> = T extends unknown
+	? T & { presentation?: ExtensionQuestionnaireOutcomePresentation }
+	: never;
 
+export type ExtensionQuestionnaireOutcome = WithQuestionnaireOutcomePresentation<
+	{ status: "submitted"; responses: ExtensionQuestionnaireResponse[] } | ExtensionQuestionnaireTerminalOutcome
+>;
+export type ExtensionQuestionnaireOutcomeV2 = WithQuestionnaireOutcomePresentation<
+	{ status: "submitted"; responses: ExtensionQuestionnaireResponseV2[] } | ExtensionQuestionnaireTerminalOutcome
+>;
+
+export type ExtensionQuestionnaireDraftStep = { kind: "question"; questionId: string } | { kind: "review" };
 export type ExtensionQuestionnaireDraftQuestionState =
 	| {
 			questionId: string;
@@ -187,16 +228,21 @@ export type ExtensionQuestionnaireDraftQuestionState =
 			otherEditorOpen: boolean;
 			otherText: string;
 	  }
-	| {
-			questionId: string;
-			kind: "short-text" | "multiline-text";
-			value: string;
-	  };
-
+	| { questionId: string; kind: "short-text" | "multiline-text"; value: string };
+export type ExtensionQuestionnaireDraftQuestionStateV2 = ExtensionQuestionnaireDraftQuestionState extends infer S
+	? S extends ExtensionQuestionnaireDraftQuestionState
+		? S & { note?: string }
+		: never
+	: never;
 export type ExtensionQuestionnaireDraftV1 = {
 	version: 1;
 	currentStep: ExtensionQuestionnaireDraftStep;
 	states: ExtensionQuestionnaireDraftQuestionState[];
+};
+export type ExtensionQuestionnaireDraftV2 = {
+	version: 2;
+	currentStep: ExtensionQuestionnaireDraftStep;
+	states: ExtensionQuestionnaireDraftQuestionStateV2[];
 };
 
 export interface ExtensionQuestionnaireOptions {
@@ -242,9 +288,9 @@ export type EditorFactory = (tui: TUI, theme: EditorTheme, keybindings: Keybindi
 export interface ExtensionUIContext {
 	/** Present a declarative questionnaire when this UI supports it. */
 	questionnaire?: (
-		request: ExtensionQuestionnaireRequestV1,
+		request: ExtensionQuestionnaireRequestV1 | ExtensionQuestionnaireRequestV2,
 		options?: ExtensionQuestionnaireOptions,
-	) => Promise<ExtensionQuestionnaireOutcome>;
+	) => Promise<ExtensionQuestionnaireOutcome | ExtensionQuestionnaireOutcomeV2>;
 
 	/** Show a selector and return the user's choice. */
 	select(title: string, options: string[], opts?: ExtensionUIDialogOptions): Promise<string | undefined>;

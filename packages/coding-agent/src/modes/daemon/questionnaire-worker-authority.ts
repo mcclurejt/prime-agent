@@ -3,22 +3,45 @@ import {
 	assertQuestionnaireEnvelopeBudget,
 	canonicalQuestionnaireJsonBytes,
 	normalizeExtensionQuestionnaireDraftForValidatedRequest,
+	normalizeExtensionQuestionnaireDraftV2,
 	normalizeExtensionQuestionnaireRequest,
+	normalizeExtensionQuestionnaireRequestV2,
+	projectExtensionQuestionnaireRequestV2ToV1,
 } from "../../core/extensions/questionnaire.js";
 import type {
 	ExtensionQuestionnaireDraftQuestionState,
 	ExtensionQuestionnaireDraftV1,
+	ExtensionQuestionnaireDraftV2,
 	ExtensionQuestionnaireOptions,
 	ExtensionQuestionnaireOutcome,
+	ExtensionQuestionnaireOutcomeV2,
 	ExtensionQuestionnaireQuestion,
+	ExtensionQuestionnaireQuestionV2,
 	ExtensionQuestionnaireRequestV1,
+	ExtensionQuestionnaireRequestV2,
 	ExtensionQuestionnaireResponse,
+	ExtensionQuestionnaireResponseV2,
 } from "../../core/extensions/types.js";
 import type { DaemonExtensionUIResponse } from "./daemon-protocol.js";
 import type { WorkerQuestionnaireBrokerMessage } from "./daemon-worker-protocol.js";
 import type { WorkerUiClientsMirror } from "./daemon-worker-ui-clients.js";
 import type { QuestionnaireLease, QuestionnaireOfferResult, QuestionnaireRequestMode } from "./questionnaire-broker.js";
 import { QuestionnaireLegacyAdapter, type QuestionnaireLegacyAdapterAction } from "./questionnaire-legacy-adapter.js";
+
+type QuestionnaireRequest = ExtensionQuestionnaireRequestV1 | ExtensionQuestionnaireRequestV2;
+type QuestionnaireDraft = ExtensionQuestionnaireDraftV1 | ExtensionQuestionnaireDraftV2;
+type QuestionnaireOutcome = ExtensionQuestionnaireOutcome | ExtensionQuestionnaireOutcomeV2;
+
+export interface QuestionnairePresentationLimitation {
+	mode: "v1-projection";
+	unavailableFeatures: readonly ["notes", "previews"];
+}
+
+export type QuestionnaireWorkerOutcome = QuestionnaireOutcome extends infer TOutcome
+	? TOutcome extends QuestionnaireOutcome
+		? TOutcome & { presentation?: QuestionnairePresentationLimitation }
+		: never
+	: never;
 
 export interface QuestionnaireWorkerStatus {
 	state: "waiting" | "offered" | "presenting" | undefined;
@@ -35,8 +58,8 @@ export interface QuestionnaireWorkerAuthorityHost {
 
 export interface QuestionnaireWorkerRequestHandle {
 	logicalRequestId: string;
-	request: ExtensionQuestionnaireRequestV1;
-	outcome: Promise<ExtensionQuestionnaireOutcome>;
+	request: QuestionnaireRequest;
+	outcome: Promise<QuestionnaireWorkerOutcome>;
 }
 
 export type QuestionnaireTerminationReason = Extract<ExtensionQuestionnaireOutcome, { status: "terminated" }>["reason"];
@@ -45,7 +68,7 @@ export interface QuestionnaireWorkerMutation {
 	lease: QuestionnaireLease;
 	baseRevision: number;
 	clientMutationId: string;
-	completeDraft: ExtensionQuestionnaireDraftV1;
+	completeDraft: QuestionnaireDraft;
 }
 
 export interface QuestionnaireMutationAck {
@@ -57,13 +80,13 @@ export interface QuestionnaireMutationAck {
 export interface QuestionnairePresentationSnapshot {
 	lease: QuestionnaireLease;
 	authoritativeRevision: number;
-	request: ExtensionQuestionnaireRequestV1;
-	draft: ExtensionQuestionnaireDraftV1;
+	request: QuestionnaireRequest;
+	draft: QuestionnaireDraft;
 }
 
 export type QuestionnaireWorkerMutationResult =
 	| { status: "ack"; ack: QuestionnaireMutationAck }
-	| { status: "terminal"; outcome: ExtensionQuestionnaireOutcome }
+	| { status: "terminal"; outcome: QuestionnaireWorkerOutcome }
 	| {
 			status: "conflict";
 			authoritativeRevision: number;
@@ -97,8 +120,8 @@ interface PendingOffer {
 interface RequestRecord {
 	activeSessionId: string;
 	logicalRequestId: string;
-	request: ExtensionQuestionnaireRequestV1;
-	draft: ExtensionQuestionnaireDraftV1;
+	request: QuestionnaireRequest;
+	draft: QuestionnaireDraft;
 	authoritativeRevision: number;
 	draftHash: string;
 	mode: QuestionnaireRequestMode;
@@ -108,7 +131,8 @@ interface RequestRecord {
 	pendingOffer?: PendingOffer;
 	lease?: QuestionnaireLease;
 	ledger: Map<string, MutationLedgerEntry>;
-	resolveOutcome(outcome: ExtensionQuestionnaireOutcome): void;
+	presentationLimitation?: QuestionnairePresentationLimitation;
+	resolveOutcome(outcome: QuestionnaireWorkerOutcome): void;
 	signal?: AbortSignal;
 	abortHandler?: () => void;
 	legacyAdapter?: QuestionnaireLegacyAdapter;
@@ -116,7 +140,7 @@ interface RequestRecord {
 }
 
 interface TerminalTombstone {
-	request: ExtensionQuestionnaireRequestV1;
+	request: QuestionnaireRequest;
 	ledger: Map<string, MutationLedgerEntry>;
 }
 
@@ -128,7 +152,9 @@ function hashCanonical(value: unknown): string {
 	return createHash("sha256").update(canonicalQuestionnaireJsonBytes(value)).digest("hex");
 }
 
-function initialState(question: ExtensionQuestionnaireQuestion): ExtensionQuestionnaireDraftQuestionState {
+function initialState(
+	question: ExtensionQuestionnaireQuestion | ExtensionQuestionnaireQuestionV2,
+): ExtensionQuestionnaireDraftQuestionState {
 	switch (question.kind) {
 		case "confirm":
 			return {
@@ -167,16 +193,21 @@ function initialState(question: ExtensionQuestionnaireQuestion): ExtensionQuesti
 
 export function createInitialQuestionnaireDraft(
 	request: ExtensionQuestionnaireRequestV1,
-): ExtensionQuestionnaireDraftV1 {
+): ExtensionQuestionnaireDraftV1;
+export function createInitialQuestionnaireDraft(
+	request: ExtensionQuestionnaireRequestV2,
+): ExtensionQuestionnaireDraftV2;
+export function createInitialQuestionnaireDraft(request: QuestionnaireRequest): QuestionnaireDraft;
+export function createInitialQuestionnaireDraft(request: QuestionnaireRequest): QuestionnaireDraft {
 	return {
-		version: 1,
+		version: request.version,
 		currentStep: { kind: "question", questionId: request.questions[0]!.id },
-		states: request.questions.map(initialState),
-	};
+		states: request.questions.map((question) => initialState(question)),
+	} as QuestionnaireDraft;
 }
 
 function responseFor(
-	question: ExtensionQuestionnaireQuestion,
+	question: ExtensionQuestionnaireQuestion | ExtensionQuestionnaireQuestionV2,
 	state: ExtensionQuestionnaireDraftQuestionState,
 ): ExtensionQuestionnaireResponse {
 	if (question.id !== state.questionId || question.kind !== state.kind) {
@@ -230,8 +261,22 @@ function responseFor(
 export function deriveQuestionnaireResponses(
 	request: ExtensionQuestionnaireRequestV1,
 	draft: ExtensionQuestionnaireDraftV1,
-): ExtensionQuestionnaireResponse[] {
-	return request.questions.map((question, index) => responseFor(question, draft.states[index]!));
+): ExtensionQuestionnaireResponse[];
+export function deriveQuestionnaireResponses(
+	request: ExtensionQuestionnaireRequestV2,
+	draft: ExtensionQuestionnaireDraftV2,
+): ExtensionQuestionnaireResponseV2[];
+export function deriveQuestionnaireResponses(
+	request: QuestionnaireRequest,
+	draft: QuestionnaireDraft,
+): ExtensionQuestionnaireResponse[] | ExtensionQuestionnaireResponseV2[] {
+	return request.questions.map((question, index) => {
+		const state = draft.states[index]!;
+		const response = responseFor(question, state);
+		return request.version === 2 && "note" in state && state.note !== undefined
+			? { ...response, note: state.note }
+			: response;
+	});
 }
 
 function sameLease(left: QuestionnaireLease, right: QuestionnaireLease): boolean {
@@ -242,7 +287,8 @@ function sameLease(left: QuestionnaireLease, right: QuestionnaireLease): boolean
 		left.leaseEpoch === right.leaseEpoch &&
 		left.logicalClientId === right.logicalClientId &&
 		left.connectionId === right.connectionId &&
-		left.mode === right.mode
+		left.mode === right.mode &&
+		left.questionnaireVersion === right.questionnaireVersion
 	);
 }
 
@@ -268,15 +314,18 @@ export class QuestionnaireWorkerAuthority {
 
 	request(
 		activeSessionId: string,
-		requestValue: ExtensionQuestionnaireRequestV1,
+		requestValue: QuestionnaireRequest,
 		options?: ExtensionQuestionnaireOptions,
 	): QuestionnaireWorkerRequestHandle {
-		const request = normalizeExtensionQuestionnaireRequest(requestValue);
+		const request =
+			requestValue.version === 2
+				? normalizeExtensionQuestionnaireRequestV2(requestValue)
+				: normalizeExtensionQuestionnaireRequest(requestValue);
 		const draft = createInitialQuestionnaireDraft(request);
 		assertQuestionnaireEnvelopeBudget(draft);
 		const logicalRequestId = this.host.createId();
-		let resolveOutcome: (outcome: ExtensionQuestionnaireOutcome) => void = () => {};
-		const outcome = new Promise<ExtensionQuestionnaireOutcome>((resolve) => {
+		let resolveOutcome: (outcome: QuestionnaireWorkerOutcome) => void = () => {};
+		const outcome = new Promise<QuestionnaireWorkerOutcome>((resolve) => {
 			resolveOutcome = resolve;
 		});
 		const record: RequestRecord = {
@@ -357,7 +406,12 @@ export class QuestionnaireWorkerAuthority {
 		if (!record?.pendingOffer || !offerMatches(record.pendingOffer, offer)) return;
 		record.pendingOffer = undefined;
 		if (result.status === "accepted") {
-			if (record.mode !== "undecided" && record.mode !== result.lease.mode) {
+			const expectedVersion = record.request.version;
+			if (
+				(result.lease.questionnaireVersion ?? 1) !== expectedVersion ||
+				(expectedVersion === 2 && result.lease.mode !== "rich") ||
+				(record.mode !== "undecided" && record.mode !== result.lease.mode)
+			) {
 				record.state = "waiting-for-presenter";
 				this.host.sendBrokerMessage({ type: "withdraw", lease: result.lease });
 				this.pump(record.activeSessionId);
@@ -368,6 +422,9 @@ export class QuestionnaireWorkerAuthority {
 			record.state = result.lease.mode === "rich" ? "presenting-rich" : "presenting-legacy";
 			this.publishStatus(record.activeSessionId);
 			if (result.lease.mode === "legacy") {
+				if (record.request.version !== 1 || record.draft.version !== 1) {
+					throw new Error("Questionnaire v2 cannot use a legacy presenter");
+				}
 				record.legacyAdapter ??= new QuestionnaireLegacyAdapter(record.request, record.draft);
 				this.advanceLegacy(record, record.legacyAdapter.start());
 			}
@@ -394,7 +451,7 @@ export class QuestionnaireWorkerAuthority {
 		if (!record?.lease || record.lease.mode !== "rich" || !sameLease(record.lease, lease)) {
 			return { status: "stale-lease" };
 		}
-		const outcome: ExtensionQuestionnaireOutcome = { status: "dismissed" };
+		const outcome = this.effectiveOutcome(record, { status: "dismissed" });
 		this.finish(record, outcome, false);
 		return { status: "terminal", outcome };
 	}
@@ -449,8 +506,16 @@ export class QuestionnaireWorkerAuthority {
 
 	private advanceLegacy(record: RequestRecord, action: QuestionnaireLegacyAdapterAction): void {
 		const adapter = record.legacyAdapter;
-		if (!adapter || !record.lease || record.lease.mode !== "legacy") return;
-		const draft = normalizeExtensionQuestionnaireDraftForValidatedRequest(record.request, adapter.draft);
+		if (
+			!adapter ||
+			!record.lease ||
+			record.lease.mode !== "legacy" ||
+			record.request.version !== 1 ||
+			record.draft.version !== 1
+		)
+			return;
+		const request = record.request;
+		const draft = normalizeExtensionQuestionnaireDraftForValidatedRequest(request, adapter.draft);
 		assertQuestionnaireEnvelopeBudget(draft);
 		const draftHash = hashCanonical(draft);
 		if (draftHash !== record.draftHash) {
@@ -459,11 +524,7 @@ export class QuestionnaireWorkerAuthority {
 			record.authoritativeRevision++;
 		}
 		if (action.status === "submitted") {
-			this.finish(
-				record,
-				{ status: "submitted", responses: deriveQuestionnaireResponses(record.request, record.draft) },
-				false,
-			);
+			this.finish(record, { status: "submitted", responses: deriveQuestionnaireResponses(request, draft) }, false);
 			return;
 		}
 		if (action.status === "indeterminate") {
@@ -490,7 +551,14 @@ export class QuestionnaireWorkerAuthority {
 		const tombstone = this.tombstones.get(mutation.lease.logicalRequestId);
 		const request = record?.request ?? tombstone?.request;
 		if (!request) return { status: "stale-lease" };
-		const draft = normalizeExtensionQuestionnaireDraftForValidatedRequest(request, mutation.completeDraft);
+		if (request.version !== mutation.completeDraft.version) return { status: "stale-lease" };
+		const draft =
+			request.version === 2 && mutation.completeDraft.version === 2
+				? normalizeExtensionQuestionnaireDraftV2(request, mutation.completeDraft)
+				: normalizeExtensionQuestionnaireDraftForValidatedRequest(
+						request as ExtensionQuestionnaireRequestV1,
+						mutation.completeDraft as ExtensionQuestionnaireDraftV1,
+					);
 		assertQuestionnaireEnvelopeBudget(draft);
 		const payloadHash = hashCanonical(draft);
 		const ledger = record?.ledger ?? tombstone!.ledger;
@@ -531,10 +599,14 @@ export class QuestionnaireWorkerAuthority {
 			});
 			return result;
 		}
-		const outcome: ExtensionQuestionnaireOutcome = {
-			status: "submitted",
-			responses: deriveQuestionnaireResponses(request, draft),
-		};
+		const responses =
+			request.version === 2 && draft.version === 2
+				? deriveQuestionnaireResponses(request, draft)
+				: deriveQuestionnaireResponses(
+						request as ExtensionQuestionnaireRequestV1,
+						draft as ExtensionQuestionnaireDraftV1,
+					);
+		const outcome = this.effectiveOutcome(record, { status: "submitted", responses });
 		const result: QuestionnaireWorkerMutationResult = { status: "terminal", outcome };
 		record.ledger.set(mutation.clientMutationId, {
 			operationKind,
@@ -567,9 +639,24 @@ export class QuestionnaireWorkerAuthority {
 			this.publishStatus(activeSessionId);
 			return;
 		}
-		const eligible = this.host.uiClients.clients().some((client) => {
-			if (client.activeSessionId !== activeSessionId || !client.presentable) return false;
-			if (!client.capabilities.includes("extension_ui")) return false;
+		const clients = this.host.uiClients.clients();
+		const attached = clients.filter(
+			(client) => client.activeSessionId === activeSessionId && client.capabilities.includes("extension_ui"),
+		);
+		const available = attached.filter((client) => client.presentable);
+		const hasV2Attached = attached.some((client) => client.capabilities.includes("questionnaire_v2"));
+		if (head.request.version === 2 && head.authoritativeRevision === 0 && !hasV2Attached && available.length > 0) {
+			const projected = projectExtensionQuestionnaireRequestV2ToV1(head.request);
+			head.request = projected;
+			head.draft = createInitialQuestionnaireDraft(projected);
+			head.draftHash = hashCanonical(head.draft);
+			head.presentationLimitation = {
+				mode: "v1-projection",
+				unavailableFeatures: ["notes", "previews"],
+			};
+		}
+		const eligible = available.some((client) => {
+			if (head.request.version === 2) return client.capabilities.includes("questionnaire_v2");
 			return head.mode !== "rich" || client.capabilities.includes("questionnaire_v1");
 		});
 		if (!eligible) {
@@ -593,6 +680,7 @@ export class QuestionnaireWorkerAuthority {
 				activeSessionId,
 				createdAt: head.createdAt,
 				mode: head.mode,
+				...(head.request.version === 2 ? { questionnaireVersion: 2 as const } : {}),
 			},
 		});
 		if (!sent) {
@@ -616,14 +704,18 @@ export class QuestionnaireWorkerAuthority {
 		this.finish(record, { status: "aborted", reason: "signal" }, false);
 	}
 
-	private finish(record: RequestRecord, outcome: ExtensionQuestionnaireOutcome, retainTombstone: boolean): void {
+	private effectiveOutcome(record: RequestRecord, outcome: QuestionnaireOutcome): QuestionnaireWorkerOutcome {
+		return record.presentationLimitation ? { ...outcome, presentation: record.presentationLimitation } : outcome;
+	}
+
+	private finish(record: RequestRecord, outcome: QuestionnaireOutcome, retainTombstone: boolean): void {
 		if (!this.requests.delete(record.logicalRequestId)) return;
 		record.signal?.removeEventListener("abort", record.abortHandler!);
 		if (retainTombstone) {
 			this.tombstones.set(record.logicalRequestId, { request: record.request, ledger: record.ledger });
 		}
 		if (record.lease) this.host.sendBrokerMessage({ type: "withdraw", lease: record.lease });
-		record.resolveOutcome(clone(outcome));
+		record.resolveOutcome(clone(this.effectiveOutcome(record, outcome)));
 		const queue = this.queues.get(record.activeSessionId);
 		if (queue) {
 			const index = queue.indexOf(record);

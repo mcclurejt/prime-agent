@@ -74,6 +74,22 @@ function acceptedLease(offers: Array<{ connectionId: string; lease: unknown }>, 
 afterEach(() => vi.useRealTimers());
 
 describe("QuestionnaireBroker", () => {
+	it("keeps v2 requests queued until a v2 presenter is available", () => {
+		const { broker, offers } = harness();
+		broker.synchronizePresenters([presenter("legacy", "session-a", ["extension_ui"]), presenter("v1", "session-a")]);
+		broker.offer(need("worker-a", "session-a", 1, { questionnaireVersion: 2 }));
+		expect(offers).toEqual([]);
+		expect(broker.debugContentFreeState().queued).toBe(1);
+
+		broker.synchronizePresenters([
+			presenter("v1", "session-a"),
+			presenter("v2", "session-a", ["extension_ui", "questionnaire_v1", "questionnaire_v2"]),
+		]);
+		expect(offers).toHaveLength(1);
+		expect(offers[0]!.connectionId).toBe("v2");
+		expect(acceptedLease(offers)).toMatchObject({ mode: "rich", questionnaireVersion: 2 });
+	});
+
 	it("prefers rich presenters and targets exactly one immutable connection", () => {
 		const { broker, offers } = harness();
 		broker.synchronizePresenters([

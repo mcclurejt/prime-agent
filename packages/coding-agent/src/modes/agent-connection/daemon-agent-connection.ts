@@ -369,6 +369,9 @@ export class DaemonAgentConnection implements AgentConnection {
 				...(supportsExtensionUi && this.client.supportsServerCapability("questionnaire_v1")
 					? (["questionnaire_v1"] as const)
 					: []),
+				...(supportsExtensionUi && this.client.supportsServerCapability("questionnaire_v2")
+					? (["questionnaire_v2"] as const)
+					: []),
 				"slim_attach",
 				"chunked_snapshot",
 				...(this.options.ownedSession ? (["client_owned_sessions"] as const) : []),
@@ -1203,6 +1206,9 @@ export class DaemonAgentConnection implements AgentConnection {
 					...(supportsExtensionUi ? (["extension_ui"] as const) : []),
 					...(supportsExtensionUi && this.client.supportsServerCapability("questionnaire_v1")
 						? (["questionnaire_v1"] as const)
+						: []),
+					...(supportsExtensionUi && this.client.supportsServerCapability("questionnaire_v2")
+						? (["questionnaire_v2"] as const)
 						: []),
 					"slim_attach",
 					"chunked_snapshot",

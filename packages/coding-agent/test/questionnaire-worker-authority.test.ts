@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ExtensionQuestionnaireDraftV1 } from "../src/core/extensions/types.js";
+import type { ExtensionQuestionnaireDraftV1, ExtensionQuestionnaireDraftV2 } from "../src/core/extensions/types.js";
 import type { WorkerQuestionnaireBrokerMessage } from "../src/modes/daemon/daemon-worker-protocol.js";
 import { WorkerUiClientsMirror } from "../src/modes/daemon/daemon-worker-ui-clients.js";
 import {
@@ -156,6 +156,7 @@ function acceptLatest(
 		logicalClientId: "logical-connection-a",
 		connectionId: "connection-a",
 		mode,
+		...(need.need.questionnaireVersion === 2 ? { questionnaireVersion: 2 as const } : {}),
 	};
 	authority.handleOfferResult({ status: "accepted", lease });
 	return lease;
@@ -171,6 +172,147 @@ function mutation(
 }
 
 describe("QuestionnaireWorkerAuthority", () => {
+	it("waits for an attached but temporarily non-presentable v2 presenter instead of projecting", () => {
+		const { authority, mirror, messages } = harness();
+		mirror.applySync({
+			supervisorGeneration: "generation-a",
+			syncRevision: 1,
+			clients: [
+				{
+					logicalClientId: "logical-v1",
+					connectionId: "connection-v1",
+					activeSessionId: "session-a",
+					capabilities: ["extension_ui", "questionnaire_v1"],
+					presentable: true,
+				},
+				{
+					logicalClientId: "logical-v2",
+					connectionId: "connection-v2",
+					activeSessionId: "session-a",
+					capabilities: ["extension_ui", "questionnaire_v1", "questionnaire_v2"],
+					presentable: false,
+				},
+			],
+			complete: true,
+		});
+		authority.request("session-a", {
+			version: 2,
+			questions: [{ id: "q", kind: "short-text", prompt: "Decision", context: "Must remain rich" }],
+		});
+		expect(messages).toEqual([]);
+		expect(authority.status("session-a")).toEqual({ state: "waiting", queueDepth: 1 });
+
+		mirror.applyDelta({
+			supervisorGeneration: "generation-a",
+			syncRevision: 2,
+			change: {
+				type: "upsert",
+				client: {
+					logicalClientId: "logical-v2",
+					connectionId: "connection-v2",
+					activeSessionId: "session-a",
+					capabilities: ["extension_ui", "questionnaire_v1", "questionnaire_v2"],
+					presentable: true,
+				},
+			},
+		});
+		authority.handleUiClientsChanged();
+		expect(messages.at(-1)).toMatchObject({ type: "presenter_needed", need: { questionnaireVersion: 2 } });
+	});
+
+	it("projects v2 to v1 before interaction when only a v1 presenter is available", async () => {
+		const { authority, mirror, messages } = harness();
+		syncRich(mirror);
+		const pending = authority.request("session-a", {
+			version: 2,
+			questions: [
+				{
+					id: "q",
+					kind: "single-select",
+					prompt: "Choose",
+					context: "Rich context",
+					choices: [
+						{
+							id: "a",
+							label: "A",
+							detail: "Rich detail",
+							preview: { markdown: "diagram", alt: "plain preview" },
+						},
+					],
+				},
+			],
+		});
+		expect(messages.at(-1)).toMatchObject({ type: "presenter_needed", need: { mode: "undecided" } });
+		expect(messages.at(-1)).not.toMatchObject({ need: { questionnaireVersion: 2 } });
+		const lease = acceptLatest(authority, messages);
+		const snapshot = authority.presentationSnapshot(lease.logicalRequestId);
+		expect(snapshot?.request.version).toBe(1);
+		const projectedQuestion = snapshot?.request.questions[0] as unknown as Record<string, unknown>;
+		expect(projectedQuestion).not.toHaveProperty("context");
+		expect(projectedQuestion).not.toHaveProperty("recommendation");
+		expect(JSON.stringify(snapshot?.request)).toContain("plain preview");
+		expect(JSON.stringify(snapshot?.request)).not.toMatch(/"detail"|"preview"|"markdown"/u);
+		const terminal = authority.submit({
+			lease,
+			baseRevision: 0,
+			clientMutationId: "projected-submit",
+			completeDraft: snapshot!.draft,
+		});
+		expect(terminal).toMatchObject({
+			status: "terminal",
+			outcome: {
+				presentation: {
+					mode: "v1-projection",
+					unavailableFeatures: ["notes", "previews"],
+				},
+			},
+		});
+		await expect(pending.outcome).resolves.toMatchObject({
+			presentation: { mode: "v1-projection", unavailableFeatures: ["notes", "previews"] },
+		});
+	});
+
+	it("never downgrades an authoritative v2 draft after a presenter loss", () => {
+		const { authority, mirror, messages } = harness();
+		mirror.applySync({
+			supervisorGeneration: "generation-a",
+			syncRevision: 1,
+			clients: [
+				{
+					logicalClientId: "logical-connection-a",
+					connectionId: "connection-a",
+					activeSessionId: "session-a",
+					capabilities: ["extension_ui", "questionnaire_v1", "questionnaire_v2"],
+					presentable: true,
+				},
+			],
+			complete: true,
+		});
+		const requestV2 = {
+			version: 2 as const,
+			questions: [{ id: "q", kind: "short-text" as const, prompt: "Decision", context: "Private context" }],
+		};
+		authority.request("session-a", requestV2);
+		expect(messages.at(-1)).toMatchObject({ type: "presenter_needed", need: { questionnaireVersion: 2 } });
+		const lease = acceptLatest(authority, messages);
+		const draft: ExtensionQuestionnaireDraftV2 = {
+			version: 2,
+			currentStep: { kind: "review" },
+			states: [{ questionId: "q", kind: "short-text", value: "answer", note: "must survive" }],
+		};
+		expect(
+			authority.checkpoint({ lease, baseRevision: 0, clientMutationId: "v2-edit", completeDraft: draft }),
+		).toMatchObject({ status: "ack" });
+		authority.handleLeaseRevoked(lease);
+		expect(messages.at(-1)).toMatchObject({ type: "presenter_needed", need: { questionnaireVersion: 2 } });
+		const before = messages.length;
+		syncRich(mirror, "generation-a", 2);
+		authority.handleUiClientsChanged();
+		expect(messages).toHaveLength(before);
+		expect(authority.presentationSnapshot(lease.logicalRequestId)).toBeUndefined();
+		expect(JSON.stringify(messages)).not.toContain("must survive");
+	});
+
 	it("waits for a complete broker barrier and exposes only the FIFO session head", () => {
 		const { authority, mirror, messages, statuses } = harness();
 		const first = authority.request("session-a", request);

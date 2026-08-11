@@ -3,7 +3,9 @@ import type {
 	ExtensionCommandContextActions,
 	ExtensionQuestionnaireOptions,
 	ExtensionQuestionnaireOutcome,
+	ExtensionQuestionnaireOutcomeV2,
 	ExtensionQuestionnaireRequestV1,
+	ExtensionQuestionnaireRequestV2,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
@@ -28,9 +30,9 @@ export interface ActiveSessionBindingCallbacks {
 	shutdown: () => void;
 	questionnaire: (
 		state: ActiveSessionState,
-		request: ExtensionQuestionnaireRequestV1,
+		request: ExtensionQuestionnaireRequestV1 | ExtensionQuestionnaireRequestV2,
 		options?: ExtensionQuestionnaireOptions,
-	) => Promise<ExtensionQuestionnaireOutcome>;
+	) => Promise<ExtensionQuestionnaireOutcome | ExtensionQuestionnaireOutcomeV2>;
 	terminateQuestionnaires: (
 		state: ActiveSessionState,
 		reason: Extract<ExtensionQuestionnaireOutcome, { status: "terminated" }>["reason"],

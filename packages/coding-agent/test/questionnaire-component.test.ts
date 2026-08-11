@@ -12,7 +12,11 @@ import {
 	canonicalQuestionnaireJsonBytes,
 	QUESTIONNAIRE_ENVELOPE_MAX_BYTES,
 } from "../src/core/extensions/questionnaire.js";
-import type { ExtensionQuestionnaireRequestV1 } from "../src/core/extensions/types.js";
+import type {
+	ExtensionQuestionnaireDraftV2,
+	ExtensionQuestionnaireRequestV1,
+	ExtensionQuestionnaireRequestV2,
+} from "../src/core/extensions/types.js";
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import { QuestionnaireComponent, QuestionnaireDraftModel } from "../src/modes/interactive/components/questionnaire.js";
 import { InteractiveQuestionnaireHost } from "../src/modes/interactive/questionnaire-host.js";
@@ -821,6 +825,427 @@ describe("QuestionnaireComponent", () => {
 		component.handleInput("X");
 		expect(component.model.getText("short")).toBe("authoritativeX");
 		expect(onDraftChange).toHaveBeenCalledOnce();
+	});
+	it("keeps preview actions safe on v1/v2 Other rows and avoids empty wide preview panes", () => {
+		for (const version of [1, 2] as const) {
+			const tui = createFakeTui(24);
+			const component = new QuestionnaireComponent({
+				tui,
+				keybindings: new KeybindingsManager(),
+				request:
+					version === 1
+						? {
+								version,
+								questions: [
+									{
+										id: "q",
+										kind: "single-select",
+										prompt: "Pick",
+										choices: [{ id: "a", label: "A" }],
+										other: {},
+									},
+								],
+							}
+						: {
+								version,
+								questions: [
+									{ id: "q", kind: "single-select", prompt: "Pick", choices: [{ id: "a", label: "A" }] },
+								],
+							},
+				getRows: () => tui.terminal.rows,
+				requestRender: tui.requestRender,
+				onSubmit: vi.fn(),
+				onDismiss: vi.fn(),
+			});
+			expect(stripAnsi(component.render(140).join("\n"))).not.toContain("No preview for active choice");
+			component.handleInput("\x1b[B");
+			expect(() => component.handleInput("p")).not.toThrow();
+		}
+	});
+
+	it("keeps v2 multiline paging usable and refuses invisible note editing on Review", () => {
+		const tui = createFakeTui(24);
+		const submit = vi.fn();
+		const component = new QuestionnaireComponent({
+			tui,
+			keybindings: new KeybindingsManager(),
+			request: { version: 2, questions: [{ id: "text", kind: "multiline-text", prompt: "Explain" }] },
+			getRows: () => tui.terminal.rows,
+			requestRender: tui.requestRender,
+			onSubmit: submit,
+			onDismiss: vi.fn(),
+		});
+		component.handleInput("n");
+		expect(component.model.getText("text")).toBe("n");
+		component.handleInput("\t");
+		expect(component.model.currentStep).toEqual({ kind: "review" });
+		component.handleInput("n");
+		expect(component.isNoteEditorOpen).toBe(false);
+		component.handleInput("\x1b[C");
+		component.handleInput("\r");
+		expect(submit).toHaveBeenCalledOnce();
+	});
+
+	it("clips fenced context/detail code and changes previews with the cursor without selecting", () => {
+		const tui = createFakeTui(24);
+		const component = new QuestionnaireComponent({
+			tui,
+			keybindings: new KeybindingsManager(),
+			request: {
+				version: 2,
+				questions: [
+					{
+						id: "q",
+						kind: "single-select",
+						prompt: "Pick",
+						context: `\`\`\`text\n${"C".repeat(100)}\n\`\`\``,
+						choices: [
+							{
+								id: "a",
+								label: "A",
+								detail: `\`\`\`text\n${"D".repeat(100)}\n\`\`\``,
+								preview: { markdown: "first", alt: "first alt" },
+							},
+							{ id: "b", label: "B", preview: { markdown: "second", alt: "second alt" } },
+						],
+					},
+				],
+			},
+			getRows: () => tui.terminal.rows,
+			requestRender: tui.requestRender,
+			onSubmit: vi.fn(),
+			onDismiss: vi.fn(),
+		});
+		let output = stripAnsi(component.render(140).join("\n"));
+		expect(output).toContain("[horizontal content clipped]");
+		expect(output).toContain("first");
+		component.handleInput("\x1b[B");
+		output = stripAnsi(component.render(140).join("\n"));
+		expect(output).toContain("second");
+		expect(component.model.responses()[0]).toEqual({ questionId: "q", status: "unanswered" });
+	});
+
+	it("keeps confirm and multi Other typed, additive, and textually accessible without color", () => {
+		const tui = createFakeTui(24);
+		const component = new QuestionnaireComponent({
+			tui,
+			keybindings: new KeybindingsManager(),
+			request: {
+				version: 2,
+				questions: [
+					{ id: "confirm", kind: "confirm", prompt: "Confirm?", recommendation: { rationale: "Preferred" } },
+					{ id: "multi", kind: "multi-select", prompt: "Select", choices: [{ id: "a", label: "A" }] },
+				],
+			},
+			getRows: () => tui.terminal.rows,
+			requestRender: tui.requestRender,
+			onSubmit: vi.fn(),
+			onDismiss: vi.fn(),
+		});
+		const output = stripAnsi(component.render(80).join("\n"));
+		expect(output).toContain("Recommended");
+		expect(output).toContain("Something else");
+		component.handleInput("\x1b[B");
+		component.handleInput("\x1b[B");
+		component.handleInput("\r");
+		component.handleInput("custom confirm");
+		component.handleInput("\r");
+		component.handleInput("\t");
+		component.handleInput(" ");
+		component.handleInput("\x1b[B");
+		component.handleInput(" ");
+		component.handleInput("custom multi");
+		component.handleInput("\r");
+		expect(component.model.responses()).toEqual([
+			{ questionId: "confirm", status: "answered", kind: "confirm", otherText: "custom confirm" },
+			{ questionId: "multi", status: "answered", kind: "multi-select", choiceIds: ["a"], otherText: "custom multi" },
+		]);
+	});
+
+	it("keeps fixed-size monochrome fixtures for multi-select notes and Review unanswered warnings", () => {
+		const tui = createFakeTui(24);
+		const component = new QuestionnaireComponent({
+			tui,
+			keybindings: new KeybindingsManager(),
+			request: {
+				version: 2,
+				title: "Release choices",
+				questions: [
+					{
+						id: "regions",
+						label: "Regions",
+						kind: "multi-select",
+						prompt: "Where should this ship?",
+						choices: [
+							{ id: "east", label: "East" },
+							{ id: "west", label: "West" },
+						],
+					},
+					{ id: "approval", label: "Approval", kind: "confirm", prompt: "Approve the release?" },
+				],
+			},
+			getRows: () => tui.terminal.rows,
+			requestRender: tui.requestRender,
+			onSubmit: vi.fn(),
+			onDismiss: vi.fn(),
+		});
+
+		component.handleInput(" ");
+		component.handleInput("\x1b[B");
+		component.handleInput("\x1b[B");
+		component.handleInput(" ");
+		component.handleInput("custom region");
+		component.handleInput("\r");
+		component.handleInput("n");
+		component.handleInput("needs audit trail");
+		component.handleInput("\x1b");
+
+		const previousNoColor = process.env.NO_COLOR;
+		process.env.NO_COLOR = "1";
+		try {
+			const multiFrame = component
+				.render(80)
+				.map((line) => line.trimEnd())
+				.join("\n");
+			expect(multiFrame).not.toContain("\x1b[");
+			expect(multiFrame).toMatchInlineSnapshot(`
+				"  Release choices
+				  [▶ Regions]  [  Approval]  [  Review / Submit]
+
+				  Where should this ship?
+
+				    ☑ East
+				    ☐ West
+				  ▶ ☑ custom region
+
+				  Notes
+				  needs audit trail
+
+				  ↑/↓ move · Space/Enter toggle · Shift+Tab/Tab previous/next ·
+				  PageUp/PageDown scroll · Esc dismiss · N notes · P preview
+				  523,939 aggregate bytes remaining"
+			`);
+
+			component.handleInput("\t");
+			component.handleInput("\t");
+			const reviewFrame = component
+				.render(80)
+				.map((line) => line.trimEnd())
+				.join("\n");
+			expect(reviewFrame).not.toContain("\x1b[");
+			expect(reviewFrame).toContain("Unanswered");
+			expect(reviewFrame).toMatchInlineSnapshot(`
+				"  Release choices
+				  [✓ Regions]  [  Approval]  [▶ Review / Submit]
+
+				  ▶ Regions
+				      East, custom region
+				      Note: needs audit trail
+
+				    Approval
+				      Unanswered
+
+				  ▶ [ Edit Regions ]     [ Submit ]
+
+				  Shift+Tab/Tab Edit/Submit · ↑/↓ answer · Enter choose · PageUp/PageDown
+				  scroll · Esc dismiss
+				  523,939 aggregate bytes remaining"
+			`);
+		} finally {
+			if (previousNoColor === undefined) delete process.env.NO_COLOR;
+			else process.env.NO_COLOR = previousNoColor;
+		}
+	});
+
+	it("renders v2 decision context, recommendation, Markdown detail, and responsive previews without selecting", () => {
+		const tui = createFakeTui(24);
+		const richRequest: ExtensionQuestionnaireRequestV2 = {
+			version: 2,
+			title: "Deployment decision",
+			questions: [
+				{
+					id: "strategy",
+					label: "Strategy",
+					kind: "single-select",
+					prompt: "Choose a rollout",
+					context: "Use **staged delivery** because risk is elevated.",
+					recommendation: { choiceId: "canary", rationale: "Limits the initial **blast radius**." },
+					choices: [
+						{
+							id: "canary",
+							label: "Canary",
+							description: "Plain *description* stays literal.",
+							detail: "- Observe metrics\n- Expand gradually",
+							preview: {
+								title: "Traffic",
+								markdown:
+									"```text\nusers -> canary -> stable\nthis-line-is-deliberately-too-long-for-the-preview-panel-to-fit-without-clipping\n```",
+								alt: "Traffic moves through canary before stable.",
+							},
+						},
+						{ id: "direct", label: "Direct" },
+					],
+				},
+			],
+		};
+		const component = new QuestionnaireComponent({
+			tui,
+			keybindings: new KeybindingsManager(),
+			request: richRequest,
+			getRows: () => tui.terminal.rows,
+			requestRender: tui.requestRender,
+			onSubmit: vi.fn(),
+			onDismiss: vi.fn(),
+		});
+
+		const wide = stripAnsi(component.render(140).join("\n"));
+		expect(
+			wide
+				.split("\n")
+				.map((line) => line.trimEnd())
+				.join("\n"),
+		).toMatchInlineSnapshot(`
+			"  Deployment decision
+			  [▶ Strategy]  [  Review / Submit]
+
+			  Choose a rollout                                          Example · Traffic
+			                                                            users -> canary -> stable
+			  Why I’m asking                                            this-line-is-deliberately-too-long-for-the-previe [horizontal content clipped]
+			  Use staged delivery because risk is elevated.             Diagram description: Traffic moves through canary before stable.
+
+			  Recommendation · Recommended
+			  Limits the initial blast radius.
+
+			  ▶ ○ Canary [Recommended]
+			        Plain *description* stays literal.
+			        - Observe metrics
+			        - Expand gradually
+			    ○ Direct
+			    ○ Something else…
+
+			  Notes
+			  Press N to add a note
+
+			  ↑/↓ move · Enter select · Shift+Tab/Tab previous/next · PageUp/PageDown scroll · Esc dismiss · N notes · P preview
+			  524,101 aggregate bytes remaining"
+		`);
+		expect(wide).toContain("Why I’m asking");
+		expect(wide).toContain("Recommendation · Recommended");
+		expect(wide).toContain("Observe metrics");
+		expect(wide).toContain("Example · Traffic");
+		expect(wide).toContain("[horizontal content clipped]");
+		expect(wide).toContain("Diagram description: Traffic moves through canary before stable.");
+		expect(wide).toContain("Plain *description* stays literal.");
+		expect(component.model.responses()[0]).toEqual({ questionId: "strategy", status: "unanswered" });
+
+		(tui.terminal as { rows: number }).rows = 17;
+		const heightConstrained = stripAnsi(component.render(140).join("\n"));
+		expect(heightConstrained).toContain("Preview available");
+		expect(heightConstrained).not.toContain("users -> canary");
+		(tui.terminal as { rows: number }).rows = 24;
+
+		let narrow = stripAnsi(component.render(90).join("\n"));
+		expect(
+			narrow
+				.split("\n")
+				.map((line) => line.trimEnd())
+				.join("\n"),
+		).toMatchInlineSnapshot(`
+			"  Deployment decision
+			  [▶ Strategy]  [  Review / Submit]
+
+			  ↑ 1 more
+
+			  Why I’m asking
+			  Use staged delivery because risk is elevated.
+
+			  Recommendation · Recommended
+			  Limits the initial blast radius.
+
+			  ▶ ○ Canary [Recommended]
+			        Plain *description* stays literal.
+			        - Observe metrics
+			        - Expand gradually
+			        Preview available · P expand
+			        Diagram description: Traffic moves through canary before stable.
+			    ○ Direct
+			    ○ Something else…
+			  ↓ 3 more
+
+			  ↑/↓ move · Enter select · Shift+Tab/Tab previous/next · PageUp/PageDown scroll · Esc
+			  dismiss · N notes · P preview
+			  524,101 aggregate bytes remaining"
+		`);
+		expect(narrow).toContain("Preview available");
+		expect(narrow).not.toContain("users -> canary");
+		component.handleInput("n");
+		expect(component.isNoteEditorOpen).toBe(true);
+		component.handleInput("\x1b");
+		component.handleInput("p");
+		narrow = stripAnsi(component.render(90).join("\n"));
+		expect(narrow).toContain("users -> canary");
+	});
+
+	it("gives v2 answer editors literal note-key precedence and a distinct focus action for notes", () => {
+		const tui = createFakeTui(24);
+		const component = new QuestionnaireComponent({
+			tui,
+			keybindings: new KeybindingsManager(),
+			request: { version: 2, questions: [{ id: "text", kind: "short-text", prompt: "Explain" }] },
+			getRows: () => tui.terminal.rows,
+			requestRender: tui.requestRender,
+			onSubmit: vi.fn(),
+			onDismiss: vi.fn(),
+		});
+
+		component.handleInput("n");
+		expect(component.model.getText("text")).toBe("n");
+		expect(component.isNoteEditorOpen).toBe(false);
+		component.handleInput("\x1bn");
+		expect(component.isNoteEditorOpen).toBe(true);
+		component.handleInput("n");
+		expect(component.model.getNote("text")).toBe("n");
+		component.handleInput("\x1b");
+		expect(component.isNoteEditorOpen).toBe(false);
+		expect(component.model.currentStep).toEqual({ kind: "question", questionId: "text" });
+	});
+
+	it("edits v2 notes with configured precedence and returns an unanswered note through review", () => {
+		const tui = createFakeTui(24);
+		const drafts: ExtensionQuestionnaireDraftV2[] = [];
+		const submit = vi.fn();
+		const component = new QuestionnaireComponent({
+			tui,
+			keybindings: new KeybindingsManager({ "app.questionnaire.notes": "ctrl+y" }),
+			request: { version: 2, questions: [{ id: "q", kind: "confirm", prompt: "Proceed?" }] },
+			getRows: () => tui.terminal.rows,
+			requestRender: tui.requestRender,
+			onDraftChange: (draft) => drafts.push(draft as ExtensionQuestionnaireDraftV2),
+			onSubmit: submit,
+			onDismiss: vi.fn(),
+		});
+
+		component.handleInput("n");
+		expect(stripAnsi(component.render(100).join("\n"))).not.toContain("Editing note");
+		component.handleInput("\x19");
+		component.handleInput("keep unanswered");
+		expect(component.model.responses()[0]).toEqual({
+			questionId: "q",
+			status: "unanswered",
+			note: "keep unanswered",
+		});
+		expect(component.model.isEmpty()).toBe(false);
+		component.handleInput("\x1b");
+		expect(stripAnsi(component.render(100).join("\n"))).not.toContain("Discard questionnaire draft?");
+		component.handleInput("\t");
+		expect(stripAnsi(component.render(100).join("\n"))).toContain("Note: keep unanswered");
+		component.handleInput("\x1b[C");
+		component.handleInput("\r");
+		expect(submit).toHaveBeenCalledWith({
+			status: "submitted",
+			responses: [{ questionId: "q", status: "unanswered", note: "keep unanswered" }],
+		});
+		expect(drafts.at(-1)?.states[0]?.note).toBe("keep unanswered");
 	});
 });
 

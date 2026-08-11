@@ -2660,7 +2660,7 @@ describe("DaemonAgentConnection", () => {
 
 	it("waits for the daemon hello before advertising negotiated attach capabilities", async () => {
 		const fakeClient = new FakeDaemonClient();
-		fakeClient.serverCapabilitiesOnHello.push("questionnaire_v1");
+		fakeClient.serverCapabilitiesOnHello.push("questionnaire_v1", "questionnaire_v2");
 		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");
 
 		await connection.attach();
@@ -2668,8 +2668,20 @@ describe("DaemonAgentConnection", () => {
 		expect(fakeClient.waitForHelloCount).toBe(1);
 		expect(fakeClient.requests[0]).toMatchObject({
 			type: "attach",
-			capabilities: expect.arrayContaining(["extension_ui", "questionnaire_v1"]),
+			capabilities: expect.arrayContaining(["extension_ui", "questionnaire_v1", "questionnaire_v2"]),
 		});
+	});
+
+	it("does not advertise questionnaire_v2 to an older v1-only daemon", async () => {
+		const fakeClient = new FakeDaemonClient();
+		fakeClient.serverCapabilitiesOnHello.push("questionnaire_v1");
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");
+
+		await connection.attach();
+
+		const attach = fakeClient.requests[0] as { capabilities?: string[] };
+		expect(attach.capabilities).toContain("questionnaire_v1");
+		expect(attach.capabilities).not.toContain("questionnaire_v2");
 	});
 
 	it("negotiates and translates targeted questionnaire events and mutations", async () => {

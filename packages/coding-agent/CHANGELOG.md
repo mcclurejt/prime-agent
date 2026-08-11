@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Added rich questionnaire context, recommendations, previews, universal custom answers, and per-question notes to the interactive decision wizard.
 - Added the active session name to the top right of the interactive editor.
 - Added typed questionnaire contracts, validation and canonical byte-budget helpers for extensions.
 - Added a responsive interactive questionnaire UI for in-process extensions.

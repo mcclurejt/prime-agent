@@ -1,9 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { OverlayHandle, TUI } from "@earendil-works/pi-tui";
-import type {
-	ExtensionQuestionnaireDraftQuestionState,
-	ExtensionQuestionnaireDraftV1,
-} from "../../core/extensions/types.js";
+import type { ExtensionQuestionnaireDraftV1, ExtensionQuestionnaireDraftV2 } from "../../core/extensions/types.js";
 import type { KeybindingsManager } from "../../core/keybindings.js";
 import type {
 	AgentConnectionQuestionnaireLease,
@@ -13,6 +10,8 @@ import type {
 } from "../agent-connection/types.js";
 import { showFullPaneOverlay } from "./components/centered-overlay.js";
 import { QuestionnaireComponent } from "./components/questionnaire.js";
+
+type QuestionnaireDraft = ExtensionQuestionnaireDraftV1 | ExtensionQuestionnaireDraftV2;
 
 export const QUESTIONNAIRE_TEXT_CHECKPOINT_DEBOUNCE_MS = 150;
 
@@ -26,7 +25,7 @@ interface ActivePresentation extends AcceptedOffer {
 	handle: OverlayHandle;
 	authoritativeRevision: number;
 	mutationEpoch: number;
-	latestDraft: ExtensionQuestionnaireDraftV1;
+	latestDraft: QuestionnaireDraft;
 	checkpointTail: Promise<void>;
 	textCheckpointTimer?: ReturnType<typeof setTimeout>;
 	closed: boolean;
@@ -49,35 +48,37 @@ function sameLease(left: AgentConnectionQuestionnaireLease, right: AgentConnecti
 		left.leaseEpoch === right.leaseEpoch &&
 		left.logicalClientId === right.logicalClientId &&
 		left.connectionId === right.connectionId &&
-		left.mode === right.mode
+		left.mode === right.mode &&
+		left.questionnaireVersion === right.questionnaireVersion
 	);
 }
 
-function cloneDraft(draft: ExtensionQuestionnaireDraftV1): ExtensionQuestionnaireDraftV1 {
+function cloneDraft<TDraft extends QuestionnaireDraft>(draft: TDraft): TDraft {
 	return structuredClone(draft);
 }
 
-function semanticDraftProjection(draft: ExtensionQuestionnaireDraftV1): ExtensionQuestionnaireDraftV1 {
+function semanticDraftProjection(draft: QuestionnaireDraft): QuestionnaireDraft {
 	return {
-		version: 1,
+		version: draft.version,
 		currentStep: { ...draft.currentStep },
-		states: draft.states.map((state): ExtensionQuestionnaireDraftQuestionState => {
+		states: draft.states.map((state) => {
+			const note = "note" in state ? { note: "" } : {};
 			switch (state.kind) {
 				case "confirm":
 				case "single-select":
-					return { ...state, otherText: "" };
+					return { ...state, ...note, otherText: "" };
 				case "multi-select":
-					return { ...state, choiceIds: [...state.choiceIds], otherText: "" };
+					return { ...state, ...note, choiceIds: [...state.choiceIds], otherText: "" };
 				case "short-text":
 				case "multiline-text":
-					return { ...state, value: "" };
+					return { ...state, ...note, value: "" };
 			}
 			return state;
 		}),
-	};
+	} as QuestionnaireDraft;
 }
 
-function isTextOnlyChange(previous: ExtensionQuestionnaireDraftV1, next: ExtensionQuestionnaireDraftV1): boolean {
+function isTextOnlyChange(previous: QuestionnaireDraft, next: QuestionnaireDraft): boolean {
 	return JSON.stringify(semanticDraftProjection(previous)) === JSON.stringify(semanticDraftProjection(next));
 }
 
@@ -193,7 +194,7 @@ export class DaemonQuestionnaireHost {
 		this.conceal();
 	}
 
-	private draftChanged(active: ActivePresentation, draftValue: ExtensionQuestionnaireDraftV1): void {
+	private draftChanged(active: ActivePresentation, draftValue: QuestionnaireDraft): void {
 		if (!this.isCurrent(active)) return;
 		const draft = cloneDraft(draftValue);
 		const textOnly = isTextOnlyChange(active.latestDraft, draft);
@@ -212,7 +213,7 @@ export class DaemonQuestionnaireHost {
 		this.enqueueCheckpoint(active, draft);
 	}
 
-	private enqueueCheckpoint(active: ActivePresentation, draftValue: ExtensionQuestionnaireDraftV1): void {
+	private enqueueCheckpoint(active: ActivePresentation, draftValue: QuestionnaireDraft): void {
 		const draft = cloneDraft(draftValue);
 		const mutationEpoch = active.mutationEpoch;
 		active.checkpointTail = active.checkpointTail
