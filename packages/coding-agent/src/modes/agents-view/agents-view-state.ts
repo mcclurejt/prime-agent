@@ -708,7 +708,7 @@ export function buildAgentsViewRows(
 			const context: MutableAgentsViewRow = {
 				...row,
 				kind: "context",
-				section: "idle",
+				section: "needs-input",
 				statusLabel: "idle",
 				selectable: false,
 				identity: `context:${row.identity}`,
