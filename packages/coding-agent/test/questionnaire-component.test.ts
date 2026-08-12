@@ -216,12 +216,13 @@ describe("QuestionnaireComponent", () => {
 		for (let index = 0; index < request.questions.length; index++) component.handleInput("\x0e");
 		expect(stripAnsi(component.render(96).join("\n"))).toContain("[▶ Review]");
 		expect(submit).not.toHaveBeenCalled();
-		component.handleInput("\r");
-		expect(component.model.currentStep).toEqual({ kind: "question", questionId: "confirm" });
-		component.model.goToReview();
+		component.handleInput("\x1b[A");
+		expect(stripAnsi(component.render(96).join("\n"))).toContain("▶ Notes");
 		component.handleInput("\x0e");
 		component.handleInput("\r");
 		expect(submit).toHaveBeenCalledWith({ status: "submitted", responses: expect.any(Array) });
+		component.handleInput("\x10");
+		expect(component.model.currentStep).toEqual({ kind: "question", questionId: "long" });
 	});
 
 	it("uses Enter or Space for multi-select toggles and left/right arrows for persistent page navigation", () => {
@@ -807,7 +808,7 @@ describe("QuestionnaireComponent", () => {
 		expect(stripAnsi(component.render(100).join("\n"))).toContain("Resize terminal to continue");
 	});
 
-	it("keeps the selected filled Review submit action visible at 60 and 80 columns", () => {
+	it("focuses the filled Review submit action by default and keeps it visible at 60 and 80 columns", () => {
 		const tui = createFakeTui(24);
 		const onSubmit = vi.fn();
 		const component = new QuestionnaireComponent({
@@ -815,6 +816,7 @@ describe("QuestionnaireComponent", () => {
 			keybindings: new KeybindingsManager(),
 			request: {
 				version: 2,
+				submitLabel: `Submit this deliberately long answer ${"now ".repeat(20)}`,
 				questions: [
 					{
 						id: "q",
@@ -831,25 +833,84 @@ describe("QuestionnaireComponent", () => {
 		});
 		component.handleInput("\r");
 		component.handleInput("\t");
-		component.handleInput("\x1b[C");
 		const previousNoColor = process.env.NO_COLOR;
 		delete process.env.NO_COLOR;
 		try {
 			const selectionProbe = theme.getSelectionBackgroundColor()("probe");
 			const selectionOpening = selectionProbe.slice(0, selectionProbe.indexOf("probe"));
 			for (const width of [60, 80]) {
-				const actionLine = component.render(width).find((line) => stripAnsi(line).includes("Submit answers"));
-				expect(stripAnsi(actionLine ?? "")).toContain("▶ [ Submit answers ]");
+				const actionLine = component.render(width).find((line) => stripAnsi(line).includes("Submit this"));
+				expect(stripAnsi(actionLine ?? "")).toContain("▶ [ Submit this");
+				expect(stripAnsi(actionLine ?? "")).not.toContain("Edit");
 				expect(actionLine).toContain(selectionOpening);
 				expect(actionLine).toContain(theme.getFgAnsi("userMessageText"));
 				expect(visibleWidth(actionLine ?? "")).toBe(width);
 			}
+			component.handleInput("\x1b[A");
+			const unfocusedAction = component.render(80).find((line) => stripAnsi(line).includes("Submit this"));
+			expect(stripAnsi(unfocusedAction ?? "")).not.toContain("▶ [");
+			expect(unfocusedAction).toContain(selectionOpening);
+			expect(unfocusedAction).toContain(theme.getFgAnsi("userMessageText"));
+			component.handleInput("\x1b[B");
 			component.handleInput("\r");
 			expect(onSubmit).toHaveBeenCalledOnce();
 		} finally {
 			if (previousNoColor === undefined) delete process.env.NO_COLOR;
 			else process.env.NO_COLOR = previousNoColor;
 		}
+	});
+
+	it("routes Review between Submit, summary editing, and the last question with live footer guidance", () => {
+		const tui = createFakeTui(24);
+		const component = new QuestionnaireComponent({
+			tui,
+			keybindings: new KeybindingsManager(),
+			request: {
+				version: 1,
+				questions: [
+					{ id: "first", label: "First", kind: "confirm", prompt: "First?" },
+					{ id: "second", label: "Second", kind: "confirm", prompt: "Second?" },
+				],
+			},
+			getRows: () => tui.terminal.rows,
+			requestRender: tui.requestRender,
+			onSubmit: vi.fn(),
+			onDismiss: vi.fn(),
+		});
+		component.model.goToReview();
+
+		let review = stripAnsi(component.render(80).join("\n"));
+		expect(review).toContain("▶ [ Submit answers ]");
+		expect(review).toContain("Enter submit");
+		expect(review).toContain("↑ inspect answers");
+		expect(review).not.toContain("Edit answers");
+		expect(review).not.toContain(" preview");
+		expect(review).not.toContain(" note");
+
+		component.handleInput("\x1b[A");
+		review = stripAnsi(component.render(80).join("\n"));
+		expect(review).toContain("▶ Second");
+		expect(review).toContain("Enter edit");
+		expect(review).toContain("↓ submit");
+		expect(review).not.toContain("▶ [ Submit answers ]");
+		expect(review).toContain("[ Submit answers ]");
+
+		component.handleInput("\r");
+		expect(component.model.currentStep).toEqual({ kind: "question", questionId: "second" });
+		component.handleInput("\t");
+		expect(component.model.currentStep).toEqual({ kind: "review" });
+		expect(stripAnsi(component.render(80).join("\n"))).toContain("▶ [ Submit answers ]");
+
+		component.handleInput("\x1b[A");
+		component.handleInput("\x1b[B");
+		expect(stripAnsi(component.render(80).join("\n"))).toContain("▶ [ Submit answers ]");
+		component.handleInput("\x1b[D");
+		expect(component.model.currentStep).toEqual({ kind: "question", questionId: "second" });
+
+		component.handleInput("\t");
+		component.handleInput("\x1b[A");
+		component.handleInput("\x1b[D");
+		expect(component.model.currentStep).toEqual({ kind: "question", questionId: "second" });
 	});
 
 	it("uses a padded semantic selection surface with terminal-defined basic ANSI colors", () => {
@@ -917,6 +978,7 @@ describe("QuestionnaireComponent", () => {
 		expect(output).toContain("… Edit to view full");
 		expect(output).not.toContain("TAIL");
 		expect(output.length).toBeLessThan(5000);
+		component.handleInput("\x1b[A");
 		component.handleInput("\r");
 		expect(stripAnsi(component.render(80).join("\n"))).toContain("TAIL");
 	});
@@ -1356,18 +1418,24 @@ describe("QuestionnaireComponent", () => {
 				"  Release choices
 				  [✓ 1]  [· 2]  [▶ Review]
 
-				  ▶ Regions
+				    Regions
 				      East, custom region
 				      Note: needs audit trail
 
 				    Approval
 				      ⚠ Unanswered
 
-				  ▶ [ Edit Regions ]     [ Submit answers ]
+				  ▶ [ Submit answers ]
 
-				  Enter choose · Shift+Tab/Tab Edit/Submit · ↑/↓ answer · Esc dismiss
+				  Enter submit · ↑ inspect answers · ← last question · Esc dismiss
 				  523,939 aggregate bytes remaining"
 			`);
+			component.handleInput("\x1b[A");
+			const summaryFrame = component.render(80).join("\n");
+			expect(summaryFrame).not.toContain("\x1b[");
+			expect(summaryFrame).toContain("▶ Approval");
+			expect(summaryFrame).toContain("  [ Submit answers ]");
+			expect(summaryFrame).toContain("Enter edit · ↑/↓ navigate · ↓ submit");
 		} finally {
 			if (previousNoColor === undefined) delete process.env.NO_COLOR;
 			else process.env.NO_COLOR = previousNoColor;

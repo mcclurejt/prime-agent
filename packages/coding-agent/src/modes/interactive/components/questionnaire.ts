@@ -546,7 +546,7 @@ export class QuestionnaireComponent implements Component, Focusable {
 	private noteEditorQuestionId: string | undefined;
 	private readonly expandedPreviews = new Set<string>();
 	private reviewQuestionIndex = 0;
-	private reviewAction: "edit" | "submit" = "edit";
+	private reviewMode: "submit" | "summary" = "submit";
 	private discardConfirmation = false;
 	private discardSelection: "keep" | "discard" = "keep";
 	private manualScrollOffset: number | undefined;
@@ -600,6 +600,7 @@ export class QuestionnaireComponent implements Component, Focusable {
 	applyDraft(draft: QuestionnaireDraft): void {
 		if (this.disposed) throw new Error("Questionnaire component has been disposed");
 		this.model.applyDraft(draft);
+		if (this.model.currentStep.kind === "review") this.reviewMode = "submit";
 		this.syncControlsFromDraft();
 		this.manualScrollOffset = undefined;
 		this.syncChildFocus();
@@ -1011,23 +1012,36 @@ export class QuestionnaireComponent implements Component, Focusable {
 
 	private handleReviewInput(data: string): void {
 		const kb = this.options.keybindings;
+		const questionCount = this.model.request.questions.length;
+		if (kb.matches(data, "tui.editor.cursorLeft") || kb.matches(data, "app.questionnaire.previous")) {
+			this.pageChanged(this.model.previous());
+			return;
+		}
 		if (kb.matches(data, "app.questionnaire.next")) {
-			this.reviewAction = "submit";
-		} else if (kb.matches(data, "app.questionnaire.previous")) {
-			this.reviewAction = "edit";
+			this.reviewMode = "submit";
+			this.manualScrollOffset = undefined;
 		} else if (kb.matches(data, "tui.select.up")) {
-			this.reviewQuestionIndex =
-				(this.reviewQuestionIndex - 1 + this.model.request.questions.length) % this.model.request.questions.length;
-			this.manualScrollOffset = undefined;
+			if (questionCount > 0) {
+				if (this.reviewMode === "submit") {
+					this.reviewMode = "summary";
+					this.reviewQuestionIndex = questionCount - 1;
+				} else {
+					this.reviewQuestionIndex = Math.max(0, this.reviewQuestionIndex - 1);
+				}
+				this.manualScrollOffset = undefined;
+			}
 		} else if (kb.matches(data, "tui.select.down")) {
-			this.reviewQuestionIndex = (this.reviewQuestionIndex + 1) % this.model.request.questions.length;
-			this.manualScrollOffset = undefined;
+			if (this.reviewMode === "summary") {
+				if (this.reviewQuestionIndex >= questionCount - 1) this.reviewMode = "submit";
+				else this.reviewQuestionIndex += 1;
+				this.manualScrollOffset = undefined;
+			}
 		} else if (kb.matches(data, "tui.select.pageUp")) {
 			this.scrollPage(-1);
 		} else if (kb.matches(data, "tui.select.pageDown")) {
 			this.scrollPage(1);
 		} else if (kb.matches(data, "tui.select.confirm")) {
-			if (this.reviewAction === "submit") {
+			if (this.reviewMode === "submit") {
 				this.options.onSubmit({ status: "submitted", responses: this.model.responses() });
 			} else {
 				this.pageChanged(this.model.goToQuestion(this.model.request.questions[this.reviewQuestionIndex]!.id));
@@ -1449,14 +1463,14 @@ export class QuestionnaireComponent implements Component, Focusable {
 		const lines: string[] = [];
 		let anchor = 0;
 		for (const [index, question] of this.model.request.questions.entries()) {
-			if (index === this.reviewQuestionIndex) anchor = lines.length;
-			const marker = this.reviewAction === "edit" && index === this.reviewQuestionIndex ? "▶ " : "  ";
+			const focused = this.reviewMode === "summary" && index === this.reviewQuestionIndex;
+			if (focused) anchor = lines.length;
 			lines.push(
 				...this.wrapWithPrefix(
 					question.label ?? `Q${index + 1}`,
-					marker,
+					focused ? "▶ " : "  ",
 					width,
-					index === this.reviewQuestionIndex ? "accent" : "text",
+					focused ? "accent" : "text",
 				),
 			);
 			const response = responses[index]!;
@@ -1475,27 +1489,14 @@ export class QuestionnaireComponent implements Component, Focusable {
 			}
 			lines.push("");
 		}
-		const editLabel =
-			this.model.request.questions[this.reviewQuestionIndex]?.label ?? `Q${this.reviewQuestionIndex + 1}`;
 		const submitLabel = this.model.request.submitLabel ?? "Submit answers";
-		const maximumSubmitLabelWidth = Math.max(1, width - 11);
+		const maximumSubmitLabelWidth = Math.max(1, width - visibleWidth("▶ [  ]"));
 		const visibleSubmitLabel = truncateToWidth(submitLabel, maximumSubmitLabelWidth, "…");
 		const submitControl = `[ ${visibleSubmitLabel} ]`;
-		const actionSpacingWidth = 7;
-		const maximumEditControlWidth = Math.max(8, width - visibleWidth(submitControl) - actionSpacingWidth);
-		const maximumEditLabelWidth = Math.max(1, maximumEditControlWidth - visibleWidth("[ Edit  ]"));
-		const editControl = `[ Edit ${truncateToWidth(editLabel, maximumEditLabelWidth, "…")} ]`;
-		const styledEdit =
-			this.reviewAction === "edit" ? theme.bold(theme.fg("accent", editControl)) : theme.fg("muted", editControl);
-		const styledSubmit =
-			this.reviewAction === "submit"
-				? theme.getSelectionBackgroundColor()(theme.bold(theme.fg("userMessageText", submitControl)))
-				: theme.fg("muted", submitControl);
-		lines.push(
-			`${this.reviewAction === "edit" ? "▶" : " "} ${styledEdit}   ${this.reviewAction === "submit" ? "▶" : " "} ${styledSubmit}`,
-		);
+		const styledSubmit = theme.getSelectionBackgroundColor()(theme.bold(theme.fg("userMessageText", submitControl)));
+		lines.push(`${this.reviewMode === "submit" ? "▶" : " "} ${styledSubmit}`);
 
-		if (this.reviewAction === "submit") anchor = lines.length - 1;
+		if (this.reviewMode === "submit") anchor = lines.length - 1;
 		return { lines, anchor };
 	}
 
@@ -1535,10 +1536,16 @@ export class QuestionnaireComponent implements Component, Focusable {
 			} else if (this.isOtherEditorOpen) {
 				chips.push(`${confirm} accept Other`, `${cancel} choices`);
 			} else if (this.model.currentStep.kind === "review") {
-				chips.push(`${confirm} choose`, `${previous}/${next} Edit/Submit`);
-				if (mode === "full")
-					chips.push(`${this.keyText("tui.select.up")}/${this.keyText("tui.select.down")} answer`);
-				chips.push(`${cancel} dismiss`);
+				const up = this.keyText("tui.select.up");
+				const down = this.keyText("tui.select.down");
+				const left = this.keyText("tui.editor.cursorLeft");
+				if (this.reviewMode === "submit") {
+					chips.push(`${confirm} submit`, `${up} inspect answers`, `${left} last question`, `${cancel} dismiss`);
+				} else {
+					chips.push(`${confirm} edit`, `${up}/${down} navigate`);
+					if (this.reviewQuestionIndex === this.model.request.questions.length - 1) chips.push(`${down} submit`);
+					chips.push(`${left} last question`, `${cancel} dismiss`);
+				}
 			} else if (currentQuestion) {
 				if (currentQuestion.kind === "multi-select") {
 					chips.push(`${this.keyText("app.questionnaire.toggle")}/${confirm} toggle`);
@@ -1627,6 +1634,7 @@ export class QuestionnaireComponent implements Component, Focusable {
 
 	private pageChanged(result: QuestionnaireMutationResult): void {
 		if (result.accepted) {
+			if (this.model.currentStep.kind === "review") this.reviewMode = "submit";
 			this.manualScrollOffset = undefined;
 			this.options.onDraftChange?.(this.model.draft);
 		}
