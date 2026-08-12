@@ -1,8 +1,10 @@
 import {
 	type Component,
 	CURSOR_MARKER,
+	clearDefaultTerminalColors,
 	type Focusable,
 	type OverlayHandle,
+	setDefaultTerminalColors,
 	setKeybindings,
 	type TUI,
 	visibleWidth,
@@ -808,6 +810,67 @@ describe("QuestionnaireComponent", () => {
 		expect(stripAnsi(component.render(100).join("\n"))).toContain("Resize terminal to continue");
 	});
 
+	it.each([
+		{ name: "a choice question without a preview", kind: "confirm" as const },
+		{ name: "a text question", kind: "short-text" as const },
+		{ name: "Review", kind: "review" as const },
+	])("owns the full 200x40 workspace for $name", ({ kind }) => {
+		const tui = createFakeTui(40);
+		const question =
+			kind === "short-text"
+				? ({ id: "q", kind, prompt: "Explain" } as const)
+				: ({ id: "q", kind: "confirm", prompt: "Approve?" } as const);
+		const component = new QuestionnaireComponent({
+			tui,
+			keybindings: new KeybindingsManager(),
+			request: { version: 1, title: "Workspace questionnaire", questions: [question] },
+			getRows: () => tui.terminal.rows,
+			requestRender: tui.requestRender,
+			onSubmit: vi.fn(),
+			onDismiss: vi.fn(),
+		});
+		if (kind === "review") component.model.goToReview();
+
+		const lines = component.render(200);
+		expect(lines).toHaveLength(40);
+		expect(stripAnsi(lines[0] ?? "")).toContain("Workspace questionnaire");
+		expect(stripAnsi(lines.at(-1) ?? "")).toContain("aggregate bytes remaining");
+		expect(lines.every((line) => visibleWidth(line) === 200)).toBe(true);
+	});
+
+	it("renders the focused Submit action with an actual high-contrast light-theme background", () => {
+		setDefaultTerminalColors({ foreground: { r: 24, g: 24, b: 24 }, background: { r: 255, g: 255, b: 255 } });
+		initTheme("light");
+		const previousNoColor = process.env.NO_COLOR;
+		delete process.env.NO_COLOR;
+		try {
+			const tui = createFakeTui(40);
+			const component = new QuestionnaireComponent({
+				tui,
+				keybindings: new KeybindingsManager(),
+				request: { version: 1, questions: [{ id: "q", kind: "confirm", prompt: "Approve?" }] },
+				getRows: () => tui.terminal.rows,
+				requestRender: tui.requestRender,
+				onSubmit: vi.fn(),
+				onDismiss: vi.fn(),
+			});
+			component.model.goToReview();
+
+			const actionLine = component.render(200).find((line) => stripAnsi(line).includes("Submit answers"));
+			const adaptiveAccentProbe = theme.getAdaptiveAccentColor()("probe");
+			const adaptiveAccentOpening = adaptiveAccentProbe.slice(0, adaptiveAccentProbe.indexOf("probe"));
+			expect(adaptiveAccentOpening).toContain("\x1b[");
+			expect(actionLine).toContain("\x1b[7m");
+			expect(actionLine).toContain(adaptiveAccentOpening);
+			expect(stripAnsi(actionLine ?? "")).toContain("▶ [ Submit answers ]");
+		} finally {
+			if (previousNoColor === undefined) delete process.env.NO_COLOR;
+			else process.env.NO_COLOR = previousNoColor;
+			clearDefaultTerminalColors();
+			initTheme("dark");
+		}
+	});
+
 	it("focuses the filled Review submit action by default and keeps it visible at 60 and 80 columns", () => {
 		const tui = createFakeTui(24);
 		const onSubmit = vi.fn();
@@ -836,21 +899,21 @@ describe("QuestionnaireComponent", () => {
 		const previousNoColor = process.env.NO_COLOR;
 		delete process.env.NO_COLOR;
 		try {
-			const selectionProbe = theme.getSelectionBackgroundColor()("probe");
-			const selectionOpening = selectionProbe.slice(0, selectionProbe.indexOf("probe"));
+			const adaptiveAccentProbe = theme.getAdaptiveAccentColor()("probe");
+			const adaptiveAccentOpening = adaptiveAccentProbe.slice(0, adaptiveAccentProbe.indexOf("probe"));
 			for (const width of [60, 80]) {
 				const actionLine = component.render(width).find((line) => stripAnsi(line).includes("Submit this"));
 				expect(stripAnsi(actionLine ?? "")).toContain("▶ [ Submit this");
 				expect(stripAnsi(actionLine ?? "")).not.toContain("Edit");
-				expect(actionLine).toContain(selectionOpening);
-				expect(actionLine).toContain(theme.getFgAnsi("userMessageText"));
+				expect(actionLine).toContain("\x1b[7m");
+				expect(actionLine).toContain(adaptiveAccentOpening);
 				expect(visibleWidth(actionLine ?? "")).toBe(width);
 			}
 			component.handleInput("\x1b[A");
 			const unfocusedAction = component.render(80).find((line) => stripAnsi(line).includes("Submit this"));
 			expect(stripAnsi(unfocusedAction ?? "")).not.toContain("▶ [");
-			expect(unfocusedAction).toContain(selectionOpening);
-			expect(unfocusedAction).toContain(theme.getFgAnsi("userMessageText"));
+			expect(unfocusedAction).toContain("\x1b[7m");
+			expect(unfocusedAction).toContain(adaptiveAccentOpening);
 			component.handleInput("\x1b[B");
 			component.handleInput("\r");
 			expect(onSubmit).toHaveBeenCalledOnce();
@@ -1402,6 +1465,15 @@ describe("QuestionnaireComponent", () => {
 				  Notes
 				  needs audit trail
 
+
+
+
+
+
+
+
+
+
 				  ↑/↓ move · Space/Enter toggle · Shift+Tab/Tab page · Esc dismiss · N note
 				  523,939 aggregate bytes remaining"
 			`);
@@ -1426,6 +1498,16 @@ describe("QuestionnaireComponent", () => {
 				      ⚠ Unanswered
 
 				  ▶ [ Submit answers ]
+
+
+
+
+
+
+
+
+
+
 
 				  Enter submit · ↑ inspect answers · ← last question · Esc dismiss
 				  523,939 aggregate bytes remaining"

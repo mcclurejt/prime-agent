@@ -751,7 +751,7 @@ export class QuestionnaireComponent implements Component, Focusable {
 		const footerSeparatorRows = footer.length > 0 && remainingRows >= 2 ? 1 : 0;
 		const bodyCapacity = Math.max(0, remainingRows - footerSeparatorRows);
 		let visibleBody = bodyCapacity > 0 ? this.sliceBody(body.lines, bodyCapacity, body.anchor) : [];
-		if (wideWorkspaceEligible && bodyCapacity > visibleBody.length) {
+		if (bodyCapacity > visibleBody.length) {
 			visibleBody = [...visibleBody, ...Array.from({ length: bodyCapacity - visibleBody.length }, () => "")];
 		}
 		if (body.previewLines && body.previewWidth !== undefined && body.decisionWidth !== undefined) {
@@ -1493,7 +1493,7 @@ export class QuestionnaireComponent implements Component, Focusable {
 		const maximumSubmitLabelWidth = Math.max(1, width - visibleWidth("▶ [  ]"));
 		const visibleSubmitLabel = truncateToWidth(submitLabel, maximumSubmitLabelWidth, "…");
 		const submitControl = `[ ${visibleSubmitLabel} ]`;
-		const styledSubmit = theme.getSelectionBackgroundColor()(theme.bold(theme.fg("userMessageText", submitControl)));
+		const styledSubmit = `\x1b[7m${theme.getAdaptiveAccentColor()(submitControl)}\x1b[27m`;
 		lines.push(`${this.reviewMode === "submit" ? "▶" : " "} ${styledSubmit}`);
 
 		if (this.reviewMode === "submit") anchor = lines.length - 1;

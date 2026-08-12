@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Fixed questionnaires filling the terminal workspace and made the Review Submit action visibly high-contrast in light and dark themes.
 - Changed questionnaire Review to focus one filled Submit action by default while keeping answer rows directly editable from the keyboard.
 - Fixed scoped session views showing the global Needs Input section.
 - Changed the questionnaire to use a stable progress rail, semantic focus rows, adaptive lower-right answer-preview cards, responsive resize guidance, and contextual key chips.
