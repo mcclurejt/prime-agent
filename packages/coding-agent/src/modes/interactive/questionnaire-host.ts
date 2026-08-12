@@ -92,7 +92,7 @@ export class InteractiveQuestionnaireHost {
 				onSubmit: finish,
 				onDismiss: () => finish({ status: "dismissed" }),
 			});
-			handle = showFullPaneOverlay(this.ui, component, { maxContentWidth: 96, suspendFullscreenMouse: true });
+			handle = showFullPaneOverlay(this.ui, component, { maxContentWidth: 144, suspendFullscreenMouse: true });
 			this.active = { pending, component, handle };
 		} catch (error) {
 			handle?.hide();

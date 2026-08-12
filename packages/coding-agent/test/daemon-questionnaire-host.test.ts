@@ -1,4 +1,5 @@
 import type { Component, Focusable, OverlayHandle, TUI } from "@earendil-works/pi-tui";
+import stripAnsi from "strip-ansi";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ExtensionQuestionnaireDraftV1, ExtensionQuestionnaireRequestV1 } from "../src/core/extensions/types.js";
 import { KeybindingsManager } from "../src/core/keybindings.js";
@@ -11,6 +12,7 @@ import {
 	DaemonQuestionnaireHost,
 	QUESTIONNAIRE_TEXT_CHECKPOINT_DEBOUNCE_MS,
 } from "../src/modes/interactive/daemon-questionnaire-host.js";
+import { InteractiveQuestionnaireHost } from "../src/modes/interactive/questionnaire-host.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
 const request: ExtensionQuestionnaireRequestV1 = {
@@ -106,10 +108,52 @@ async function present(target: ReturnType<typeof harness>, initialDraft = draft(
 	});
 }
 
+function contentLeft(lines: string[]): number {
+	const contentLines = lines.map((line) => stripAnsi(line)).filter((line) => line.trim().length > 0);
+	return Math.min(...contentLines.map((line) => line.search(/\S/)));
+}
+
 beforeAll(() => initTheme("dark"));
 afterEach(() => vi.useRealTimers());
 
+describe("InteractiveQuestionnaireHost", () => {
+	it("caps the local questionnaire overlay at 144 columns", () => {
+		let overlay: Component | undefined;
+		const tui = {
+			terminal: { rows: 24 },
+			requestRender: vi.fn(),
+			showOverlay: vi.fn((component: Component) => {
+				overlay = component;
+				return {
+					hide: vi.fn(),
+					setHidden: vi.fn(),
+					isHidden: () => false,
+					focus: vi.fn(),
+					unfocus: vi.fn(),
+					isFocused: () => true,
+				} satisfies OverlayHandle;
+			}),
+		} as unknown as TUI;
+		const host = new InteractiveQuestionnaireHost(tui, new KeybindingsManager());
+		host.request(request);
+
+		const wideLeft = contentLeft(overlay!.render(144));
+		expect(wideLeft).toBe(contentLeft(overlay!.render(96)));
+		expect(contentLeft(overlay!.render(200))).toBe(wideLeft + 28);
+		host.terminate("runtime-replaced");
+	});
+});
+
 describe("DaemonQuestionnaireHost", () => {
+	it("caps the daemon questionnaire overlay at 144 columns", async () => {
+		const target = harness();
+		await present(target);
+
+		const wideLeft = contentLeft(target.overlay!.render(144));
+		expect(wideLeft).toBe(contentLeft(target.overlay!.render(96)));
+		expect(contentLeft(target.overlay!.render(200))).toBe(wideLeft + 28);
+	});
+
 	it("accepts one exact offer, restores its private draft, and debounces text checkpoints", async () => {
 		vi.useFakeTimers();
 		const target = harness();
