@@ -208,10 +208,10 @@ describe("QuestionnaireComponent", () => {
 		expect(wide).toContain("[  Review]");
 		expect(wide.split("\n").filter((line) => line.includes("[▶ 1]"))).toHaveLength(1);
 
-		const narrowLines = component.render(30);
+		const narrowLines = component.render(60);
 		expect(stripAnsi(narrowLines.join("\n"))).toContain("Question 1 of 5 · Approval");
 		expect(narrowLines.length).toBeLessThanOrEqual(18);
-		for (const line of narrowLines) expect(visibleWidth(line)).toBeLessThanOrEqual(30);
+		for (const line of narrowLines) expect(visibleWidth(line)).toBeLessThanOrEqual(60);
 
 		for (let index = 0; index < request.questions.length; index++) component.handleInput("\x0e");
 		expect(stripAnsi(component.render(96).join("\n"))).toContain("[▶ Review]");
@@ -380,8 +380,8 @@ describe("QuestionnaireComponent", () => {
 		});
 		let rendered = "";
 		for (let page = 0; page < 20 && !rendered.includes("TAIL"); page++) {
-			const lines = component.render(28);
-			for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(28);
+			const lines = component.render(60);
+			for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(60);
 			rendered += stripAnsi(lines.join("\n"));
 			component.handleInput("\x1b[6~");
 		}
@@ -403,12 +403,12 @@ describe("QuestionnaireComponent", () => {
 		});
 
 		component.model.goToQuestion("single");
-		component.render(34);
+		component.render(60);
 		for (let page = 0; page < 8; page++) {
 			component.handleInput("\x1b[5~");
-			component.render(34);
+			component.render(60);
 		}
-		let output = stripAnsi(component.render(34).join("\n"));
+		let output = stripAnsi(component.render(60).join("\n"));
 		expect(output).toContain("Which rollout strategy should");
 		component.handleInput("\x1b[B");
 		component.handleInput("\x1b[B");
@@ -420,7 +420,7 @@ describe("QuestionnaireComponent", () => {
 		expect(component.model.getOtherText("single")).toBe("custom");
 
 		component.handleInput("\x1b");
-		output = stripAnsi(component.render(34).join("\n"));
+		output = stripAnsi(component.render(60).join("\n"));
 		expect(output).toContain("Discard questionnaire draft?");
 		expect(dismiss).not.toHaveBeenCalled();
 		component.handleInput("\x1b[B");
@@ -456,8 +456,8 @@ describe("QuestionnaireComponent", () => {
 		}
 	});
 
-	it("anchors a multiline editor to its visible cursor row in an eight-row pane", () => {
-		const tui = createFakeTui(8);
+	it("anchors a multiline editor at the responsive height floor", () => {
+		const tui = createFakeTui(12);
 		const component = new QuestionnaireComponent({
 			tui,
 			keybindings: new KeybindingsManager(),
@@ -484,7 +484,7 @@ describe("QuestionnaireComponent", () => {
 		expect(stripAnsi(component.render(60).join("\n"))).toContain("TAILZ");
 	});
 
-	it.each([8, 10])("re-anchors both discard choices after deep scrolling at rows=%i", (rows) => {
+	it.each([12, 14])("re-anchors both discard choices after deep scrolling at rows=%i", (rows) => {
 		const tui = createFakeTui(rows);
 		const dismiss = vi.fn();
 		const component = new QuestionnaireComponent({
@@ -506,30 +506,30 @@ describe("QuestionnaireComponent", () => {
 			onDismiss: dismiss,
 		});
 		component.handleInput("draft");
-		component.render(20);
+		component.render(60);
 		for (let page = 0; page < 8; page++) {
 			component.handleInput("\x1b[6~");
-			component.render(20);
+			component.render(60);
 		}
 		component.handleInput("\x1b[5~");
-		component.render(20);
+		component.render(60);
 
 		component.handleInput("\x1b");
 		expect((component as unknown as { manualScrollOffset?: number }).manualScrollOffset).toBeUndefined();
-		let output = stripAnsi(component.render(20).join("\n"));
+		let output = stripAnsi(component.render(60).join("\n"));
 		expect(output).toContain("Keep editing");
 		expect(output).toContain("Discard");
 		component.handleInput("\x1b[B");
 		expect((component as unknown as { manualScrollOffset?: number }).manualScrollOffset).toBeUndefined();
-		output = stripAnsi(component.render(20).join("\n"));
+		output = stripAnsi(component.render(60).join("\n"));
 		expect(output).toContain("Keep editing");
 		expect(output).toContain("Discard");
 		component.handleInput("\r");
 		expect(dismiss).toHaveBeenCalledOnce();
 	});
 
-	it.each([10, 12, 14, 16])("reaches every wrapped prompt line in monotone up and down sweeps at rows=%i", (rows) => {
-		for (const width of [20, 40, 80]) {
+	it.each([12, 14, 16, 18])("reaches every wrapped prompt line in monotone up and down sweeps at rows=%i", (rows) => {
+		for (const width of [60, 70, 80]) {
 			const tui = createFakeTui(rows);
 			const markers = Array.from({ length: 40 }, (_, index) => `MARK${index}`);
 			const component = new QuestionnaireComponent({
@@ -569,8 +569,8 @@ describe("QuestionnaireComponent", () => {
 		}
 	});
 
-	it("degrades 32 long tabs before hiding the active prompt in a ten-row pane", () => {
-		const tui = createFakeTui(10);
+	it("degrades 32 long tabs before hiding the active prompt at the height floor", () => {
+		const tui = createFakeTui(12);
 		const component = new QuestionnaireComponent({
 			tui,
 			keybindings: new KeybindingsManager(),
@@ -607,11 +607,11 @@ describe("QuestionnaireComponent", () => {
 		expect(review.split("\n").filter((line) => line.includes("[▶ Review]"))).toHaveLength(1);
 
 		component.model.goToQuestion("q0");
-		const narrowLines = component.render(20);
+		const narrowLines = component.render(60);
 		const narrow = stripAnsi(narrowLines.join("\n"));
 		expect(narrow).toContain("ACTIVE PROMPT");
 		expect(narrow).toMatch(/1 of 32/);
-		for (const line of narrowLines) expect(visibleWidth(line)).toBeLessThanOrEqual(20);
+		for (const line of narrowLines) expect(visibleWidth(line)).toBeLessThanOrEqual(60);
 	});
 
 	it("appends to seeded short text and reopened Other through keystrokes", () => {
@@ -697,8 +697,8 @@ describe("QuestionnaireComponent", () => {
 		expect(budget.model.validationMessage).toMatch(/128 KiB/);
 	});
 
-	it("keeps field validation and useful body capacity visible in a narrow ten-row pane", () => {
-		const tui = createFakeTui(10);
+	it("keeps field validation and useful body capacity visible at the responsive floor", () => {
+		const tui = createFakeTui(12);
 		const component = new QuestionnaireComponent({
 			tui,
 			keybindings: new KeybindingsManager(),
@@ -709,15 +709,15 @@ describe("QuestionnaireComponent", () => {
 			onDismiss: vi.fn(),
 		});
 		component.handleInput(`\x1b[200~${"x".repeat(128 * 1024 + 1)}\x1b[201~`);
-		component.render(20);
+		component.render(60);
 		for (let page = 0; page < 10; page++) component.handleInput("\x1b[5~");
-		const output = stripAnsi(component.render(20).join("\n"));
+		const output = stripAnsi(component.render(60).join("\n"));
 		expect(output).toContain("ACTIVE");
 		expect(output).toMatch(/128\s+KiB/);
-		expect(component.render(20)).toHaveLength(10);
+		expect(component.render(60)).toHaveLength(12);
 	});
 
-	it.each([1, 2, 3, 4, 5])("preserves validation and available footer feedback in a tiny %i-row pane", (rows) => {
+	it.each([1, 2, 3, 4, 5])("renders only resize and essential guidance in a tiny %i-row pane", (rows) => {
 		const tui = createFakeTui(rows);
 		const component = new QuestionnaireComponent({
 			tui,
@@ -732,9 +732,12 @@ describe("QuestionnaireComponent", () => {
 
 		const lines = component.render(80);
 		const output = stripAnsi(lines.join("\n"));
-		expect(lines).toHaveLength(rows);
-		expect(output).toMatch(/128\s+KiB/);
-		if (rows >= 2) expect(output).toMatch(/aggregate bytes remaining/);
+		expect(lines.length).toBeLessThanOrEqual(rows);
+		expect(output).toContain("Resize terminal to continue");
+		expect(output).not.toContain("ACTIVE");
+		if (rows >= 2) expect(output).toMatch(/128\s+KiB/);
+		if (rows >= 3) expect(output).toContain("Esc dismiss");
+		if (rows >= 4) expect(output).toMatch(/aggregate bytes remaining/);
 	});
 
 	it("uses injected keybindings for footer hints", () => {
@@ -758,8 +761,8 @@ describe("QuestionnaireComponent", () => {
 		expect(output).not.toContain("Tab next");
 	});
 
-	it("uses only contextual compact-footer chips before the byte-status line", () => {
-		const tui = createFakeTui(9);
+	it("uses only contextual footer chips before the byte-status line", () => {
+		const tui = createFakeTui(12);
 		const component = new QuestionnaireComponent({
 			tui,
 			keybindings: new KeybindingsManager(),
@@ -774,14 +777,79 @@ describe("QuestionnaireComponent", () => {
 			onSubmit: vi.fn(),
 			onDismiss: vi.fn(),
 		});
-		const output = stripAnsi(component.render(48).join("\n"));
+		const output = stripAnsi(component.render(60).join("\n"));
 		const normalized = output.replace(/\s+/gu, " ");
 		expect(normalized).toContain("Enter select");
 		expect(normalized).toContain("Shift+Tab/Tab page");
 		expect(normalized).toContain("Esc dismiss");
 		expect(normalized).toContain("PageUp/PageDown scroll");
-		expect(normalized).not.toContain("↑/↓ move");
+		expect(normalized).toContain("↑/↓ move");
 		expect(normalized.indexOf("Enter select")).toBeLessThan(normalized.indexOf("aggregate bytes remaining"));
+	});
+
+	it("uses the responsive floor instead of compressing unusable frames", () => {
+		const tui = createFakeTui(24);
+		const component = new QuestionnaireComponent({
+			tui,
+			keybindings: new KeybindingsManager(),
+			request: { version: 2, questions: [{ id: "q", kind: "confirm", prompt: "Choose" }] },
+			getRows: () => tui.terminal.rows,
+			requestRender: tui.requestRender,
+			onSubmit: vi.fn(),
+			onDismiss: vi.fn(),
+		});
+
+		const tooNarrow = component.render(59);
+		expect(stripAnsi(tooNarrow.join("\n"))).toContain("Resize terminal to continue");
+		expect(tooNarrow.every((line) => visibleWidth(line) === 59)).toBe(true);
+		expect(stripAnsi(component.render(60).join("\n"))).toContain("Choose");
+		(tui.terminal as { rows: number }).rows = 11;
+		expect(stripAnsi(component.render(100).join("\n"))).toContain("Resize terminal to continue");
+	});
+
+	it("keeps the selected filled Review submit action visible at 60 and 80 columns", () => {
+		const tui = createFakeTui(24);
+		const onSubmit = vi.fn();
+		const component = new QuestionnaireComponent({
+			tui,
+			keybindings: new KeybindingsManager(),
+			request: {
+				version: 2,
+				questions: [
+					{
+						id: "q",
+						label: `Question ${"very long ".repeat(11)}`,
+						kind: "confirm",
+						prompt: "Choose",
+					},
+				],
+			},
+			getRows: () => tui.terminal.rows,
+			requestRender: tui.requestRender,
+			onSubmit,
+			onDismiss: vi.fn(),
+		});
+		component.handleInput("\r");
+		component.handleInput("\t");
+		component.handleInput("\x1b[C");
+		const previousNoColor = process.env.NO_COLOR;
+		delete process.env.NO_COLOR;
+		try {
+			const selectionProbe = theme.getSelectionBackgroundColor()("probe");
+			const selectionOpening = selectionProbe.slice(0, selectionProbe.indexOf("probe"));
+			for (const width of [60, 80]) {
+				const actionLine = component.render(width).find((line) => stripAnsi(line).includes("Submit answers"));
+				expect(stripAnsi(actionLine ?? "")).toContain("▶ [ Submit answers ]");
+				expect(actionLine).toContain(selectionOpening);
+				expect(actionLine).toContain(theme.getFgAnsi("userMessageText"));
+				expect(visibleWidth(actionLine ?? "")).toBe(width);
+			}
+			component.handleInput("\r");
+			expect(onSubmit).toHaveBeenCalledOnce();
+		} finally {
+			if (previousNoColor === undefined) delete process.env.NO_COLOR;
+			else process.env.NO_COLOR = previousNoColor;
+		}
 	});
 
 	it("uses a padded semantic selection surface with terminal-defined basic ANSI colors", () => {
@@ -1017,8 +1085,8 @@ describe("QuestionnaireComponent", () => {
 		expect(component.model.responses()[0]).toEqual({ questionId: "q", status: "unanswered" });
 	});
 
-	it("preserves the wide workspace while moving across mixed preview choices", () => {
-		const tui = createFakeTui(24);
+	it("anchors only the active choice preview without shifting the wide workspace shell", () => {
+		const tui = createFakeTui(40);
 		const component = new QuestionnaireComponent({
 			tui,
 			keybindings: new KeybindingsManager(),
@@ -1042,15 +1110,95 @@ describe("QuestionnaireComponent", () => {
 			onDismiss: vi.fn(),
 		});
 
-		const visual = stripAnsi(component.render(144).join("\n"));
+		const visualLines = component.render(200);
+		const visual = stripAnsi(visualLines.join("\n"));
+		const previewRow = visualLines.findIndex((line) => stripAnsi(line).includes("Preview"));
+		const shellPositions = (lines: string[]) => ({
+			header: lines.findIndex((line) => stripAnsi(line).includes("Questionnaire")),
+			focus: lines.findIndex((line) => stripAnsi(line).includes("▶ ○")),
+			footer: lines.findIndex((line) => stripAnsi(line).includes("aggregate bytes remaining")),
+		});
+		const visualPositions = shellPositions(visualLines);
 		expect(visual).toContain("│ Preview");
 		expect(visual).toContain("visual-only");
+		expect(previewRow).toBeGreaterThan(Math.floor(visualLines.length / 2));
+		expect(visualLines).toHaveLength(40);
+		expect(visualLines.every((line) => visibleWidth(line) === 200)).toBe(true);
+		const largeLines = component.render(220);
+		const largeCardLine = largeLines.find((line) => stripAnsi(line).includes("│ Preview"));
+		expect(largeLines.every((line) => visibleWidth(line) === 220)).toBe(true);
+		expect(stripAnsi(largeCardLine ?? "").indexOf("│")).toBeGreaterThan(100);
+		const previousNoColor = process.env.NO_COLOR;
+		process.env.NO_COLOR = "1";
+		try {
+			const monochrome = component.render(144).join("\n");
+			expect(monochrome).not.toContain("\x1b[");
+			expect(monochrome).toContain("▶");
+			expect(monochrome).toContain("Preview");
+		} finally {
+			if (previousNoColor === undefined) delete process.env.NO_COLOR;
+			else process.env.NO_COLOR = previousNoColor;
+		}
+
 		component.handleInput("\x1b[B");
-		const textual = stripAnsi(component.render(144).join("\n"));
-		expect(textual).toContain("│ Preview");
-		expect(textual).toContain("No visual preview for “Text tradeoff”.");
-		expect(textual).toContain("See its option description and tradeoffs in the decision pane.");
+		const textualLines = component.render(200);
+		const textual = stripAnsi(textualLines.join("\n"));
+		expect(textualLines).toHaveLength(40);
+		const textualPositions = shellPositions(textualLines);
+		expect(textualPositions.header).toBe(visualPositions.header);
+		expect(textualPositions.footer).toBe(visualPositions.footer);
+		expect(textualPositions.focus - visualPositions.focus).toBe(1);
+		expect(textual).not.toContain("│ Preview");
+		expect(textual).not.toContain("No visual preview");
 		expect(textual).not.toContain("visual-only");
+		expect(textual).toContain("Lower operational risk.");
+
+		component.handleInput("\x1b[A");
+		expect(stripAnsi(component.render(200).join("\n"))).toContain("│ Preview");
+	});
+
+	it("uses named card width, height, and maximum-ratio boundaries", () => {
+		const tui = createFakeTui(24);
+		const component = new QuestionnaireComponent({
+			tui,
+			keybindings: new KeybindingsManager(),
+			request: {
+				version: 2,
+				questions: [
+					{
+						id: "q",
+						kind: "single-select",
+						prompt: "Pick",
+						choices: [
+							{
+								id: "visual",
+								label: "Visual",
+								preview: {
+									markdown: Array.from({ length: 80 }, (_, index) => `Preview ${index + 1}`).join("\n"),
+									alt: "Tall preview",
+								},
+							},
+						],
+					},
+				],
+			},
+			getRows: () => tui.terminal.rows,
+			requestRender: tui.requestRender,
+			onSubmit: vi.fn(),
+			onDismiss: vi.fn(),
+		});
+
+		expect(stripAnsi(component.render(119).join("\n"))).not.toContain("│ Preview");
+		expect(stripAnsi(component.render(120).join("\n"))).toContain("│ Preview");
+		(tui.terminal as { rows: number }).rows = 17;
+		expect(stripAnsi(component.render(120).join("\n"))).not.toContain("│ Preview");
+		(tui.terminal as { rows: number }).rows = 18;
+		expect(stripAnsi(component.render(120).join("\n"))).toContain("│ Preview");
+		(tui.terminal as { rows: number }).rows = 40;
+		const tallFrame = component.render(200);
+		const cardRows = tallFrame.filter((line) => stripAnsi(line).includes("│"));
+		expect(cardRows.length).toBeLessThanOrEqual(13);
+		expect(stripAnsi(cardRows.at(-1) ?? "")).toContain("… preview continues");
 	});
 
 	it("keeps a wide preview anchored and clips it independently from left-pane scrolling", () => {
@@ -1215,7 +1363,7 @@ describe("QuestionnaireComponent", () => {
 				    Approval
 				      ⚠ Unanswered
 
-				  ▶ [ Edit Regions ]     [ Submit ]
+				  ▶ [ Edit Regions ]     [ Submit answers ]
 
 				  Enter choose · Shift+Tab/Tab Edit/Submit · ↑/↓ answer · Esc dismiss
 				  523,939 aggregate bytes remaining"
@@ -1305,24 +1453,24 @@ describe("QuestionnaireComponent", () => {
 			"  Deployment decision
 			  [▶ 1]  [  Review]
 
-			  Strategy                                                 │ Preview · Traffic
-			  Choose a rollout                                         │ users -> canary -> stable
-			                                                           │ this-line-is-deliberately-too-long-for-the-preview-p [horizontal content clipped]
-			  Why I’m asking                                           │ Diagram description: Traffic moves through canary before stable.
-			  Use staged delivery because risk is elevated.            │
-			                                                           │
-			  Recommendation · Recommended                             │
-			  Limits the initial blast radius.                         │
-			                                                           │
-			  ▶ ○ Canary [Recommended]                                 │
-			        Plain *description* stays literal.                 │
-			        - Observe metrics                                  │
-			        - Expand gradually                                 │
-			    ● Direct                                               │
-			    ○ Something else…                                      │
-			                                                           │
-			  Notes                                                    │
-			  Press N to add a note                                    │
+			  Strategy
+			  Choose a rollout
+
+			  Why I’m asking
+			  Use staged delivery because risk is elevated.
+
+			  Recommendation · Recommended
+			  Limits the initial blast radius.
+
+			  ▶ ○ Canary [Recommended]
+			        Plain *description* stays literal.
+			        - Observe metrics
+			        - Expand gradually
+			    ● Direct                                                                                    │ Preview · Traffic
+			    ○ Something else…                                                                           │ users -> canary -> stable
+			                                                                                                │ this-line-is-de [horizontal content clipped]
+			  Notes                                                                                         │ Diagram description: Traffic moves through
+			  Press N to add a note                                                                         │ canary before stable.
 
 			  ↑/↓ move · Enter select · Shift+Tab/Tab page · Esc dismiss · N note
 			  524,068 aggregate bytes remaining"
@@ -1334,19 +1482,19 @@ describe("QuestionnaireComponent", () => {
 		expect(wide).toContain("● Direct");
 		expect(wide).toContain("Preview · Traffic");
 		expect(wide).toContain("[horizontal content clipped]");
-		expect(wide).toContain("Diagram description: Traffic moves through canary before stable.");
+		expect(wide).toContain("Diagram description: Traffic moves through");
+		expect(wide).toContain("canary before stable.");
 		expect(wide).toContain("Plain *description* stays literal.");
 		const previousNoColorForWide = process.env.NO_COLOR;
 		delete process.env.NO_COLOR;
 		try {
 			const focusedWideLine = component.render(144).find((line) => stripAnsi(line).includes("▶ ○ Canary"));
-			const dividerIndex = focusedWideLine?.indexOf("│") ?? -1;
-			expect(dividerIndex).toBeGreaterThan(0);
-			expect(focusedWideLine?.lastIndexOf("\x1b[49m", dividerIndex)).toBeGreaterThanOrEqual(0);
 			const selectionProbe = theme.getSelectionBackgroundColor()("probe");
 			const selectionOpening = selectionProbe.slice(0, selectionProbe.indexOf("probe"));
 			expect(selectionOpening).not.toBe("");
-			expect(focusedWideLine?.slice(dividerIndex + 1)).not.toContain(selectionOpening);
+			expect(focusedWideLine).toContain(selectionOpening);
+			expect(focusedWideLine).toContain("\x1b[49m");
+			expect(stripAnsi(focusedWideLine ?? "")).not.toContain("Preview");
 			const previewHeadingLine = component.render(144).find((line) => stripAnsi(line).includes("Preview · Traffic"));
 			expect(previewHeadingLine).toMatch(/\x1b\[49m {2}$/u);
 		} finally {
@@ -1365,9 +1513,8 @@ describe("QuestionnaireComponent", () => {
 		expect(standardAfterWidePreviewKey).not.toContain("users -> canary");
 		component.handleInput("\x1b[B");
 		const wideWithoutActivePreview = stripAnsi(component.render(144).join("\n"));
-		expect(wideWithoutActivePreview).toContain("│ Preview");
-		expect(wideWithoutActivePreview).toContain("No visual preview for “Direct”.");
-		expect(wideWithoutActivePreview).toContain("See its option description and tradeoffs in the decision pane.");
+		expect(wideWithoutActivePreview).not.toContain("│ Preview");
+		expect(wideWithoutActivePreview).not.toContain("No visual preview");
 		expect(wideWithoutActivePreview).not.toContain("users -> canary");
 		component.handleInput("p");
 		const standardAfterNoPreviewWideKey = stripAnsi(component.render(100).join("\n"));
@@ -1518,6 +1665,54 @@ describe("QuestionnaireComponent", () => {
 });
 
 describe("InteractiveQuestionnaireHost", () => {
+	it("keeps the presented overlay frame height stable when the active preview collapses", async () => {
+		let overlay: (Component & { handleInput(data: string): void }) | undefined;
+		const tui = {
+			terminal: { rows: 40 },
+			requestRender: vi.fn(),
+			showOverlay: vi.fn((component: Component) => {
+				overlay = component as Component & { handleInput(data: string): void };
+				return {
+					hide: vi.fn(),
+					setHidden: vi.fn(),
+					isHidden: () => false,
+					focus: vi.fn(),
+					unfocus: vi.fn(),
+					isFocused: () => true,
+				} satisfies OverlayHandle;
+			}),
+		} as unknown as TUI;
+		const host = new InteractiveQuestionnaireHost(tui, new KeybindingsManager());
+		const controller = new AbortController();
+		const outcome = host.request(
+			{
+				version: 2,
+				questions: [
+					{
+						id: "mixed",
+						kind: "single-select",
+						prompt: "Choose",
+						choices: [
+							{ id: "visual", label: "Visual", preview: { markdown: "visual", alt: "Visual" } },
+							{ id: "text", label: "Text" },
+						],
+					},
+				],
+			},
+			{ signal: controller.signal },
+		);
+		expect(overlay).toBeDefined();
+		const previewFrame = overlay!.render(200);
+		overlay!.handleInput("\x1b[B");
+		const collapsedFrame = overlay!.render(200);
+		expect(previewFrame).toHaveLength(40);
+		expect(collapsedFrame).toHaveLength(40);
+		expect(stripAnsi(previewFrame.join("\n"))).toContain("│ Preview");
+		expect(stripAnsi(collapsedFrame.join("\n"))).not.toContain("│ Preview");
+		controller.abort();
+		await expect(outcome).resolves.toEqual({ status: "aborted", reason: "signal" });
+	});
+
 	it("settles abort once, disposes the overlay, and lets the TUI restore prior focus once", async () => {
 		const previousFocus: Component & Focusable = {
 			focused: true,

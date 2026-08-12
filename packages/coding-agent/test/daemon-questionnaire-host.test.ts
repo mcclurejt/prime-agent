@@ -117,7 +117,7 @@ beforeAll(() => initTheme("dark"));
 afterEach(() => vi.useRealTimers());
 
 describe("InteractiveQuestionnaireHost", () => {
-	it("caps the local questionnaire overlay at 144 columns", () => {
+	it("gives the local questionnaire the full available width", () => {
 		let overlay: Component | undefined;
 		const tui = {
 			terminal: { rows: 24 },
@@ -139,19 +139,19 @@ describe("InteractiveQuestionnaireHost", () => {
 
 		const wideLeft = contentLeft(overlay!.render(144));
 		expect(wideLeft).toBe(contentLeft(overlay!.render(96)));
-		expect(contentLeft(overlay!.render(200))).toBe(wideLeft + 28);
+		expect(contentLeft(overlay!.render(200))).toBe(wideLeft);
 		host.terminate("runtime-replaced");
 	});
 });
 
 describe("DaemonQuestionnaireHost", () => {
-	it("caps the daemon questionnaire overlay at 144 columns", async () => {
+	it("gives the daemon questionnaire the full available width", async () => {
 		const target = harness();
 		await present(target);
 
 		const wideLeft = contentLeft(target.overlay!.render(144));
 		expect(wideLeft).toBe(contentLeft(target.overlay!.render(96)));
-		expect(contentLeft(target.overlay!.render(200))).toBe(wideLeft + 28);
+		expect(contentLeft(target.overlay!.render(200))).toBe(wideLeft);
 	});
 
 	it("accepts one exact offer, restores its private draft, and debounces text checkpoints", async () => {
