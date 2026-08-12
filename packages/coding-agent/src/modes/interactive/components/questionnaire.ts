@@ -42,11 +42,17 @@ import { formatKeyText } from "./keybinding-hints.js";
 import { getMenuScrollWindow } from "./menu-panel.js";
 
 const WIDE_LAYOUT_MIN_WIDTH = 64;
-const PREVIEW_LAYOUT_MIN_WIDTH = 120;
-const PREVIEW_LAYOUT_MIN_BODY_ROWS = 12;
-const DECISION_CONTENT_WIDTH = 56;
-const PREVIEW_GUTTER_WIDTH = 2;
-const PREVIEW_MIN_WIDTH = 40;
+const WIDE_CARD_MIN_INNER_WIDTH = 116;
+const WIDE_CARD_MIN_BODY_ROWS = 12;
+const DECISION_MIN_WIDTH = 56;
+const PREVIEW_CARD_GAP = 2;
+const PREVIEW_CARD_MIN_WIDTH = 40;
+const PREVIEW_CARD_MAX_WIDTH = 64;
+const PREVIEW_CARD_WIDTH_RATIO = 0.33;
+const PREVIEW_CARD_MAX_BODY_RATIO = 0.4;
+const PREVIEW_CARD_MIN_BODY_ROWS = 6;
+const QUESTIONNAIRE_MIN_WIDTH = 60;
+const QUESTIONNAIRE_MIN_ROWS = 12;
 const PANEL_PADDING_X = 2;
 const MIN_USEFUL_BODY_ROWS = 3;
 const REVIEW_PREVIEW_MAX_CHARS = 512;
@@ -697,17 +703,26 @@ export class QuestionnaireComponent implements Component, Focusable {
 		const safeWidth = Math.max(1, Math.floor(width));
 		const innerWidth = Math.max(1, safeWidth - PANEL_PADDING_X * 2);
 		const maxRows = this.viewportRows();
-		const widePreviewCandidate =
+		if (safeWidth < QUESTIONNAIRE_MIN_WIDTH || maxRows < QUESTIONNAIRE_MIN_ROWS) {
+			this.widePreviewVisible = false;
+			this.scrollingAvailable = false;
+			return this.renderTooSmall(safeWidth, maxRows);
+		}
+		const currentQuestion = this.currentQuestion();
+		const activePreview = currentQuestion ? this.activePreview(currentQuestion) : undefined;
+		const wideWorkspaceCandidate =
 			!this.discardConfirmation &&
 			this.model.currentStep.kind !== "review" &&
-			safeWidth >= PREVIEW_LAYOUT_MIN_WIDTH &&
+			innerWidth >= WIDE_CARD_MIN_INNER_WIDTH &&
 			this.currentQuestionHasAnyPreview();
+		const widePreviewCandidate = wideWorkspaceCandidate && activePreview !== undefined;
 		this.scrollingAvailable = true;
 		this.widePreviewVisible = widePreviewCandidate;
 		const previewFooterRows = this.renderFooter(innerWidth, "full").length;
 		this.scrollingAvailable = false;
 		const previewUsableRows = Math.max(0, maxRows - this.renderHeader(innerWidth).length - previewFooterRows - 2);
-		this.widePreviewVisible = widePreviewCandidate && previewUsableRows >= PREVIEW_LAYOUT_MIN_BODY_ROWS;
+		const wideWorkspaceEligible = wideWorkspaceCandidate && previewUsableRows >= WIDE_CARD_MIN_BODY_ROWS;
+		this.widePreviewVisible = widePreviewCandidate && wideWorkspaceEligible;
 		const body: RenderedBody = this.discardConfirmation
 			? this.renderDiscardConfirmation(innerWidth)
 			: this.model.currentStep.kind === "review"
@@ -735,6 +750,9 @@ export class QuestionnaireComponent implements Component, Focusable {
 		const footerSeparatorRows = footer.length > 0 && remainingRows >= 2 ? 1 : 0;
 		const bodyCapacity = Math.max(0, remainingRows - footerSeparatorRows);
 		let visibleBody = bodyCapacity > 0 ? this.sliceBody(body.lines, bodyCapacity, body.anchor) : [];
+		if (wideWorkspaceEligible && bodyCapacity > visibleBody.length) {
+			visibleBody = [...visibleBody, ...Array.from({ length: bodyCapacity - visibleBody.length }, () => "")];
+		}
 		if (body.previewLines && body.previewWidth !== undefined && body.decisionWidth !== undefined) {
 			visibleBody = this.composeWidePreview(
 				visibleBody,
@@ -752,6 +770,32 @@ export class QuestionnaireComponent implements Component, Focusable {
 			...footer,
 		];
 		return this.finishRenderLines(lines.slice(0, maxRows), safeWidth);
+	}
+
+	private renderTooSmall(width: number, rows: number): string[] {
+		const contentWidth = Math.max(1, width - Math.min(PANEL_PADDING_X * 2, Math.max(0, width - 1)));
+		const cancel = this.keyText("tui.select.cancel");
+		const title = wrapTextWithAnsi(theme.bold(theme.fg("warning", "Resize terminal to continue")), contentWidth);
+		const dimensions = wrapTextWithAnsi(
+			theme.fg(
+				"muted",
+				`Questionnaire needs at least ${QUESTIONNAIRE_MIN_WIDTH} columns × ${QUESTIONNAIRE_MIN_ROWS} rows.`,
+			),
+			contentWidth,
+		);
+		const dismiss = wrapTextWithAnsi(theme.fg("muted", `${cancel} dismiss`), contentWidth);
+		const budget = wrapTextWithAnsi(
+			theme.fg("dim", `${this.model.remainingBytes.toLocaleString()} aggregate bytes remaining`),
+			contentWidth,
+		);
+		const validation = this.model.validationMessage
+			? wrapTextWithAnsi(theme.fg("error", this.model.validationMessage), contentWidth).slice(0, 1)
+			: [];
+		const lines =
+			validation.length > 0
+				? [...title, ...validation, ...dismiss, ...budget, ...dimensions]
+				: [...title, ...dimensions, ...dismiss, ...budget];
+		return this.finishRenderLines(lines.slice(0, rows), width);
 	}
 
 	invalidate(): void {
@@ -1073,7 +1117,14 @@ export class QuestionnaireComponent implements Component, Focusable {
 
 	private renderQuestion(width: number, widePreview: boolean): RenderedBody {
 		const question = this.currentQuestion()!;
-		const contentWidth = widePreview ? DECISION_CONTENT_WIDTH : width;
+		const previewWidth = widePreview
+			? Math.min(
+					PREVIEW_CARD_MAX_WIDTH,
+					Math.max(PREVIEW_CARD_MIN_WIDTH, Math.floor(width * PREVIEW_CARD_WIDTH_RATIO)),
+				)
+			: 0;
+		const decisionWidth = widePreview ? Math.max(DECISION_MIN_WIDTH, width - previewWidth - PREVIEW_CARD_GAP) : width;
+		const contentWidth = decisionWidth;
 		const lines =
 			question.label && this.viewportRows() >= ACTIVE_LABEL_MIN_ROWS
 				? [
@@ -1128,13 +1179,15 @@ export class QuestionnaireComponent implements Component, Focusable {
 			}
 		}
 		if (!widePreview) return { lines, anchor };
-		const previewWidth = Math.max(PREVIEW_MIN_WIDTH, width - DECISION_CONTENT_WIDTH - PREVIEW_GUTTER_WIDTH);
-		const previewContentWidth = Math.max(1, previewWidth - 1);
-		const preview = this.activePreview(question);
-		const previewLines = preview
-			? this.renderPreview(preview, previewContentWidth, false)
-			: this.renderUnavailablePreview(question, previewContentWidth);
-		return { lines, anchor, previewLines, previewWidth, decisionWidth: DECISION_CONTENT_WIDTH };
+		const previewContentWidth = Math.max(1, previewWidth - 2);
+		const preview = this.activePreview(question)!;
+		return {
+			lines,
+			anchor,
+			previewLines: this.renderPreview(preview, previewContentWidth, false),
+			previewWidth,
+			decisionWidth,
+		};
 	}
 
 	private composeWidePreview(
@@ -1144,17 +1197,23 @@ export class QuestionnaireComponent implements Component, Focusable {
 		previewWidth: number,
 		capacity: number,
 	): string[] {
-		const rowCount = Math.min(capacity, Math.max(decisionLines.length, previewLines.length));
-		const visiblePreview = previewLines.slice(0, rowCount);
-		if (previewLines.length > rowCount && visiblePreview.length > 0) {
-			visiblePreview[visiblePreview.length - 1] = theme.fg("muted", "… preview continues");
+		const maximumCardRows = Math.min(
+			capacity,
+			Math.max(PREVIEW_CARD_MIN_BODY_ROWS, Math.floor(capacity * PREVIEW_CARD_MAX_BODY_RATIO)),
+		);
+		const cardRows = previewLines.slice(0, maximumCardRows);
+		if (previewLines.length > maximumCardRows && cardRows.length > 0) {
+			cardRows[cardRows.length - 1] = theme.fg("muted", "… preview continues");
 		}
+		const cardStart = Math.max(0, capacity - cardRows.length);
 		const background = theme.getPopupBackgroundColor();
-		return Array.from({ length: rowCount }, (_, index) => {
+		return Array.from({ length: capacity }, (_, index) => {
 			const line = decisionLines[index] ?? "";
 			const left = visibleWidth(line) === decisionWidth ? line : truncateToWidth(line, decisionWidth, "…", true);
-			const preview = truncateToWidth(visiblePreview[index] ?? "", Math.max(1, previewWidth - 1), "…", true);
-			return `${left}${theme.fg("dim", " │")}${background(` ${preview}`)}`;
+			const cardIndex = index - cardStart;
+			if (cardIndex < 0 || cardIndex >= cardRows.length) return left;
+			const preview = truncateToWidth(cardRows[cardIndex] ?? "", Math.max(1, previewWidth - 2), "…", true);
+			return `${left}${" ".repeat(PREVIEW_CARD_GAP)}${theme.fg("dim", "│")}${background(` ${preview}`)}`;
 		});
 	}
 
@@ -1310,28 +1369,6 @@ export class QuestionnaireComponent implements Component, Focusable {
 		return choice && "preview" in choice && this.isQuestionnairePreview(choice.preview) ? choice.preview : undefined;
 	}
 
-	private renderUnavailablePreview(question: QuestionnaireQuestion, width: number): string[] {
-		const label = this.activeChoiceLabel(question);
-		return [
-			theme.bold(theme.fg("muted", "Preview")),
-			...wrapTextWithAnsi(theme.fg("muted", `No visual preview for “${label}”.`), width),
-			...wrapTextWithAnsi(
-				theme.fg("muted", "See its option description and tradeoffs in the decision pane."),
-				width,
-			),
-		];
-	}
-
-	private activeChoiceLabel(question: QuestionnaireQuestion): string {
-		if (question.kind !== "single-select" && question.kind !== "multi-select") return "active choice";
-		const cursor = this.choiceCursors.get(question.id) ?? 0;
-		const choice = question.choices[cursor];
-		if (choice) return choice.label;
-		const state = this.model.getState(question.id);
-		const otherText = "otherText" in state ? state.otherText.trim() : "";
-		return otherText || question.other?.label || "Something else…";
-	}
-
 	private renderRestrictedMarkdown(markdown: string, width: number): string[] {
 		const sanitized = markdown
 			.replace(/!\[([^\]]*)\]\([^)]*\)/gu, "[image omitted: $1]")
@@ -1378,7 +1415,7 @@ export class QuestionnaireComponent implements Component, Focusable {
 
 	private renderPreview(preview: ExtensionQuestionnairePreview, width: number, constrained: boolean): string[] {
 		const title = preview.title ? `Preview · ${preview.title}` : "Preview";
-		const lines = [theme.bold(theme.fg("muted", title))];
+		const lines = [theme.bold(theme.fg("toolTitle", title))];
 		let markdownBuffer: string[] = [];
 		let inFence = false;
 		let clipped = false;
@@ -1440,12 +1477,24 @@ export class QuestionnaireComponent implements Component, Focusable {
 		}
 		const editLabel =
 			this.model.request.questions[this.reviewQuestionIndex]?.label ?? `Q${this.reviewQuestionIndex + 1}`;
+		const submitLabel = this.model.request.submitLabel ?? "Submit answers";
+		const maximumSubmitLabelWidth = Math.max(1, width - 11);
+		const visibleSubmitLabel = truncateToWidth(submitLabel, maximumSubmitLabelWidth, "…");
+		const submitControl = `[ ${visibleSubmitLabel} ]`;
+		const actionSpacingWidth = 7;
+		const maximumEditControlWidth = Math.max(8, width - visibleWidth(submitControl) - actionSpacingWidth);
+		const maximumEditLabelWidth = Math.max(1, maximumEditControlWidth - visibleWidth("[ Edit  ]"));
+		const editControl = `[ Edit ${truncateToWidth(editLabel, maximumEditLabelWidth, "…")} ]`;
+		const styledEdit =
+			this.reviewAction === "edit" ? theme.bold(theme.fg("accent", editControl)) : theme.fg("muted", editControl);
+		const styledSubmit =
+			this.reviewAction === "submit"
+				? theme.getSelectionBackgroundColor()(theme.bold(theme.fg("userMessageText", submitControl)))
+				: theme.fg("muted", submitControl);
 		lines.push(
-			...wrapTextWithAnsi(
-				`${this.reviewAction === "edit" ? "▶" : " "} [ Edit ${editLabel} ]   ${this.reviewAction === "submit" ? "▶" : " "} [ ${this.model.request.submitLabel ?? "Submit"} ]`,
-				width,
-			),
+			`${this.reviewAction === "edit" ? "▶" : " "} ${styledEdit}   ${this.reviewAction === "submit" ? "▶" : " "} ${styledSubmit}`,
 		);
+
 		if (this.reviewAction === "submit") anchor = lines.length - 1;
 		return { lines, anchor };
 	}
