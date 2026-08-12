@@ -151,7 +151,7 @@ export class DaemonQuestionnaireHost {
 				onDismiss: () => void this.dismiss(active),
 			});
 			handle = showFullPaneOverlay(this.options.ui, component, {
-				maxContentWidth: 96,
+				maxContentWidth: 144,
 				suspendFullscreenMouse: true,
 			});
 			Object.assign(active, {

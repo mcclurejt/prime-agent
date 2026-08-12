@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Changed the questionnaire to use a stable progress rail, semantic focus rows, stable wide answer-preview workspaces, and contextual key chips.
 - Fixed Needs Input parents with subagents rendering as a duplicate context row.
 - Fixed Needs Input session descendants starting expanded instead of using the normal toggle.
 - Fixed children of Needs Input sessions appearing under Idle.

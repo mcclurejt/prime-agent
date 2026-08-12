@@ -7,6 +7,7 @@ import {
 	type Keybinding,
 	Markdown,
 	type TUI,
+	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
@@ -49,12 +50,22 @@ const PREVIEW_MIN_WIDTH = 40;
 const PANEL_PADDING_X = 2;
 const MIN_USEFUL_BODY_ROWS = 3;
 const REVIEW_PREVIEW_MAX_CHARS = 512;
+const PROGRESS_WINDOW_MAX_QUESTIONS = 5;
+const ACTIVE_LABEL_MIN_ROWS = 12;
 
 type QuestionnaireQuestion = ExtensionQuestionnaireQuestion | ExtensionQuestionnaireQuestionV2;
 type QuestionnaireRequest = ExtensionQuestionnaireRequestV1 | ExtensionQuestionnaireRequestV2;
 type QuestionnaireDraft = ExtensionQuestionnaireDraftV1 | ExtensionQuestionnaireDraftV2;
 type QuestionnaireState = ExtensionQuestionnaireDraftQuestionState | ExtensionQuestionnaireDraftQuestionStateV2;
 type QuestionnaireResponse = ExtensionQuestionnaireResponse | ExtensionQuestionnaireResponseV2;
+
+interface RenderedBody {
+	lines: string[];
+	anchor: number;
+	previewLines?: string[];
+	previewWidth?: number;
+	decisionWidth?: number;
+}
 
 export interface QuestionnaireMutationResult {
 	accepted: boolean;
@@ -535,6 +546,8 @@ export class QuestionnaireComponent implements Component, Focusable {
 	private manualScrollOffset: number | undefined;
 	private lastScrollStart = 0;
 	private lastScrollContentRows = 1;
+	private scrollingAvailable = false;
+	private widePreviewVisible = false;
 	private _focused = false;
 	private disposed = false;
 
@@ -684,25 +697,30 @@ export class QuestionnaireComponent implements Component, Focusable {
 		const safeWidth = Math.max(1, Math.floor(width));
 		const innerWidth = Math.max(1, safeWidth - PANEL_PADDING_X * 2);
 		const maxRows = this.viewportRows();
-		const previewUsableRows = Math.max(
-			0,
-			maxRows - this.renderHeader(innerWidth).length - this.renderFooter(innerWidth, "full").length - 2,
-		);
-		const body = this.discardConfirmation
+		const widePreviewCandidate =
+			!this.discardConfirmation &&
+			this.model.currentStep.kind !== "review" &&
+			safeWidth >= PREVIEW_LAYOUT_MIN_WIDTH &&
+			this.currentQuestionHasAnyPreview();
+		this.scrollingAvailable = true;
+		this.widePreviewVisible = widePreviewCandidate;
+		const previewFooterRows = this.renderFooter(innerWidth, "full").length;
+		this.scrollingAvailable = false;
+		const previewUsableRows = Math.max(0, maxRows - this.renderHeader(innerWidth).length - previewFooterRows - 2);
+		this.widePreviewVisible = widePreviewCandidate && previewUsableRows >= PREVIEW_LAYOUT_MIN_BODY_ROWS;
+		const body: RenderedBody = this.discardConfirmation
 			? this.renderDiscardConfirmation(innerWidth)
 			: this.model.currentStep.kind === "review"
 				? this.renderReview(innerWidth)
-				: this.renderQuestion(
-						innerWidth,
-						safeWidth >= PREVIEW_LAYOUT_MIN_WIDTH &&
-							previewUsableRows >= PREVIEW_LAYOUT_MIN_BODY_ROWS &&
-							this.currentQuestionHasPreview(),
-					);
-
+				: this.renderQuestion(innerWidth, this.widePreviewVisible);
 		let footer = this.renderFooter(innerWidth, "full");
 		let header = this.renderHeader(innerWidth);
 		const maximumSeparators = () => Number(header.length > 0) + Number(footer.length > 0);
 		const availableBodyRows = () => maxRows - header.length - footer.length - maximumSeparators();
+		if (body.lines.length > Math.max(0, availableBodyRows())) {
+			this.scrollingAvailable = true;
+			footer = this.renderFooter(innerWidth, "full");
+		}
 		if (availableBodyRows() < MIN_USEFUL_BODY_ROWS) footer = this.renderFooter(innerWidth, "compact");
 		if (availableBodyRows() < MIN_USEFUL_BODY_ROWS) header = this.renderCompactHeader(innerWidth);
 		if (availableBodyRows() < MIN_USEFUL_BODY_ROWS) footer = this.renderFooter(innerWidth, "essential");
@@ -716,7 +734,16 @@ export class QuestionnaireComponent implements Component, Focusable {
 		remainingRows -= headerSeparatorRows;
 		const footerSeparatorRows = footer.length > 0 && remainingRows >= 2 ? 1 : 0;
 		const bodyCapacity = Math.max(0, remainingRows - footerSeparatorRows);
-		const visibleBody = bodyCapacity > 0 ? this.sliceBody(body.lines, bodyCapacity, body.anchor) : [];
+		let visibleBody = bodyCapacity > 0 ? this.sliceBody(body.lines, bodyCapacity, body.anchor) : [];
+		if (body.previewLines && body.previewWidth !== undefined && body.decisionWidth !== undefined) {
+			visibleBody = this.composeWidePreview(
+				visibleBody,
+				body.previewLines,
+				body.decisionWidth,
+				body.previewWidth,
+				bodyCapacity,
+			);
+		}
 		const lines = [
 			...header,
 			...(headerSeparatorRows > 0 && visibleBody.length > 0 ? [""] : []),
@@ -900,7 +927,7 @@ export class QuestionnaireComponent implements Component, Focusable {
 	}
 
 	private toggleActivePreview(): void {
-		if (this.model.request.version !== 2) return;
+		if (this.model.request.version !== 2 || this.widePreviewVisible) return;
 		const question = this.currentQuestion();
 		if (!question || (question.kind !== "single-select" && question.kind !== "multi-select")) return;
 		const choice = question.choices[this.choiceCursors.get(question.id) ?? 0];
@@ -982,40 +1009,48 @@ export class QuestionnaireComponent implements Component, Focusable {
 	}
 
 	private renderHeader(width: number): string[] {
-		const lines = [theme.bold(theme.fg("text", this.model.request.title ?? "Questionnaire"))];
-		if (this.model.currentStep.kind === "review") {
-			if (width >= WIDE_LAYOUT_MIN_WIDTH) {
-				const responses = this.model.responses();
-				const tabs = this.model.request.questions.map((question, index) => {
-					const indicator = responses[index]?.status === "answered" ? "✓" : " ";
-					return `[${indicator} ${question.label ?? `Q${index + 1}`}]`;
-				});
-				tabs.push("[▶ Review / Submit]");
-				lines.push(...this.wrapItems(tabs, "  ", width));
-			} else {
-				lines.push(theme.bold(theme.fg("accent", "Review / Submit")));
-			}
-			return lines.flatMap((line) => wrapTextWithAnsi(line, width));
+		const title = theme.bold(theme.fg("text", this.model.request.title ?? "Questionnaire"));
+		return [truncateToWidth(title, width, "…"), this.renderProgressRail(width)];
+	}
+
+	private renderProgressRail(width: number): string {
+		const count = this.model.request.questions.length;
+		const review = this.model.currentStep.kind === "review";
+		if (width < WIDE_LAYOUT_MIN_WIDTH - PANEL_PADDING_X * 2) {
+			if (review) return truncateToWidth(theme.bold(theme.fg("accent", "Review / Submit")), width, "…");
+			const index = this.model.currentQuestionIndex ?? 0;
+			const label = this.model.request.questions[index]?.label ?? `Q${index + 1}`;
+			const position = `Question ${index + 1} of ${count}`;
+			const text = width <= visibleWidth(position) + 2 ? position : `${position} · ${label}`;
+			return truncateToWidth(theme.fg("muted", text), width, "…");
 		}
-		const index = this.model.currentQuestionIndex ?? 0;
-		if (width >= WIDE_LAYOUT_MIN_WIDTH) {
-			const responses = this.model.responses();
-			const tabs = this.model.request.questions.map((question, tabIndex) => {
-				const indicator = tabIndex === index ? "▶" : responses[tabIndex]?.status === "answered" ? "✓" : " ";
-				return `[${indicator} ${question.label ?? `Q${tabIndex + 1}`}]`;
-			});
-			tabs.push("[  Review / Submit]");
-			lines.push(...this.wrapItems(tabs, "  ", width));
-		} else {
-			const question = this.model.request.questions[index]!;
-			lines.push(
-				theme.fg(
-					"muted",
-					`Question ${index + 1} of ${this.model.request.questions.length}: ${question.label ?? `Q${index + 1}`}`,
-				),
-			);
+
+		const responses = this.model.responses();
+		const center = review ? this.reviewQuestionIndex : (this.model.currentQuestionIndex ?? 0);
+		const questionToken = (index: number): string => {
+			const current = !review && index === center;
+			const answered = responses[index]?.status === "answered";
+			const marker = current ? "▶" : answered ? "✓" : "·";
+			const text = `[${marker} ${index + 1}]`;
+			if (current) return theme.bold(theme.fg("accent", text));
+			if (answered) return theme.fg("success", text);
+			return theme.fg("dim", text);
+		};
+		const reviewToken = review ? theme.bold(theme.fg("accent", "[▶ Review]")) : theme.fg("dim", "[  Review]");
+		for (let windowSize = Math.min(PROGRESS_WINDOW_MAX_QUESTIONS, count); windowSize >= 1; windowSize--) {
+			let start = Math.max(0, center - Math.floor(windowSize / 2));
+			const end = Math.min(count, start + windowSize);
+			start = Math.max(0, end - windowSize);
+			const tokens: string[] = [];
+			if (start > 0) tokens.push(theme.fg("dim", `… ${start} more`));
+			for (let index = start; index < end; index++) tokens.push(questionToken(index));
+			if (end < count) tokens.push(theme.fg("dim", `… ${count - end} more`));
+			tokens.push(reviewToken);
+			const rail = tokens.join("  ");
+			if (visibleWidth(rail) <= width) return rail;
 		}
-		return lines.flatMap((line) => wrapTextWithAnsi(line, width));
+		const essentialRail = review ? reviewToken : `${questionToken(center)}  ${reviewToken}`;
+		return truncateToWidth(essentialRail, width, "…");
 	}
 
 	private renderCompactHeader(width: number): string[] {
@@ -1023,11 +1058,11 @@ export class QuestionnaireComponent implements Component, Focusable {
 			return wrapTextWithAnsi(theme.bold("Review / Submit"), width).slice(0, 1);
 		const index = this.model.currentQuestionIndex ?? 0;
 		const question = this.model.request.questions[index]!;
-		const text = `[${index + 1}/${this.model.request.questions.length}] ${question.label ?? `Q${index + 1}`}`;
-		return wrapTextWithAnsi(theme.fg("muted", text), width).slice(0, 1);
+		const text = `Question ${index + 1} of ${this.model.request.questions.length} · ${question.label ?? `Q${index + 1}`}`;
+		return [truncateToWidth(theme.fg("muted", text), width, "…")];
 	}
 
-	private currentQuestionHasPreview(): boolean {
+	private currentQuestionHasAnyPreview(): boolean {
 		const question = this.currentQuestion();
 		return (
 			this.model.request.version === 2 &&
@@ -1036,10 +1071,17 @@ export class QuestionnaireComponent implements Component, Focusable {
 		);
 	}
 
-	private renderQuestion(width: number, widePreview: boolean): { lines: string[]; anchor: number } {
+	private renderQuestion(width: number, widePreview: boolean): RenderedBody {
 		const question = this.currentQuestion()!;
 		const contentWidth = widePreview ? DECISION_CONTENT_WIDTH : width;
-		const lines = [...wrapTextWithAnsi(theme.bold(theme.fg("text", question.prompt)), contentWidth), ""];
+		const lines =
+			question.label && this.viewportRows() >= ACTIVE_LABEL_MIN_ROWS
+				? [
+						...wrapTextWithAnsi(theme.bold(theme.fg("text", question.label)), contentWidth),
+						...wrapTextWithAnsi(theme.fg("text", question.prompt), contentWidth),
+						"",
+					]
+				: [...wrapTextWithAnsi(theme.bold(theme.fg("text", question.prompt)), contentWidth), ""];
 		if ("context" in question && question.context) {
 			lines.push(theme.bold(theme.fg("muted", "Why I’m asking")));
 			lines.push(...this.renderRestrictedMarkdown(question.context, contentWidth), "");
@@ -1087,17 +1129,33 @@ export class QuestionnaireComponent implements Component, Focusable {
 		}
 		if (!widePreview) return { lines, anchor };
 		const previewWidth = Math.max(PREVIEW_MIN_WIDTH, width - DECISION_CONTENT_WIDTH - PREVIEW_GUTTER_WIDTH);
+		const previewContentWidth = Math.max(1, previewWidth - 1);
 		const preview = this.activePreview(question);
 		const previewLines = preview
-			? this.renderPreview(preview, previewWidth, false)
-			: [theme.fg("dim", "No preview for active choice")];
-		const combined: string[] = [];
-		for (let index = 0; index < Math.max(lines.length, previewLines.length); index++) {
-			const left = lines[index] ?? "";
-			const leftPadding = " ".repeat(Math.max(0, DECISION_CONTENT_WIDTH - visibleWidth(left)));
-			combined.push(`${left}${leftPadding}${" ".repeat(PREVIEW_GUTTER_WIDTH)}${previewLines[index] ?? ""}`);
+			? this.renderPreview(preview, previewContentWidth, false)
+			: this.renderUnavailablePreview(question, previewContentWidth);
+		return { lines, anchor, previewLines, previewWidth, decisionWidth: DECISION_CONTENT_WIDTH };
+	}
+
+	private composeWidePreview(
+		decisionLines: string[],
+		previewLines: string[],
+		decisionWidth: number,
+		previewWidth: number,
+		capacity: number,
+	): string[] {
+		const rowCount = Math.min(capacity, Math.max(decisionLines.length, previewLines.length));
+		const visiblePreview = previewLines.slice(0, rowCount);
+		if (previewLines.length > rowCount && visiblePreview.length > 0) {
+			visiblePreview[visiblePreview.length - 1] = theme.fg("muted", "… preview continues");
 		}
-		return { lines: combined, anchor };
+		const background = theme.getPopupBackgroundColor();
+		return Array.from({ length: rowCount }, (_, index) => {
+			const line = decisionLines[index] ?? "";
+			const left = visibleWidth(line) === decisionWidth ? line : truncateToWidth(line, decisionWidth, "…", true);
+			const preview = truncateToWidth(visiblePreview[index] ?? "", Math.max(1, previewWidth - 1), "…", true);
+			return `${left}${theme.fg("dim", " │")}${background(` ${preview}`)}`;
+		});
 	}
 
 	private renderChoices(
@@ -1168,15 +1226,7 @@ export class QuestionnaireComponent implements Component, Focusable {
 			if (index === cursor) anchor = lines.length;
 			const selected = index === cursor;
 			const glyph = question.kind === "multi-select" ? (row.checked ? "☑" : "☐") : row.checked ? "●" : "○";
-			const prefix = `${selected ? "▶" : " "} ${glyph} `;
-			lines.push(
-				...this.wrapWithPrefix(
-					`${row.label}${row.recommended ? " [Recommended]" : ""}`,
-					prefix,
-					width,
-					selected ? "accent" : "text",
-				),
-			);
+			lines.push(...this.renderChoiceRow(row.label, glyph, selected, row.checked, Boolean(row.recommended), width));
 			if (row.description) lines.push(...this.wrapWithPrefix(row.description, "      ", width, "muted"));
 			if (row.detail)
 				lines.push(
@@ -1214,6 +1264,27 @@ export class QuestionnaireComponent implements Component, Focusable {
 		return { lines, anchor };
 	}
 
+	private renderChoiceRow(
+		label: string,
+		glyph: string,
+		focused: boolean,
+		checked: boolean,
+		recommended: boolean,
+		width: number,
+	): string[] {
+		const marker = focused ? theme.bold(theme.fg("accent", "▶")) : " ";
+		const styledGlyph = theme.fg(checked ? "success" : "dim", glyph);
+		const badge = recommended ? theme.bold(theme.fg("accent", " [Recommended]")) : "";
+		const labelWidth = Math.max(1, width - 4);
+		const labelLines = wrapTextWithAnsi(`${theme.fg("text", label)}${badge}`, labelWidth);
+		const selection = focused ? theme.getSelectionBackgroundColor() : undefined;
+		return labelLines.map((labelLine, index) => {
+			const prefix = index === 0 ? `${marker} ${styledGlyph} ` : "    ";
+			const line = truncateToWidth(`${prefix}${labelLine}`, width, "…", focused);
+			return selection ? selection(line) : line;
+		});
+	}
+
 	private recommendationChoiceId(question: QuestionnaireQuestion): string | undefined {
 		if (!("recommendation" in question) || typeof question.recommendation !== "object" || !question.recommendation)
 			return undefined;
@@ -1237,6 +1308,28 @@ export class QuestionnaireComponent implements Component, Focusable {
 		if (question.kind !== "single-select" && question.kind !== "multi-select") return undefined;
 		const choice = question.choices[this.choiceCursors.get(question.id) ?? 0];
 		return choice && "preview" in choice && this.isQuestionnairePreview(choice.preview) ? choice.preview : undefined;
+	}
+
+	private renderUnavailablePreview(question: QuestionnaireQuestion, width: number): string[] {
+		const label = this.activeChoiceLabel(question);
+		return [
+			theme.bold(theme.fg("muted", "Preview")),
+			...wrapTextWithAnsi(theme.fg("muted", `No visual preview for “${label}”.`), width),
+			...wrapTextWithAnsi(
+				theme.fg("muted", "See its option description and tradeoffs in the decision pane."),
+				width,
+			),
+		];
+	}
+
+	private activeChoiceLabel(question: QuestionnaireQuestion): string {
+		if (question.kind !== "single-select" && question.kind !== "multi-select") return "active choice";
+		const cursor = this.choiceCursors.get(question.id) ?? 0;
+		const choice = question.choices[cursor];
+		if (choice) return choice.label;
+		const state = this.model.getState(question.id);
+		const otherText = "otherText" in state ? state.otherText.trim() : "";
+		return otherText || question.other?.label || "Something else…";
 	}
 
 	private renderRestrictedMarkdown(markdown: string, width: number): string[] {
@@ -1284,7 +1377,7 @@ export class QuestionnaireComponent implements Component, Focusable {
 	}
 
 	private renderPreview(preview: ExtensionQuestionnairePreview, width: number, constrained: boolean): string[] {
-		const title = preview.title ? `Example · ${preview.title}` : "Example";
+		const title = preview.title ? `Preview · ${preview.title}` : "Preview";
 		const lines = [theme.bold(theme.fg("muted", title))];
 		let markdownBuffer: string[] = [];
 		let inFence = false;
@@ -1329,7 +1422,12 @@ export class QuestionnaireComponent implements Component, Focusable {
 					index === this.reviewQuestionIndex ? "accent" : "text",
 				),
 			);
-			lines.push(...this.wrapWithPrefix(this.responseSummary(question, responses[index]!), "    ", width, "muted"));
+			const response = responses[index]!;
+			if (response.status === "unanswered") {
+				lines.push(...this.wrapWithPrefix("⚠ Unanswered", "    ", width, "warning"));
+			} else {
+				lines.push(...this.wrapWithPrefix(this.responseSummary(question, response), "    ", width, "muted"));
+			}
 			const note = "note" in responses[index]! ? responses[index]!.note : undefined;
 			if (note) {
 				const preview =
@@ -1379,37 +1477,42 @@ export class QuestionnaireComponent implements Component, Focusable {
 			const previous = this.keyText("app.questionnaire.previous");
 			const cancel = this.keyText("tui.select.cancel");
 			const confirm = this.keyText("tui.select.confirm");
-			const up = this.keyText("tui.select.up");
-			const down = this.keyText("tui.select.down");
-			const pageUp = this.keyText("tui.select.pageUp");
-			const pageDown = this.keyText("tui.select.pageDown");
-			const notes = this.keyText("app.questionnaire.notes");
-			const preview = this.keyText("app.questionnaire.togglePreview");
-			let hint: string;
-			if (mode === "compact") {
-				hint = `${pageUp}/${pageDown} scroll · ${cancel} dismiss`;
-			} else {
-				const currentQuestion = this.currentQuestion();
-				if (this.discardConfirmation) {
-					hint = `${confirm} choose · ${cancel} keep editing`;
-				} else if (this.isOtherEditorOpen) {
-					hint = `${confirm} accept Other · ${cancel} return to choices`;
-				} else if (this.model.currentStep.kind === "review") {
-					hint = `${previous}/${next} Edit/Submit · ${up}/${down} answer · ${confirm} choose · ${pageUp}/${pageDown} scroll · ${cancel} dismiss`;
-				} else if (currentQuestion?.kind === "multi-select") {
-					hint = `${up}/${down} move · ${this.keyText("app.questionnaire.toggle")}/${confirm} toggle · ${previous}/${next} previous/next · ${pageUp}/${pageDown} scroll · ${cancel} dismiss`;
-				} else if (currentQuestion?.kind === "multiline-text") {
-					const newline = this.keyText("tui.input.newLine");
-					hint = `${newline} newline · ${previous}/${next} previous/next · ${pageUp}/${pageDown} scroll · ${cancel} dismiss`;
-				} else if (currentQuestion?.kind === "short-text") {
-					hint = `${confirm}/${next} next · ${previous} previous · ${pageUp}/${pageDown} scroll · ${cancel} dismiss`;
+			const chips: string[] = [];
+			const currentQuestion = this.currentQuestion();
+			if (this.discardConfirmation) {
+				chips.push(`${confirm} choose`, `${cancel} keep editing`);
+			} else if (this.isNoteEditorOpen) {
+				chips.push(`${confirm} save & next`, `${cancel} close note`);
+			} else if (this.isOtherEditorOpen) {
+				chips.push(`${confirm} accept Other`, `${cancel} choices`);
+			} else if (this.model.currentStep.kind === "review") {
+				chips.push(`${confirm} choose`, `${previous}/${next} Edit/Submit`);
+				if (mode === "full")
+					chips.push(`${this.keyText("tui.select.up")}/${this.keyText("tui.select.down")} answer`);
+				chips.push(`${cancel} dismiss`);
+			} else if (currentQuestion) {
+				if (currentQuestion.kind === "multi-select") {
+					chips.push(`${this.keyText("app.questionnaire.toggle")}/${confirm} toggle`);
+				} else if (currentQuestion.kind === "multiline-text") {
+					chips.push(`${this.keyText("tui.input.newLine")} newline`);
 				} else {
-					hint = `${up}/${down} move · ${confirm} select · ${previous}/${next} previous/next · ${pageUp}/${pageDown} scroll · ${cancel} dismiss`;
+					chips.push(`${confirm} ${currentQuestion.kind === "short-text" ? "next" : "select"}`);
+				}
+				chips.push(`${previous}/${next} page`, `${cancel} dismiss`);
+				if (mode === "full" && currentQuestion.kind !== "short-text" && currentQuestion.kind !== "multiline-text") {
+					chips.unshift(`${this.keyText("tui.select.up")}/${this.keyText("tui.select.down")} move`);
+				}
+				if (this.model.request.version === 2) {
+					chips.push(`${this.keyText("app.questionnaire.notes")} note`);
+					if (!this.widePreviewVisible && this.activePreview(currentQuestion)) {
+						chips.push(`${this.keyText("app.questionnaire.togglePreview")} preview`);
+					}
 				}
 			}
-			if (this.model.request.version === 2 && !this.isNoteEditorOpen && this.currentQuestion())
-				hint += ` · ${notes} notes · ${preview} preview`;
-			lines.push(...wrapTextWithAnsi(theme.fg("muted", hint), width));
+			if (this.scrollingAvailable) {
+				chips.push(`${this.keyText("tui.select.pageUp")}/${this.keyText("tui.select.pageDown")} scroll`);
+			}
+			if (chips.length > 0) lines.push(...wrapTextWithAnsi(theme.fg("muted", chips.join(" · ")), width));
 		}
 		lines.push(
 			...wrapTextWithAnsi(
@@ -1587,21 +1690,12 @@ export class QuestionnaireComponent implements Component, Focusable {
 		return Number.isFinite(rows) && rows > 0 ? Math.max(1, Math.floor(rows)) : 24;
 	}
 
-	private wrapItems(items: string[], separator: string, width: number): string[] {
-		const lines: string[] = [];
-		let line = "";
-		for (const item of items) {
-			const candidate = line ? `${line}${separator}${item}` : item;
-			if (line && visibleWidth(candidate) > width) {
-				lines.push(...wrapTextWithAnsi(line, width));
-				line = item;
-			} else line = candidate;
-		}
-		if (line) lines.push(...wrapTextWithAnsi(line, width));
-		return lines;
-	}
-
-	private wrapWithPrefix(text: string, prefix: string, width: number, color: "accent" | "text" | "muted"): string[] {
+	private wrapWithPrefix(
+		text: string,
+		prefix: string,
+		width: number,
+		color: "accent" | "text" | "muted" | "warning",
+	): string[] {
 		const prefixWidth = visibleWidth(prefix);
 		const contentWidth = Math.max(1, width - prefixWidth);
 		return wrapTextWithAnsi(theme.fg(color, text), contentWidth).map(
