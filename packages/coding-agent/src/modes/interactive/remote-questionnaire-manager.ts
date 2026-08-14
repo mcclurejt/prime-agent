@@ -520,7 +520,7 @@ export class RemoteQuestionnaireManager {
 		try {
 			child = this.dependencies.spawn(
 				this.settings.cloudflaredPath ?? "cloudflared",
-				["tunnel", "--no-autoupdate", "--metrics", "127.0.0.1:0", "--url", server.url],
+				["tunnel", "--no-autoupdate", "--protocol", "http2", "--metrics", "127.0.0.1:0", "--url", server.url],
 				{ detached: true, shell: false, stdio: ["ignore", "pipe", "pipe"] },
 			);
 			if (!child.pid) throw new Error("cloudflared did not supply a PID");

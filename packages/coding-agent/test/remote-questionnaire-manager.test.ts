@@ -602,7 +602,7 @@ describe("RemoteQuestionnaireManager", () => {
 		expect(fake.values.createServer).toHaveBeenCalledBefore(fake.values.spawn as ReturnType<typeof vi.fn>);
 		expect(fake.values.spawn).toHaveBeenCalledWith(
 			settings.cloudflaredPath,
-			["tunnel", "--no-autoupdate", "--metrics", "127.0.0.1:0", "--url", fake.server.url],
+			["tunnel", "--no-autoupdate", "--protocol", "http2", "--metrics", "127.0.0.1:0", "--url", fake.server.url],
 			{ detached: true, shell: false, stdio: ["ignore", "pipe", "pipe"] },
 		);
 		fake.child.stderr.write("INF https://blue-");
