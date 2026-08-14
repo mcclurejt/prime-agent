@@ -274,7 +274,7 @@ export class RemoteQuestionnaireServer {
 			response.end(this.stalePageShell(view.title, session.csrf));
 			return undefined;
 		}
-		if (this.statusValue !== "active") {
+		if (this.statusValue !== "active" || this.suspended) {
 			response.end(this.terminalPageShell(view.title));
 			return undefined;
 		}
@@ -378,7 +378,7 @@ export class RemoteQuestionnaireServer {
 				(this.status !== "active" || this.suspended) &&
 				!(this.statusValue === "stale" && action.action === "reload")
 			)
-				return this.respondStatus(response, session);
+				return this.respondMutationStatus(response, session, isForm);
 			const prior = this.mutationTail;
 			let release: (() => void) | undefined;
 			this.mutationTail = new Promise<void>((resolve) => {
@@ -390,15 +390,15 @@ export class RemoteQuestionnaireServer {
 					(this.status !== "active" || this.suspended) &&
 					!(this.statusValue === "stale" && action.action === "reload")
 				)
-					return this.respondStatus(response, session);
+					return this.respondMutationStatus(response, session, isForm);
 				const result = (await this.dependencies.onMutation({ sessionId: session.id, page: action })) ?? {
 					kind: "accepted" as const,
 				};
-				if (result.kind === "suspended") return this.respondSuspended(result.message, response, session);
+				if (result.kind === "suspended") return this.respondSuspended(result.message, response, session, isForm);
 				if (result.kind === "stale") return this.setStaleResult(result.message, response, session, isForm);
 				if (result.kind === "terminal") {
 					this.setTerminal(result.message);
-					return this.respondStatus(response, session);
+					return this.respondMutationStatus(response, session, isForm);
 				}
 				if (action.action === "reload") {
 					this.setActive();
@@ -432,7 +432,12 @@ export class RemoteQuestionnaireServer {
 
 	private redirectToPage(response: ServerResponse): undefined {
 		response.setHeader("location", this.route);
-		return this.respond(response, 303);
+		response.setHeader("content-type", "text/html; charset=utf-8");
+		return this.respond(
+			response,
+			303,
+			'<!doctype html><html lang="en"><title>Continuing</title><p>Continuing…</p></html>',
+		);
 	}
 
 	private respondValidation(response: ServerResponse, session: Session, message: string, isForm: boolean): undefined {
@@ -498,9 +503,14 @@ export class RemoteQuestionnaireServer {
 		}
 	}
 
-	private respondSuspended(message: string | undefined, response: ServerResponse, session: Session): undefined {
+	private respondSuspended(
+		message: string | undefined,
+		response: ServerResponse,
+		session: Session,
+		isForm: boolean,
+	): undefined {
 		this.setSuspended(message);
-		return this.respondStatus(response, session);
+		return this.respondMutationStatus(response, session, isForm);
 	}
 
 	private setStaleResult(
@@ -517,6 +527,10 @@ export class RemoteQuestionnaireServer {
 		this.statusValue = status;
 		this.statusMessage = message;
 		if (status === "revoked") this.sessions.clear();
+	}
+
+	private respondMutationStatus(response: ServerResponse, session: Session, isForm: boolean): undefined {
+		return isForm ? this.pageShell(response, session) : this.respondStatus(response, session);
 	}
 
 	private respondStatus(response: ServerResponse, _session: Session | undefined): undefined {

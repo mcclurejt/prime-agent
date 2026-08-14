@@ -393,7 +393,8 @@ describe("RemoteQuestionnaireManager", () => {
 				headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
 				body: new URLSearchParams({ csrf, action: "submit" }).toString(),
 			});
-			expect(submitted.body).toContain("Submitted.");
+			expect(submitted.headers["content-type"]).toBe("text/html; charset=utf-8");
+			expect(submitted.body).toContain('<p role="status">Submitted.</p>');
 		} finally {
 			await real.close();
 		}

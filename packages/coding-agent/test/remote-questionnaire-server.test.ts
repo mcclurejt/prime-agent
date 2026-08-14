@@ -641,6 +641,8 @@ describe("RemoteQuestionnaireServer browser form regressions", () => {
 		});
 		expect(form.status).toBe(303);
 		expect(form.headers.location).toBe(`/r/${server.routeId}`);
+		expect(form.headers["content-type"]).toBe("text/html; charset=utf-8");
+		expect(form.body).toContain("Continuing");
 		expect((await send(server.url, { headers: { cookie: cookie(boot) } })).body).toContain('value="browser answer"');
 		const review = await send(`${server.url}/mutate`, {
 			method: "POST",
