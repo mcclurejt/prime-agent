@@ -52,7 +52,12 @@ import { BashExecutionComponent } from "../src/modes/interactive/components/bash
 import type { ConfigurationMenuComponent } from "../src/modes/interactive/components/configuration-menu.js";
 import type { AuthSelectorProvider } from "../src/modes/interactive/components/oauth-selector.js";
 import type { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.js";
-import { formatSplashCwd, InteractiveMode, truncatePathMiddle } from "../src/modes/interactive/interactive-mode.js";
+import {
+	formatSplashCwd,
+	InteractiveMode,
+	type InteractiveRemoteQuestionnaireRuntime,
+	truncatePathMiddle,
+} from "../src/modes/interactive/interactive-mode.js";
 import { ClientPromptStashStore, type PromptStashState } from "../src/modes/interactive/prompt-stash-state.js";
 import { initTheme, theme } from "../src/modes/interactive/theme/theme.js";
 
@@ -1289,6 +1294,192 @@ describe("InteractiveMode connection events", () => {
 		expect(restoreStreamingMessageFromSnapshot).toHaveBeenNthCalledWith(2, streamingMessage);
 	});
 
+	test("injects one globally opted-in Darwin manager with labels and contains a reaper error", () => {
+		const manager = {
+			present: vi.fn(),
+			dispose: vi.fn(async () => {}),
+			suspend: vi.fn(),
+			rebind: vi.fn(),
+			terminal: vi.fn(),
+			revoke: vi.fn(),
+		};
+		const createManager = vi.fn<InteractiveRemoteQuestionnaireRuntime["createManager"]>(() => manager);
+		const reap = vi.fn(async () => {
+			throw new Error("journal unavailable");
+		});
+		const fakeThis = {
+			options: { remoteQuestionnaireRuntime: { platform: "darwin", createManager, reap } },
+			agentConnection: { questionnaire: {} },
+			settingsManager: {
+				getRemoteQuestionnaireSettings: vi.fn(() => ({
+					enabled: true,
+					recipient: "+12225550123",
+					delayMinutes: 5,
+					linkLifetimeHours: 12,
+				})),
+			},
+			ui: {},
+			keybindings: {},
+			remoteQuestionnaireManager: undefined,
+			remoteQuestionnaireReaperStarted: false,
+			daemonQuestionnaireHost: undefined,
+			connectionState: { cwd: "/repo/project", sessionName: undefined, sessionId: "session-id" },
+			getCurrentCwd: () => "/repo/project",
+			getCurrentSessionName: () => undefined,
+		};
+		const getHost = (
+			InteractiveMode.prototype as unknown as { getDaemonQuestionnaireHost(this: typeof fakeThis): unknown }
+		).getDaemonQuestionnaireHost;
+		expect(getHost.call(fakeThis)).toBeDefined();
+		expect(getHost.call(fakeThis)).toBeDefined();
+		expect(createManager).toHaveBeenCalledOnce();
+		const labels = createManager.mock.calls[0]?.[1]();
+		expect(labels).toEqual({ projectLabel: "project", sessionLabel: "session-id" });
+		expect(reap).toHaveBeenCalledOnce();
+	});
+
+	test("does not create a manager for non-Darwin or invalid settings, but reaps once for Darwin presenters", () => {
+		for (const [platform, settings] of [
+			["linux", { enabled: true }],
+			["darwin", undefined],
+		] as const) {
+			const createManager = vi.fn();
+			const reap = vi.fn(async () => {});
+			const fakeThis = {
+				options: { remoteQuestionnaireRuntime: { platform, createManager, reap } },
+				agentConnection: { questionnaire: {} },
+				settingsManager: { getRemoteQuestionnaireSettings: vi.fn(() => settings) },
+				ui: {},
+				keybindings: {},
+				remoteQuestionnaireManager: undefined,
+				remoteQuestionnaireReaperStarted: false,
+				daemonQuestionnaireHost: undefined,
+				connectionState: undefined,
+				getCurrentCwd: () => "/repo",
+				getCurrentSessionName: () => undefined,
+			};
+			(
+				InteractiveMode.prototype as unknown as { getDaemonQuestionnaireHost(this: typeof fakeThis): unknown }
+			).getDaemonQuestionnaireHost.call(fakeThis);
+			expect(createManager).not.toHaveBeenCalled();
+			expect(reap).toHaveBeenCalledTimes(platform === "darwin" ? 1 : 0);
+		}
+	});
+
+	test("does nothing when the connection has no questionnaire transport", () => {
+		const createManager = vi.fn();
+		const reap = vi.fn(async () => {});
+		const getRemoteQuestionnaireSettings = vi.fn(() => ({
+			enabled: true,
+			recipient: "+12225550123",
+			delayMinutes: 5,
+			linkLifetimeHours: 12,
+		}));
+		const fakeThis = {
+			options: { remoteQuestionnaireRuntime: { platform: "darwin", createManager, reap } },
+			agentConnection: {},
+			settingsManager: { getRemoteQuestionnaireSettings },
+			ui: {},
+			keybindings: {},
+			remoteQuestionnaireManager: undefined,
+			remoteQuestionnaireReaperStarted: false,
+			daemonQuestionnaireHost: undefined,
+		};
+		const getHost = (
+			InteractiveMode.prototype as unknown as { getDaemonQuestionnaireHost(this: typeof fakeThis): unknown }
+		).getDaemonQuestionnaireHost;
+
+		expect(getHost.call(fakeThis)).toBeUndefined();
+		expect(getRemoteQuestionnaireSettings).not.toHaveBeenCalled();
+		expect(createManager).not.toHaveBeenCalled();
+		expect(reap).not.toHaveBeenCalled();
+		expect(fakeThis.remoteQuestionnaireManager).toBeUndefined();
+		expect(fakeThis.remoteQuestionnaireReaperStarted).toBe(false);
+	});
+
+	test("reset conceals the daemon host without replacing its process-lifetime remote manager", async () => {
+		const manager = { dispose: vi.fn(async () => {}) };
+		const conceal = vi.fn();
+		const setPresentable = vi.fn(async () => {});
+		const fakeThis = {
+			extensionQuestionnaireHost: undefined,
+			daemonQuestionnaireHost: { conceal },
+			remoteQuestionnaireManager: manager,
+			agentConnection: { questionnaire: { setPresentable } },
+			cancelActiveConnectionExtensionUiRequests: vi.fn(),
+			closeHeartbeatManager: vi.fn(),
+			extensionSelector: undefined,
+			extensionInput: undefined,
+			extensionEditor: undefined,
+			ui: { hideOverlay: vi.fn() },
+			clearExtensionTerminalInputListeners: vi.fn(),
+			setExtensionFooter: vi.fn(),
+			setExtensionHeader: vi.fn(),
+			clearExtensionWidgets: vi.fn(),
+			footerDataProvider: { clearExtensionStatuses: vi.fn() },
+			footer: { invalidate: vi.fn() },
+			autocompleteProviderWrappers: [],
+			setCustomEditorComponent: vi.fn(),
+			setupAutocompleteProvider: vi.fn(),
+			defaultEditor: {},
+			updateTerminalTitle: vi.fn(),
+			workingMessage: "working",
+			workingVisible: false,
+			setWorkingIndicator: vi.fn(),
+			loadingAnimation: undefined,
+			setHiddenThinkingLabel: vi.fn(),
+		} as unknown as InteractiveMode;
+		const reset = (
+			InteractiveMode.prototype as unknown as {
+				resetExtensionUI(this: InteractiveMode, reason: "extension-reload"): void;
+			}
+		).resetExtensionUI;
+
+		reset.call(fakeThis, "extension-reload");
+		await flushAsyncWork();
+
+		expect(conceal).toHaveBeenCalledOnce();
+		expect(setPresentable).toHaveBeenCalledWith(false);
+		expect((fakeThis as unknown as { remoteQuestionnaireManager: unknown }).remoteQuestionnaireManager).toBe(manager);
+		expect(manager.dispose).not.toHaveBeenCalled();
+	});
+
+	test("starts remote manager disposal once from repeated synchronous stops", async () => {
+		const dispose = vi.fn(async () => {});
+		const disposeRemoteQuestionnaireManager = (
+			InteractiveMode.prototype as unknown as {
+				disposeRemoteQuestionnaireManager(this: InteractiveMode): Promise<void>;
+			}
+		).disposeRemoteQuestionnaireManager;
+		const fakeThis = {
+			remoteQuestionnaireManager: { dispose },
+			disposeRemoteQuestionnaireManager,
+			unregisterSignalHandlers: vi.fn(),
+			clearCtrlCExitHint: vi.fn(),
+			clearEscapeRepeat: vi.fn(),
+			settingsManager: { getShowTerminalProgress: () => false },
+			stopWorkingLoader: vi.fn(),
+			endFeatureHintRun: vi.fn(),
+			stopWorkingPulse: vi.fn(),
+			stopGoalTrayTimer: vi.fn(),
+			closeHeartbeatManager: vi.fn(),
+			extensionQuestionnaireHost: undefined,
+			daemonQuestionnaireHost: undefined,
+			agentConnection: {},
+			clearExtensionTerminalInputListeners: vi.fn(),
+			footer: { dispose: vi.fn() },
+			footerDataProvider: { dispose: vi.fn() },
+			isInitialized: false,
+		} as unknown as InteractiveMode;
+		const stop = (InteractiveMode.prototype as unknown as { stop(this: InteractiveMode): void }).stop;
+
+		stop.call(fakeThis);
+		stop.call(fakeThis);
+		await flushAsyncWork();
+
+		expect(dispose).toHaveBeenCalledOnce();
+	});
+
 	test("routes daemon questionnaire events only through the daemon questionnaire host", async () => {
 		let listener: ((event: AgentConnectionEvent) => Promise<void> | void) | undefined;
 		const questionnaireHost = {
@@ -1340,6 +1531,34 @@ describe("InteractiveMode connection events", () => {
 		expect(questionnaireHost.present).toHaveBeenCalledWith(presentation);
 		expect(questionnaireHost.withdraw).toHaveBeenCalledWith("active-a", lease);
 		expect(fakeThis.showError).not.toHaveBeenCalled();
+	});
+
+	test("suspends the daemon questionnaire host on reconnect loss without routing remote state from events", async () => {
+		let listener:
+			| ((event: { type: "connection_status"; status: "connected" | "reconnecting" }) => Promise<void> | void)
+			| undefined;
+		const daemonQuestionnaireHost = { suspend: vi.fn() };
+		const fakeThis = {
+			agentConnection: {
+				subscribe: vi.fn((callback) => {
+					listener = callback;
+					return vi.fn();
+				}),
+			},
+			sessionEventQueue: Promise.resolve(),
+			sessionEventGeneration: 0,
+			daemonQuestionnaireHost,
+			showStatus: vi.fn(),
+			showError: vi.fn(),
+			refreshHeartbeatCatalog: vi.fn(async () => {}),
+			setDaemonQuestionnairePresentable: vi.fn(async () => {}),
+		};
+		(InteractiveMode.prototype as unknown as { subscribeToAgent(this: typeof fakeThis): void }).subscribeToAgent.call(
+			fakeThis,
+		);
+		await listener?.({ type: "connection_status", status: "reconnecting" });
+		expect(daemonQuestionnaireHost.suspend).toHaveBeenCalledOnce();
+		expect(fakeThis.setDaemonQuestionnairePresentable).not.toHaveBeenCalled();
 	});
 
 	test("clears extension UI when a connection-backed session is replaced", async () => {

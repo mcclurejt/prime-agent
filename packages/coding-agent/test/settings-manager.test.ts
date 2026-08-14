@@ -502,6 +502,72 @@ describe("SettingsManager", () => {
 			expect(servers?.shared).toEqual({ type: "http", url: "https://project.shared/mcp" });
 		});
 	});
+	describe("remote questionnaire", () => {
+		it("fails closed, resolves defaults, and ignores project overrides", () => {
+			let manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.getRemoteQuestionnaireSettings()).toBeUndefined();
+
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ remoteQuestionnaire: { enabled: "true" } }));
+			manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.getRemoteQuestionnaireSettings()).toBeUndefined();
+
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				JSON.stringify({ remoteQuestionnaire: { enabled: true, recipient: "  +15551234567  " } }),
+			);
+			writeFileSync(
+				join(projectDir, ".prime", "agent", "settings.json"),
+				JSON.stringify({
+					remoteQuestionnaire: { enabled: true, recipient: "project@example.com", delayMinutes: 1 },
+				}),
+			);
+			manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.getRemoteQuestionnaireSettings()).toEqual({
+				enabled: true,
+				recipient: "+15551234567",
+				delayMinutes: 5,
+				linkLifetimeHours: 12,
+			});
+		});
+
+		it("rejects malformed recipient, durations, and cloudflared paths", () => {
+			const invalid = [
+				{ enabled: true },
+				{ enabled: true, recipient: "a\u0000b" },
+				{ enabled: true, recipient: "recipient", delayMinutes: 0 },
+				{ enabled: true, recipient: "recipient", delayMinutes: Number.POSITIVE_INFINITY },
+				{ enabled: true, recipient: "recipient", linkLifetimeHours: -1 },
+				{ enabled: true, recipient: "recipient", cloudflaredPath: "" },
+				{ enabled: true, recipient: "recipient", cloudflaredPath: "relative/cloudflared" },
+			];
+
+			for (const remoteQuestionnaire of invalid) {
+				writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ remoteQuestionnaire }));
+				expect(SettingsManager.create(projectDir, agentDir).getRemoteQuestionnaireSettings()).toBeUndefined();
+			}
+
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				JSON.stringify({
+					remoteQuestionnaire: {
+						enabled: true,
+						recipient: "person@example.com",
+						delayMinutes: 7.5,
+						linkLifetimeHours: 24,
+						cloudflaredPath: "/opt/homebrew/bin/cloudflared",
+					},
+				}),
+			);
+			expect(SettingsManager.create(projectDir, agentDir).getRemoteQuestionnaireSettings()).toEqual({
+				enabled: true,
+				recipient: "person@example.com",
+				delayMinutes: 7.5,
+				linkLifetimeHours: 24,
+				cloudflaredPath: "/opt/homebrew/bin/cloudflared",
+			});
+		});
+	});
+
 	describe("idle worker eviction", () => {
 		it("defaults to 90 minutes and treats none as off", () => {
 			const manager = SettingsManager.create(projectDir, agentDir);

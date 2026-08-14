@@ -1,12 +1,14 @@
 import type { ServiceTier, Transport } from "@earendil-works/pi-ai";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
-import { dirname, join } from "path";
+import { dirname, isAbsolute, join } from "path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.js";
 
 const RECENT_MODELS_LIMIT = 20;
 export const DEFAULT_IDLE_EVICTION_MINUTES = 90;
+export const DEFAULT_REMOTE_QUESTIONNAIRE_DELAY_MINUTES = 5;
+export const DEFAULT_REMOTE_QUESTIONNAIRE_LINK_LIFETIME_HOURS = 12;
 
 export interface CompactionSettings {
 	enabled?: boolean; // default: true
@@ -125,6 +127,14 @@ export interface SessionSummarySettings {
 	workingIntervalMs?: number;
 }
 
+export interface RemoteQuestionnaireSettings {
+	enabled?: boolean;
+	recipient?: string;
+	delayMinutes?: number;
+	linkLifetimeHours?: number;
+	cloudflaredPath?: string;
+}
+
 export interface Settings {
 	onboardingShown?: boolean;
 	onboardingCompleted?: boolean;
@@ -134,6 +144,7 @@ export interface Settings {
 	defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	defaultServiceTier?: ServiceTier;
 	sessionSummary?: SessionSummarySettings;
+	remoteQuestionnaire?: RemoteQuestionnaireSettings;
 	rlmMaxDepth?: number; // default for new sessions; unset falls through to RLM_MAX_DEPTH, then 1
 	idleEvictionMinutes?: number | "off"; // global daemon policy; default: 90
 	transport?: TransportSetting; // default: "auto"
@@ -768,6 +779,49 @@ export class SettingsManager {
 		this.save();
 	}
 
+	getRemoteQuestionnaireSettings():
+		| (Required<Omit<RemoteQuestionnaireSettings, "cloudflaredPath">> &
+				Pick<RemoteQuestionnaireSettings, "cloudflaredPath">)
+		| undefined {
+		const configured = this.globalSettings.remoteQuestionnaire;
+		if (configured?.enabled !== true) return undefined;
+
+		const recipient = configured.recipient?.trim();
+		if (!recipient || !isRemoteQuestionnaireRecipient(recipient)) return undefined;
+		const delayMinutes =
+			configured.delayMinutes === undefined ? DEFAULT_REMOTE_QUESTIONNAIRE_DELAY_MINUTES : configured.delayMinutes;
+		const linkLifetimeHours =
+			configured.linkLifetimeHours === undefined
+				? DEFAULT_REMOTE_QUESTIONNAIRE_LINK_LIFETIME_HOURS
+				: configured.linkLifetimeHours;
+		if (
+			typeof delayMinutes !== "number" ||
+			!Number.isFinite(delayMinutes) ||
+			delayMinutes <= 0 ||
+			typeof linkLifetimeHours !== "number" ||
+			!Number.isFinite(linkLifetimeHours) ||
+			linkLifetimeHours <= 0
+		) {
+			return undefined;
+		}
+
+		const cloudflaredPath = configured.cloudflaredPath;
+		if (
+			cloudflaredPath !== undefined &&
+			(!cloudflaredPath || !isAbsolute(cloudflaredPath) || /[\p{Cc}]/u.test(cloudflaredPath))
+		) {
+			return undefined;
+		}
+
+		return {
+			enabled: true,
+			recipient,
+			delayMinutes,
+			linkLifetimeHours,
+			...(cloudflaredPath === undefined ? {} : { cloudflaredPath }),
+		};
+	}
+
 	getIdleEvictionMinutes(): number | "off" {
 		const value: unknown = this.globalSettings.idleEvictionMinutes;
 		if (value === "off" || value === "none") return "off";
@@ -1233,4 +1287,14 @@ export class SettingsManager {
 		this.markModified("warnings");
 		this.save();
 	}
+}
+
+function isRemoteQuestionnaireRecipient(value: string): boolean {
+	if (value.length > 254 || /[\p{Cc}]/u.test(value) || /^[\s-]/u.test(value)) return false;
+	return (
+		/^\+[1-9]\d{7,14}$/u.test(value) ||
+		/^[A-Za-z0-9](?:[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]{0,62}[A-Za-z0-9])?@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$/u.test(
+			value,
+		)
+	);
 }

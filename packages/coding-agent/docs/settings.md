@@ -155,6 +155,34 @@ When a provider requests a retry delay longer than `retry.provider.maxRetryDelay
 | `followUpMode` | string | `"one-at-a-time"` | How follow-up messages are sent: `"all"` or `"one-at-a-time"` |
 | `transport` | string | `"sse"` | Preferred transport for providers that support multiple transports: `"sse"`, `"websocket"`, or `"auto"` |
 
+#### remoteQuestionnaire
+
+`remoteQuestionnaire` is an opt-in, global-only interactive setting. It is read only from `~/.prime/agent/settings.json`; project settings cannot enable or override it. It is disabled unless `enabled` is exactly `true`, the recipient is a valid E.164 phone number or conservative Apple-ID email address, and the client is a macOS interactive rich-questionnaire presenter. Invalid settings, unsupported clients, or operational failures leave the terminal questionnaire local and usable.
+
+```json
+{
+  "remoteQuestionnaire": {
+    "enabled": true,
+    "recipient": "+15551234567",
+    "delayMinutes": 5,
+    "linkLifetimeHours": 12,
+    "cloudflaredPath": "/opt/homebrew/bin/cloudflared"
+  }
+}
+```
+
+`recipient` is the E.164 iMessage phone number (for example, `+15551234567`) or Apple-ID email address to receive the link. `delayMinutes` defaults to `5`; it is the minimum **continuous** local presentation age before escalation. `linkLifetimeHours` defaults to `12`; it is an absolute wall-clock expiry, including during reconnects, and no later message or link is sent after expiry. Both values must be finite positive numbers. `cloudflaredPath` is optional; when omitted, `cloudflared` is resolved from `PATH`; when supplied, it must be an absolute path without control characters.
+
+Escalation also requires a fixed five-minute system-wide HID idle interval. Normal activity or an unreadable idle value delays escalation without closing the local questionnaire. This feature requires macOS, a signed-in and permitted Messages app/iMessage account, and a separately installed `cloudflared` executable. Prime Agent does not install or configure Messages, iMessage, or `cloudflared`, and Quick Tunnel availability is not guaranteed.
+
+After both timing checks pass, this presenter starts a disposable loopback form and asks `cloudflared` for a Quick Tunnel before sending iMessage. Cloudflare TLS is used, but Cloudflare may observe the questionnaire plaintext; do not enable this setting for data you cannot disclose to Cloudflare. Apple may prefetch only the generic, non-secret route; that prefetch does not establish a questionnaire session or consume the fragment secret. Opening the link exchanges the fragment exactly once for one secure browser session; losing that session cookie makes that link unusable.
+
+For each logical questionnaire request, a presenter process sends at most one original iMessage and, after a successful original delivery, at most one changed-host replacement. The in-memory cap remains across `/reload` for that process lifetime; there are no reminders and no persisted logical IDs. The limit is per presenter process: `N` eligible attached presenter processes can independently create `N` tunnels and send up to `N` original messages (and up to `N` qualifying replacements).
+
+The phone supports the rich questionnaire workflow but cannot dismiss it. On a transient terminal reconnect, the phone form is suspended; a re-presentation of the same logical request rebinds its new lease and revision without a new message and preserves phone work. A conflicting answer or note change is reported as stale, lists the exact changed questions, and preserves phone work until the operator explicitly chooses **Reload latest**; reloading replaces the phone draft with the authoritative terminal draft. Local and mobile mutations share the existing compare-and-swap path: exactly one terminal submit wins. A successful phone submit reports **Submitted**, while a local winner reports **Answered elsewhere** on the phone.
+
+Remote delivery is best-effort. Failures in idle detection, the loopback server, tunnel, Messages, or remote submission do not dismiss the terminal questionnaire or invent an answer. A detached tunnel child is identity-tracked; normal teardown stops it, while an identity-matched orphan after a hard crash is reaped at the next macOS rich interactive presenter startup even if the setting has since been disabled or removed.
+
 ### Terminal & Images
 
 | Setting | Type | Default | Description |

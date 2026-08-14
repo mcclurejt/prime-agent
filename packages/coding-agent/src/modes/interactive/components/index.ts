@@ -1,5 +1,12 @@
 // UI Components for extensions
 
+export {
+	type QuestionnaireDraft,
+	QuestionnaireDraftModel,
+	type QuestionnaireMutationResult,
+	type QuestionnaireQuestion,
+	type QuestionnaireRequest,
+} from "../questionnaire-draft-model.js";
 export { AgentMessageComponent } from "./agent-message.js";
 export { ArminComponent } from "./armin.js";
 export { AssistantMessageComponent } from "./assistant-message.js";
@@ -39,8 +46,6 @@ export { PrimeOnboardingSplashComponent } from "./prime-onboarding-splash.js";
 export {
 	QuestionnaireComponent,
 	type QuestionnaireComponentOptions,
-	QuestionnaireDraftModel,
-	type QuestionnaireMutationResult,
 } from "./questionnaire.js";
 export { type ModelsCallbacks, type ModelsConfig, ScopedModelsSelectorComponent } from "./scoped-models-selector.js";
 export { type SettingsCallbacks, type SettingsConfig, SettingsSelectorComponent } from "./settings-selector.js";

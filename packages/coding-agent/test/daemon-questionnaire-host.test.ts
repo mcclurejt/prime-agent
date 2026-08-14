@@ -70,7 +70,7 @@ function harness() {
 		setPresentable: vi.fn(async () => {}),
 		respondToOffer: vi.fn(async () => "accepted" as const),
 		checkpoint,
-		submit: vi.fn(async () => ({
+		submit: vi.fn<AgentConnectionQuestionnaireTransport["submit"]>(async () => ({
 			status: "terminal" as const,
 			outcome: { status: "submitted" as const, responses: [] },
 		})),
@@ -89,6 +89,7 @@ function harness() {
 	return {
 		host,
 		transport,
+		ui: tui,
 		hide,
 		get overlay() {
 			return overlay;
@@ -293,5 +294,325 @@ describe("DaemonQuestionnaireHost", () => {
 		});
 		expect(target.transport.reportPresentationError).toHaveBeenCalledWith(lease());
 		expect(target.hide).not.toHaveBeenCalled();
+	});
+
+	it("registers only frozen presentation data and a submit callback with no local terminal authority", async () => {
+		const registration = { present: vi.fn() };
+		const target = harness();
+		const host = new DaemonQuestionnaireHost({
+			ui: target.ui,
+			keybindings: new KeybindingsManager({ "app.questionnaire.next": "ctrl+n" }),
+			transport: target.transport,
+			remoteRegistration: registration,
+		});
+		await host.offer("session-a", lease());
+		await host.present({
+			activeSessionId: "session-a",
+			lease: lease(),
+			authoritativeRevision: 0,
+			request,
+			draft: draft("frozen"),
+		});
+		expect(registration.present).toHaveBeenCalledOnce();
+		const [snapshot, submit] = registration.present.mock.calls[0]!;
+		expect(snapshot).toMatchObject({
+			activeSessionId: "session-a",
+			lease: lease(),
+			authoritativeRevision: 0,
+			draft: draft("frozen"),
+		});
+		expect(snapshot).not.toHaveProperty("dismiss");
+		expect(snapshot).not.toHaveProperty("reportPresentationError");
+		expect(typeof submit).toBe("function");
+	});
+
+	it("treats a worker terminal submit as remote success without preempting the remote registration", async () => {
+		const registration = { present: vi.fn(), terminal: vi.fn() };
+		const target = harness();
+		const host = new DaemonQuestionnaireHost({
+			ui: target.ui,
+			keybindings: new KeybindingsManager({ "app.questionnaire.next": "ctrl+n" }),
+			transport: target.transport,
+			remoteRegistration: registration,
+			createMutationId: (() => {
+				let id = 0;
+				return () => `remote-mutation-${++id}`;
+			})(),
+		});
+		await host.offer("session-a", lease());
+		await host.present({
+			activeSessionId: "session-a",
+			lease: lease(),
+			authoritativeRevision: 0,
+			request,
+			draft: draft(),
+		});
+		const [frozen, submit] = registration.present.mock.calls[0]!;
+		const result = await submit(frozen, draft("phone", true));
+		expect(target.transport.submit).toHaveBeenCalledWith(lease(), 0, "remote-mutation-1", draft("phone", true));
+		expect(result).toEqual({ status: "submitted" });
+		expect(target.hide).toHaveBeenCalledOnce();
+		expect(registration.terminal).not.toHaveBeenCalled();
+		expect(target.transport.dismiss).not.toHaveBeenCalled();
+		expect(target.transport.reportPresentationError).not.toHaveBeenCalled();
+	});
+
+	it("preserves phone work on answer drift and leaves the local overlay usable", async () => {
+		const registration = { present: vi.fn() };
+		const target = harness();
+		const host = new DaemonQuestionnaireHost({
+			ui: target.ui,
+			keybindings: new KeybindingsManager({ "app.questionnaire.next": "ctrl+n" }),
+			transport: target.transport,
+			remoteRegistration: registration,
+		});
+		await host.offer("session-a", lease());
+		await host.present({
+			activeSessionId: "session-a",
+			lease: lease(),
+			authoritativeRevision: 0,
+			request,
+			draft: draft(),
+		});
+		const [frozen, submit] = registration.present.mock.calls[0]!;
+		target.overlay?.handleInput("local");
+		await new Promise<void>((resolve) => setTimeout(resolve, QUESTIONNAIRE_TEXT_CHECKPOINT_DEBOUNCE_MS + 10));
+		const result = await submit(frozen, draft("phone", true));
+		expect(result).toMatchObject({ status: "conflict", draft: draft("local") });
+		expect(target.hide).not.toHaveBeenCalled();
+		expect(target.transport.reportPresentationError).not.toHaveBeenCalled();
+	});
+
+	it("rebinds a same-logical-request remote callback to the new lease and leaves the old callback unavailable", async () => {
+		const registration = { present: vi.fn(), rebind: vi.fn(), suspend: vi.fn() };
+		const target = harness();
+		const host = new DaemonQuestionnaireHost({
+			ui: target.ui,
+			keybindings: new KeybindingsManager({ "app.questionnaire.next": "ctrl+n" }),
+			transport: target.transport,
+			remoteRegistration: registration,
+			createMutationId: (() => {
+				let id = 0;
+				return () => `rebind-${++id}`;
+			})(),
+		});
+		await host.offer("session-a", lease());
+		await host.present({
+			activeSessionId: "session-a",
+			lease: lease(),
+			authoritativeRevision: 0,
+			request,
+			draft: draft(),
+		});
+		const [oldBase, oldSubmit] = registration.present.mock.calls[0]!;
+		host.suspend();
+		const reboundLease = { ...lease(), leaseEpoch: 2, offerId: "offer-b", connectionId: "connection-b" };
+		await host.offer("session-a", reboundLease);
+		await host.present({
+			activeSessionId: "session-a",
+			lease: reboundLease,
+			authoritativeRevision: 8,
+			request,
+			draft: draft("new"),
+		});
+		expect(registration.rebind).toHaveBeenCalledOnce();
+		const [newBase, newSubmit] = registration.rebind.mock.calls[0]!;
+		expect(await oldSubmit(oldBase, draft("old", true))).toEqual({ status: "unavailable" });
+		target.transport.submit.mockResolvedValueOnce({
+			status: "terminal",
+			outcome: { status: "submitted", responses: [] },
+		});
+		expect(await newSubmit(newBase, draft("phone", true))).toEqual({ status: "submitted" });
+		expect(target.transport.submit).toHaveBeenLastCalledWith(reboundLease, 8, "rebind-1", draft("phone", true));
+	});
+
+	it("revokes a suspended registration exactly once when concealed or disposed", async () => {
+		const registration = { present: vi.fn(), suspend: vi.fn(), revoke: vi.fn() };
+		const target = harness();
+		const host = new DaemonQuestionnaireHost({
+			ui: target.ui,
+			keybindings: new KeybindingsManager({ "app.questionnaire.next": "ctrl+n" }),
+			transport: target.transport,
+			remoteRegistration: registration,
+		});
+		await host.offer("session-a", lease());
+		await host.present({
+			activeSessionId: "session-a",
+			lease: lease(),
+			authoritativeRevision: 0,
+			request,
+			draft: draft(),
+		});
+		host.suspend();
+		host.conceal();
+		host.dispose();
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		expect(registration.revoke).toHaveBeenCalledOnce();
+	});
+
+	it("rebases a remote submit when only the current step changed", async () => {
+		const registration = { present: vi.fn() };
+		const target = harness();
+		const host = new DaemonQuestionnaireHost({
+			ui: target.ui,
+			keybindings: new KeybindingsManager({ "app.questionnaire.next": "ctrl+n" }),
+			transport: target.transport,
+			remoteRegistration: registration,
+		});
+		await host.offer("session-a", lease());
+		await host.present({
+			activeSessionId: "session-a",
+			lease: lease(),
+			authoritativeRevision: 0,
+			request,
+			draft: draft(),
+		});
+		const [base, submit] = registration.present.mock.calls[0]!;
+		target.overlay?.handleInput("\x0e");
+		target.transport.submit.mockImplementationOnce(async (_lease, _revision, clientMutationId) => ({
+			status: "ack",
+			ack: { clientMutationId, authoritativeRevision: 2, draftHash: "hash-2" },
+		}));
+		expect(await submit(base, draft("phone", true))).toEqual({ status: "unavailable" });
+		expect(target.transport.submit).toHaveBeenLastCalledWith(lease(), 1, expect.any(String), draft("phone", true));
+	});
+
+	it.each(["throw", "mutation-id-collision"] as const)(
+		"keeps local UI usable when remote submit %s",
+		async (outcome) => {
+			const registration = { present: vi.fn() };
+			const target = harness();
+			const host = new DaemonQuestionnaireHost({
+				ui: target.ui,
+				keybindings: new KeybindingsManager({ "app.questionnaire.next": "ctrl+n" }),
+				transport: target.transport,
+				remoteRegistration: registration,
+			});
+			await host.offer("session-a", lease());
+			await host.present({
+				activeSessionId: "session-a",
+				lease: lease(),
+				authoritativeRevision: 0,
+				request,
+				draft: draft(),
+			});
+			const [base, submit] = registration.present.mock.calls[0]!;
+			if (outcome === "throw") target.transport.submit.mockRejectedValueOnce(new Error("network"));
+			else target.transport.submit.mockResolvedValueOnce({ status: "mutation-id-collision" });
+			expect(await submit(base, draft("phone", true))).toEqual({ status: "unavailable" });
+			expect(target.hide).not.toHaveBeenCalled();
+			expect(target.transport.dismiss).not.toHaveBeenCalled();
+			expect(target.transport.reportPresentationError).not.toHaveBeenCalled();
+		},
+	);
+
+	it("keeps local presentation usable when a remote submit receives an unexpected acknowledgement", async () => {
+		const registration = { present: vi.fn(), terminal: vi.fn() };
+		const target = harness();
+		const host = new DaemonQuestionnaireHost({
+			ui: target.ui,
+			keybindings: new KeybindingsManager(),
+			transport: target.transport,
+			remoteRegistration: registration,
+		});
+		target.transport.submit.mockImplementationOnce(async (_lease, _revision, clientMutationId) => ({
+			status: "ack" as const,
+			ack: { clientMutationId, authoritativeRevision: 2, draftHash: "hash" },
+		}));
+		await host.offer("session-a", lease());
+		await host.present({
+			activeSessionId: "session-a",
+			lease: lease(),
+			authoritativeRevision: 0,
+			request,
+			draft: draft(),
+		});
+		const [base, submit] = registration.present.mock.calls[0]!;
+		expect(await submit(base, draft("phone", true))).toEqual({ status: "unavailable" });
+		expect(target.hide).not.toHaveBeenCalled();
+		expect(registration.terminal).not.toHaveBeenCalled();
+		expect(target.transport.reportPresentationError).not.toHaveBeenCalled();
+	});
+
+	it("notifies remote once when local submit wins and duplicate presentation does not duplicate registration", async () => {
+		const registration = { present: vi.fn(), terminal: vi.fn() };
+		const target = harness();
+		const host = new DaemonQuestionnaireHost({
+			ui: target.ui,
+			keybindings: new KeybindingsManager({ "app.questionnaire.next": "ctrl+n" }),
+			transport: target.transport,
+			remoteRegistration: registration,
+		});
+		await host.offer("session-a", lease());
+		const presentation = {
+			activeSessionId: "session-a",
+			lease: lease(),
+			authoritativeRevision: 0,
+			request,
+			draft: draft("x", true),
+		};
+		await host.present(presentation);
+		await host.present(presentation);
+		expect(registration.present).toHaveBeenCalledOnce();
+		target.overlay?.handleInput("\r");
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		expect(target.hide).toHaveBeenCalledOnce();
+		expect(registration.terminal).toHaveBeenCalledOnce();
+	});
+
+	it("returns remote conflict snapshots without discarding the phone draft or reporting presentation failure", async () => {
+		const registration = { present: vi.fn() };
+		const target = harness();
+		const host = new DaemonQuestionnaireHost({
+			ui: target.ui,
+			keybindings: new KeybindingsManager({ "app.questionnaire.next": "ctrl+n" }),
+			transport: target.transport,
+			remoteRegistration: registration,
+		});
+		target.transport.submit.mockResolvedValueOnce({
+			status: "conflict",
+			authoritativeRevision: 3,
+			draftHash: "worker",
+			snapshot: { lease: lease(), authoritativeRevision: 3, request, draft: draft("worker") },
+		});
+		await host.offer("session-a", lease());
+		await host.present({
+			activeSessionId: "session-a",
+			lease: lease(),
+			authoritativeRevision: 0,
+			request,
+			draft: draft(),
+		});
+		const [base, submit] = registration.present.mock.calls[0]!;
+		expect(await submit(base, draft("phone", true))).toMatchObject({ status: "conflict", draft: draft("worker") });
+		expect(target.hide).not.toHaveBeenCalled();
+		expect(target.transport.dismiss).not.toHaveBeenCalled();
+		expect(target.transport.reportPresentationError).not.toHaveBeenCalled();
+	});
+
+	it("revokes and closes once when a remote submit receives stale lease", async () => {
+		const registration = { present: vi.fn(), revoke: vi.fn() };
+		const target = harness();
+		const host = new DaemonQuestionnaireHost({
+			ui: target.ui,
+			keybindings: new KeybindingsManager({ "app.questionnaire.next": "ctrl+n" }),
+			transport: target.transport,
+			remoteRegistration: registration,
+		});
+		target.transport.submit.mockResolvedValueOnce({ status: "stale-lease" });
+		await host.offer("session-a", lease());
+		await host.present({
+			activeSessionId: "session-a",
+			lease: lease(),
+			authoritativeRevision: 0,
+			request,
+			draft: draft(),
+		});
+		const [base, submit] = registration.present.mock.calls[0]!;
+		expect(await submit(base, draft("phone", true))).toEqual({ status: "stale-lease" });
+		expect(target.hide).toHaveBeenCalledOnce();
+		expect(registration.revoke).toHaveBeenCalledOnce();
+		expect(target.transport.dismiss).not.toHaveBeenCalled();
+		expect(target.transport.reportPresentationError).not.toHaveBeenCalled();
 	});
 });

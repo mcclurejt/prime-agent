@@ -21,7 +21,8 @@ import type {
 	ExtensionQuestionnaireRequestV2,
 } from "../src/core/extensions/types.js";
 import { KeybindingsManager } from "../src/core/keybindings.js";
-import { QuestionnaireComponent, QuestionnaireDraftModel } from "../src/modes/interactive/components/questionnaire.js";
+import { QuestionnaireComponent } from "../src/modes/interactive/components/questionnaire.js";
+import { QuestionnaireDraftModel } from "../src/modes/interactive/questionnaire-draft-model.js";
 import { InteractiveQuestionnaireHost } from "../src/modes/interactive/questionnaire-host.js";
 import { initTheme, setThemeInstance, Theme, theme } from "../src/modes/interactive/theme/theme.js";
 

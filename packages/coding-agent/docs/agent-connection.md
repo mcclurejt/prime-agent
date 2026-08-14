@@ -131,6 +131,8 @@ Those stay inside the process that loaded the extension. Local extensions are tr
 
 Terminal rendering, keyboard handling, keybindings, themes, clipboard access, local credential setup, and persisted UI preferences are client concerns. They belong in `InteractiveModeUiServices` or another client service, not in the execution protocol.
 
+The opt-in macOS remote questionnaire infrastructure is also client-local: the interactive presenter owns its temporary loopback page, Cloudflare Quick Tunnel process, iMessage delivery, and identity-safe orphan reaping. It reuses the existing negotiated rich-questionnaire transport, lease/revision compare-and-swap submission path, and terminal event handling. It adds no daemon command, event, response shape, capability, schema revision, or protocol-version change. On reconnect, the client suspends the mobile page and rebinds the same logical request to its new lease/revision; local and mobile submits still resolve through the existing single CAS winner.
+
 The decision rule is simple: if an action changes agent execution or persisted session state, it goes through `AgentConnection`. If it changes only terminal presentation or local preference UI, it stays client-side.
 
 ## Local-Only Data

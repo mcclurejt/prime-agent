@@ -5,6 +5,7 @@ import { RemoteQuestionnairePage } from "../src/modes/interactive/remote-questio
 import {
 	RemoteQuestionnaireServer,
 	type RemoteQuestionnaireServerDependencies,
+	type RemoteQuestionnaireServerOptions,
 } from "../src/modes/interactive/remote-questionnaire-server.js";
 
 interface Response {
@@ -60,7 +61,7 @@ afterEach(async () => {
 });
 
 async function create(
-	dependencies?: Partial<RemoteQuestionnaireServerDependencies>,
+	dependencies?: Partial<RemoteQuestionnaireServerDependencies> & RemoteQuestionnaireServerOptions,
 ): Promise<RemoteQuestionnaireServer> {
 	const server = await RemoteQuestionnaireServer.create(dependencies);
 	servers.push(server);
@@ -163,8 +164,8 @@ describe("RemoteQuestionnaireServer", () => {
 		let release: (() => void) | undefined;
 		const mutation = vi.fn(
 			() =>
-				new Promise<void>((resolve) => {
-					release = resolve;
+				new Promise<{ kind: "accepted" }>((resolve) => {
+					release = () => resolve({ kind: "accepted" });
 				}),
 		);
 		const server = await create({ onMutation: mutation });
@@ -254,6 +255,21 @@ describe("RemoteQuestionnaireServer", () => {
 				})
 			).status,
 		).toBe(400);
+	});
+
+	it("emits route-qualified same-origin browser endpoints for a public fragment link", async () => {
+		const page = new RemoteQuestionnairePage({
+			version: 1,
+			questions: [{ id: "q", kind: "short-text", prompt: "Answer" }],
+		});
+		const server = await create({ page });
+		const publicLink = `https://host.trycloudflare.com/r/${server.routeId}#${server.fragmentSecret}`;
+		expect(new URL(publicLink).pathname).toBe(`/r/${server.routeId}`);
+		const authenticated = await bootstrap(server);
+		const html = (await send(server.url, { headers: { cookie: cookie(authenticated) } })).body;
+		expect(html).toContain(`action="/r/${server.routeId}/mutate"`);
+		expect(html).toContain('location.pathname+"/status"');
+		expect((await send(server.url)).body).toContain('location.pathname+"/bootstrap"');
 	});
 
 	it("renders ordered Review rows, notes, exact Edit actions, and an explicit submit only on Review", async () => {
@@ -361,7 +377,8 @@ describe("RemoteQuestionnaireServer", () => {
 		expect(html).toContain("Detail");
 		expect(html).toContain("Preview");
 		expect(html).toContain("Required alternative");
-		expect(html).not.toContain("<script>");
+		expect(html).toContain('fetch(location.pathname+"/status",{credentials:"same-origin"})');
+		expect(html.match(/<script>/gu)).toHaveLength(1);
 		expect(html).not.toMatch(/<(?:img|a)\b/iu);
 		expect(html).not.toContain("javascript:");
 		expect(html).not.toContain("data:text");
@@ -489,7 +506,7 @@ describe("RemoteQuestionnaireServer adversarial loopback contracts", () => {
 					body: "action=set-multi&questionId=regions&choiceIds=&otherSelected=false&otherText=",
 				})
 			).status,
-		).toBe(204);
+		).toBe(303);
 		expect(page.model.getState("regions")).toMatchObject({ choiceIds: [] });
 		expect(
 			(
@@ -534,7 +551,15 @@ describe("RemoteQuestionnaireServer adversarial loopback contracts", () => {
 		const overflow = await openSocket(port);
 		await new Promise((resolve) => overflow.once("close", resolve));
 		expect(overflow.destroyed).toBe(true);
-		for (const socket of sockets) socket.destroy();
+		await Promise.all(
+			sockets.map(
+				(socket) =>
+					new Promise<void>((resolve) => {
+						socket.once("close", () => resolve());
+						socket.destroy();
+					}),
+			),
+		);
 
 		const requests = Array.from(
 			{ length: 33 },
@@ -597,5 +622,273 @@ describe("RemoteQuestionnaireServer adversarial loopback contracts", () => {
 			(await send(`${server.url}/mutate`, { method: "POST", headers, body: JSON.stringify({ action: "next" }) }))
 				.body,
 		).toContain('"terminal"');
+	});
+});
+
+describe("RemoteQuestionnaireServer browser form regressions", () => {
+	it("uses POST/303/GET for URL-encoded forms and retains answer, navigation, and review", async () => {
+		const page = new RemoteQuestionnairePage({
+			version: 1,
+			questions: [{ id: "q", kind: "short-text", prompt: "Answer" }],
+		});
+		const server = await create({ page });
+		const boot = await bootstrap(server);
+		const csrf = (JSON.parse(boot.body) as { csrf: string }).csrf;
+		const form = await send(`${server.url}/mutate`, {
+			method: "POST",
+			headers: { cookie: cookie(boot), "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({ csrf, action: "update-text", questionId: "q", text: "browser answer" }).toString(),
+		});
+		expect(form.status).toBe(303);
+		expect(form.headers.location).toBe(`/r/${server.routeId}`);
+		expect((await send(server.url, { headers: { cookie: cookie(boot) } })).body).toContain('value="browser answer"');
+		const review = await send(`${server.url}/mutate`, {
+			method: "POST",
+			headers: { cookie: cookie(boot), "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({ csrf, action: "review" }).toString(),
+		});
+		expect(review.status).toBe(303);
+		expect((await send(server.url, { headers: { cookie: cookie(boot) } })).body).toContain("browser answer");
+	});
+
+	it("does not let authenticated polling exhaust a keep-alive socket but bounds unauthenticated requests", async () => {
+		const page = new RemoteQuestionnairePage({
+			version: 1,
+			questions: [{ id: "q", kind: "short-text", prompt: "Q" }],
+		});
+		const server = await create({ page });
+		const boot = await bootstrap(server);
+		const csrf = (JSON.parse(boot.body) as { csrf: string }).csrf;
+		const port = Number(new URL(server.url).port);
+		const mutationBody = new URLSearchParams({ csrf, action: "update-text", questionId: "q", text: "ok" }).toString();
+		const statusRequests = Array.from(
+			{ length: 33 },
+			() =>
+				`GET /r/${server.routeId}/status HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nCookie: ${cookie(boot)}\r\nConnection: keep-alive\r\n\r\n`,
+		).join("");
+		const requests = `${statusRequests}POST /r/${server.routeId}/mutate HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nCookie: ${cookie(boot)}\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: ${mutationBody.length}\r\nConnection: close\r\n\r\n${mutationBody}`;
+		const response = await rawRequest(port, requests);
+		expect(response.response).not.toContain("429 Too Many Requests");
+		expect(page.model.getText("q")).toBe("ok");
+	});
+
+	it("rejects pre-review submit before invoking the mutation adapter and renders expiry as inert HTML", async () => {
+		const onMutation = vi.fn();
+		let now = 0;
+		const server = await create({
+			clock: { now: () => now },
+			expiresAt: 1,
+			page: new RemoteQuestionnairePage({ version: 1, questions: [{ id: "q", kind: "short-text", prompt: "Q" }] }),
+			onMutation,
+		});
+		const boot = await bootstrap(server);
+		const csrf = (JSON.parse(boot.body) as { csrf: string }).csrf;
+		const result = await send(`${server.url}/mutate`, {
+			method: "POST",
+			headers: { cookie: cookie(boot), "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({ csrf, action: "submit" }).toString(),
+		});
+		expect(result.status).toBe(422);
+		expect(onMutation).not.toHaveBeenCalled();
+		now = 2;
+		const expired = await send(server.url, { headers: { cookie: cookie(boot) } });
+		expect(expired.status).toBe(200);
+		expect(expired.headers["content-type"]).toContain("text/html");
+		expect(expired.body).toContain("expired");
+	});
+});
+
+describe("RemoteQuestionnaireServer form-state and CSP regressions", () => {
+	it("defaults an omitted unchecked multi Other field to false and pre-fills custom Other radio state", async () => {
+		const page = new RemoteQuestionnairePage({
+			version: 2,
+			questions: [
+				{ id: "confirm", kind: "confirm", prompt: "Confirm", other: { label: "Custom" } },
+				{
+					id: "single",
+					kind: "single-select",
+					prompt: "Single",
+					choices: [{ id: "a", label: "A" }],
+					other: { label: "Custom" },
+				},
+				{ id: "multi", kind: "multi-select", prompt: "Multi", choices: [{ id: "a", label: "A" }] },
+			],
+		});
+		page.answerConfirm("confirm", "other");
+		page.setOther("confirm", "confirm text");
+		page.answerSingle("single", { kind: "other" });
+		page.setOther("single", "single text");
+		const server = await create({ page });
+		const boot = await bootstrap(server);
+		const csrf = (JSON.parse(boot.body) as { csrf: string }).csrf;
+		let html = (await send(server.url, { headers: { cookie: cookie(boot) } })).body;
+		expect(html).toMatch(/name="selection" value="other" checked/);
+		expect(html).toContain('value="confirm text"');
+		page.edit("single");
+		html = (await send(server.url, { headers: { cookie: cookie(boot) } })).body;
+		expect(html).toMatch(/name="choiceId" value="" checked/);
+		expect(html).toContain('value="single text"');
+		const response = await send(`${server.url}/mutate`, {
+			method: "POST",
+			headers: { cookie: cookie(boot), "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({
+				csrf,
+				action: "set-multi",
+				questionId: "multi",
+				choiceIds: "",
+				otherText: "",
+			}).toString(),
+		});
+		expect(response.status).toBe(303);
+		expect(page.model.getState("multi")).toMatchObject({ otherSelected: false });
+	});
+
+	it("hashes the exact inline page style and only removes a fragment after successful bootstrap", async () => {
+		const server = await create();
+		const preview = await send(server.url);
+		expect(preview.body).toContain("if(r.ok){history.replaceState");
+		expect(preview.body).toContain("Unable to establish session");
+		expect(preview.body).not.toContain('history.replaceState(null,"",location.pathname);if');
+		const csp = preview.headers["content-security-policy"] as string;
+		expect(csp).toMatch(/style-src 'sha256-[A-Za-z0-9+/=]+'/);
+	});
+
+	describe("final mobile form regressions", () => {
+		it("serves a bootstrap script that parses and inserts failure text without HTML parsing", async () => {
+			const server = await create();
+			const shell = await send(server.url);
+			const script = /<script>(.*?)<\/script>/su.exec(shell.body)?.[1];
+			expect(script).toBeDefined();
+			expect(() => new Function(script!)).not.toThrow();
+			expect(script).toContain("textContent");
+			expect(script).not.toContain("insertAdjacentHTML");
+			expect(shell.headers["content-security-policy"]).toContain("script-src 'sha256-");
+		});
+
+		it("accepts browser-shaped Confirm Other text and switches a seeded single choice to Other and back", async () => {
+			const page = new RemoteQuestionnairePage({
+				version: 1,
+				questions: [
+					{ id: "confirm", kind: "confirm", prompt: "Confirm", other: { label: "Other" } },
+					{
+						id: "single",
+						kind: "single-select",
+						prompt: "Single",
+						choices: [{ id: "a", label: "A" }],
+						other: { label: "Other" },
+					},
+				],
+			});
+			page.answerSingle("single", { kind: "choice", choiceId: "a" });
+			const server = await create({ page });
+			const boot = await bootstrap(server);
+			const csrf = (JSON.parse(boot.body) as { csrf: string }).csrf;
+			const headers = { cookie: cookie(boot), "content-type": "application/x-www-form-urlencoded" };
+			page.edit("single");
+			const singleForm = (await send(server.url, { headers: { cookie: cookie(boot) } })).body;
+			expect(singleForm).toContain('name="choiceId" value="a" checked');
+			expect(singleForm).toContain('name="choiceId" value=""');
+			const ambiguous = await send(`${server.url}/mutate`, {
+				method: "POST",
+				headers,
+				body: new URLSearchParams({
+					csrf,
+					action: "answer-single",
+					questionId: "single",
+					selection: "other",
+					text: "legacy",
+				}).toString(),
+			});
+			expect(ambiguous.status).toBe(400);
+			page.edit("confirm");
+			const confirm = await send(`${server.url}/mutate`, {
+				method: "POST",
+				headers,
+				body: new URLSearchParams({
+					csrf,
+					action: "answer-confirm",
+					questionId: "confirm",
+					selection: "other",
+					text: "custom",
+				}).toString(),
+			});
+			expect(confirm.status).toBe(303);
+			await send(`${server.url}/mutate`, {
+				method: "POST",
+				headers,
+				body: new URLSearchParams({
+					csrf,
+					action: "answer-single",
+					questionId: "single",
+					choiceId: "",
+					text: "switched",
+				}).toString(),
+			});
+			page.goToReview();
+			expect((await send(server.url, { headers: { cookie: cookie(boot) } })).body).toContain("custom");
+			expect((await send(server.url, { headers: { cookie: cookie(boot) } })).body).toContain("switched");
+			const back = await send(`${server.url}/mutate`, {
+				method: "POST",
+				headers,
+				body: new URLSearchParams({
+					csrf,
+					action: "answer-single",
+					questionId: "single",
+					choiceId: "a",
+					text: "ignored",
+				}).toString(),
+			});
+			expect(back.status).toBe(303);
+			page.goToReview();
+			expect((await send(server.url, { headers: { cookie: cookie(boot) } })).body).toContain("<p>a</p>");
+		});
+		it("accepts browser-normalized v2 Confirm values and keeps incomplete forms usable", async () => {
+			const page = new RemoteQuestionnairePage({
+				version: 2,
+				questions: [
+					{ id: "confirm", kind: "confirm", prompt: "Confirm", other: { label: "Other" } },
+					{
+						id: "single",
+						kind: "single-select",
+						prompt: "Single",
+						choices: [{ id: "a", label: "A" }],
+						other: { label: "Other" },
+					},
+				],
+			});
+			const server = await create({ page });
+			const boot = await bootstrap(server);
+			const csrf = (JSON.parse(boot.body) as { csrf: string }).csrf;
+			const headers = { cookie: cookie(boot), "content-type": "application/x-www-form-urlencoded" };
+			const post = (values: Record<string, string>) =>
+				send(`${server.url}/mutate`, {
+					method: "POST",
+					headers,
+					body: new URLSearchParams({ csrf, ...values }).toString(),
+				});
+
+			expect((await send(server.url, { headers: { cookie: cookie(boot) } })).body).toContain('name="text"');
+			expect(
+				(await post({ action: "answer-confirm", questionId: "confirm", selection: "yes", text: "" })).status,
+			).toBe(303);
+			expect(page.model.getState("confirm")).toMatchObject({ selection: "yes", otherText: "" });
+			expect(
+				(await post({ action: "answer-confirm", questionId: "confirm", selection: "no", text: "stale" })).status,
+			).toBe(303);
+			expect(page.model.getState("confirm")).toMatchObject({ selection: "no", otherText: "" });
+			expect(
+				(await post({ action: "answer-confirm", questionId: "confirm", selection: "other", text: "custom" }))
+					.status,
+			).toBe(303);
+			expect(page.model.getState("confirm")).toMatchObject({ selection: "other", otherText: "custom" });
+			expect(
+				(await post({ action: "answer-confirm", questionId: "confirm", selection: "other", text: "" })).status,
+			).toBe(422);
+			page.edit("single");
+			expect((await post({ action: "answer-single", questionId: "single", text: "" })).status).toBe(422);
+			expect((await post({ action: "answer-single", questionId: "single", text: "", extra: "no" })).status).toBe(
+				400,
+			);
+		});
 	});
 });

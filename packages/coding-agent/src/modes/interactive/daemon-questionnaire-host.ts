@@ -29,12 +29,60 @@ interface ActivePresentation extends AcceptedOffer {
 	checkpointTail: Promise<void>;
 	textCheckpointTimer?: ReturnType<typeof setTimeout>;
 	closed: boolean;
+	remotePresented: boolean;
+}
+
+export interface DaemonQuestionnaireRemoteSnapshot {
+	activeSessionId: string;
+	lease: AgentConnectionQuestionnaireLease;
+	authoritativeRevision: number;
+	request: AgentConnectionQuestionnairePresentation["request"];
+	draft: QuestionnaireDraft;
+}
+
+export type DaemonQuestionnaireRemoteSubmitResult =
+	| { status: "ack"; authoritativeRevision: number }
+	| {
+			status: "conflict";
+			authoritativeRevision: number;
+			snapshot: DaemonQuestionnaireRemoteSnapshot;
+			draft: QuestionnaireDraft;
+			changedQuestionIds: string[];
+	  }
+	| { status: "submitted" }
+	| { status: "terminal" }
+	| { status: "stale-lease" }
+	| { status: "unavailable" };
+
+/**
+ * The remote manager receives data and an explicitly scoped submit callback only.
+ * It cannot obtain the daemon transport or local overlay controls from this boundary.
+ */
+export interface DaemonQuestionnaireRemoteRegistration {
+	present(
+		snapshot: DaemonQuestionnaireRemoteSnapshot,
+		submit: (
+			base: DaemonQuestionnaireRemoteSnapshot,
+			completedDraft: QuestionnaireDraft,
+		) => Promise<DaemonQuestionnaireRemoteSubmitResult>,
+	): void | Promise<void>;
+	suspend?(): void | Promise<void>;
+	rebind?(
+		snapshot: DaemonQuestionnaireRemoteSnapshot,
+		submit: (
+			base: DaemonQuestionnaireRemoteSnapshot,
+			completedDraft: QuestionnaireDraft,
+		) => Promise<DaemonQuestionnaireRemoteSubmitResult>,
+	): void | Promise<void>;
+	terminal?(): void | Promise<void>;
+	revoke?(): void | Promise<void>;
 }
 
 export interface DaemonQuestionnaireHostOptions {
 	ui: TUI;
 	keybindings: KeybindingsManager;
 	transport: AgentConnectionQuestionnaireTransport;
+	remoteRegistration?: DaemonQuestionnaireRemoteRegistration;
 	createMutationId?: () => string;
 	setTimer?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
 	clearTimer?: (timer: ReturnType<typeof setTimeout>) => void;
@@ -89,6 +137,7 @@ export class DaemonQuestionnaireHost {
 	private readonly clearTimer: NonNullable<DaemonQuestionnaireHostOptions["clearTimer"]>;
 	private acceptedOffer: AcceptedOffer | undefined;
 	private active: ActivePresentation | undefined;
+	private suspendedLogicalRequestId: string | undefined;
 	private disposed = false;
 
 	constructor(private readonly options: DaemonQuestionnaireHostOptions) {
@@ -98,6 +147,10 @@ export class DaemonQuestionnaireHost {
 	}
 
 	async offer(activeSessionId: string, lease: AgentConnectionQuestionnaireLease): Promise<void> {
+		if (this.suspendedLogicalRequestId !== undefined && this.suspendedLogicalRequestId !== lease.logicalRequestId) {
+			this.suspendedLogicalRequestId = undefined;
+			await Promise.resolve(this.options.remoteRegistration?.revoke?.()).catch(() => undefined);
+		}
 		if (this.disposed || lease.mode !== "rich" || this.acceptedOffer || this.active) {
 			await this.options.transport.respondToOffer(lease, "busy");
 			return;
@@ -164,8 +217,18 @@ export class DaemonQuestionnaireHost {
 				latestDraft: cloneDraft(presentation.draft),
 				checkpointTail: Promise.resolve(),
 				closed: false,
+				remotePresented: false,
 			} satisfies ActivePresentation);
 			this.active = active;
+			if (this.suspendedLogicalRequestId === active.lease.logicalRequestId) {
+				this.suspendedLogicalRequestId = undefined;
+				active.remotePresented = true;
+				void Promise.resolve(
+					this.options.remoteRegistration?.rebind?.(this.remoteSnapshot(active), (base, completedDraft) =>
+						this.submitRemote(active, base, completedDraft),
+					),
+				).catch(() => undefined);
+			} else this.presentRemote(active);
 		} catch {
 			handle?.hide();
 			component?.dispose();
@@ -180,18 +243,60 @@ export class DaemonQuestionnaireHost {
 		if (this.active?.activeSessionId === activeSessionId && sameLease(this.active.lease, lease)) {
 			this.closeActive(this.active);
 		}
+		if (this.suspendedLogicalRequestId === lease.logicalRequestId) {
+			this.suspendedLogicalRequestId = undefined;
+			await Promise.resolve(this.options.remoteRegistration?.revoke?.()).catch(() => undefined);
+		}
 		await this.options.transport.acknowledgeWithdraw(lease).catch(() => undefined);
+	}
+
+	/** Suspends only remote mutation during a transient reconnect; a matching offer may rebind it. */
+	suspend(): void {
+		// A disconnect can arrive after offer acceptance but before presentation.
+		this.acceptedOffer = undefined;
+		if (!this.active) return;
+		this.suspendedLogicalRequestId = this.active.lease.logicalRequestId;
+		void Promise.resolve(this.options.remoteRegistration?.suspend?.()).catch(() => undefined);
+		this.closeActive(this.active, "suspend");
 	}
 
 	conceal(): void {
 		this.acceptedOffer = undefined;
+		this.revokeSuspended();
 		if (this.active) this.closeActive(this.active);
+	}
+
+	private revokeSuspended(): void {
+		if (this.suspendedLogicalRequestId === undefined) return;
+		this.suspendedLogicalRequestId = undefined;
+		void Promise.resolve(this.options.remoteRegistration?.revoke?.()).catch(() => undefined);
 	}
 
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
 		this.conceal();
+	}
+
+	private remoteSnapshot(active: ActivePresentation): DaemonQuestionnaireRemoteSnapshot {
+		return {
+			activeSessionId: active.activeSessionId,
+			lease: structuredClone(active.lease),
+			authoritativeRevision: active.authoritativeRevision,
+			request: structuredClone(active.component.model.request),
+			draft: cloneDraft(active.latestDraft),
+		};
+	}
+
+	private presentRemote(active: ActivePresentation): void {
+		const registration = this.options.remoteRegistration;
+		if (!registration || !this.isCurrent(active) || active.remotePresented) return;
+		active.remotePresented = true;
+		void Promise.resolve(
+			registration.present(this.remoteSnapshot(active), (base, completedDraft) =>
+				this.submitRemote(active, base, completedDraft),
+			),
+		).catch(() => undefined);
 	}
 
 	private draftChanged(active: ActivePresentation, draftValue: QuestionnaireDraft): void {
@@ -216,19 +321,34 @@ export class DaemonQuestionnaireHost {
 	private enqueueCheckpoint(active: ActivePresentation, draftValue: QuestionnaireDraft): void {
 		const draft = cloneDraft(draftValue);
 		const mutationEpoch = active.mutationEpoch;
-		active.checkpointTail = active.checkpointTail
-			.then(async () => {
-				if (!this.isCurrent(active) || mutationEpoch !== active.mutationEpoch) return;
-				const clientMutationId = this.createMutationId();
-				const result = await this.options.transport.checkpoint(
-					active.lease,
-					active.authoritativeRevision,
-					clientMutationId,
-					draft,
-				);
-				this.applyMutationResult(active, result, clientMutationId);
-			})
-			.catch(() => void this.failPresentation(active));
+		void this.enqueueMutation(active, false, async () => {
+			if (mutationEpoch !== active.mutationEpoch) return;
+			const clientMutationId = this.createMutationId();
+			const result = await this.options.transport.checkpoint(
+				active.lease,
+				active.authoritativeRevision,
+				clientMutationId,
+				draft,
+			);
+			this.applyMutationResult(active, result, clientMutationId);
+		});
+	}
+
+	private enqueueMutation<T>(
+		active: ActivePresentation,
+		remote: boolean,
+		mutation: () => Promise<T>,
+	): Promise<T | undefined> {
+		const run = active.checkpointTail.then(async () => {
+			if (!this.isCurrent(active)) return undefined;
+			return await mutation();
+		});
+		active.checkpointTail = run
+			.then(() => undefined)
+			.catch(async () => {
+				if (!remote) await this.failPresentation(active);
+			});
+		return run.catch(() => undefined);
 	}
 
 	private applyMutationResult(
@@ -256,13 +376,13 @@ export class DaemonQuestionnaireHost {
 				active.component.applyDraft(result.snapshot.draft);
 				return;
 			case "terminal":
-				this.closeActive(active);
+				this.closeActive(active, "terminal");
 				return;
 			case "mutation-id-collision":
 				void this.failPresentation(active);
 				return;
 			case "stale-lease":
-				this.closeActive(active);
+				this.closeActive(active, "revoke");
 		}
 	}
 
@@ -272,10 +392,9 @@ export class DaemonQuestionnaireHost {
 		const mutationEpoch = active.mutationEpoch;
 		const draft = cloneDraft(active.component.model.draft);
 		active.latestDraft = draft;
-		await active.checkpointTail;
-		if (!this.isCurrent(active) || mutationEpoch !== active.mutationEpoch) return;
-		const clientMutationId = this.createMutationId();
-		try {
+		await this.enqueueMutation(active, false, async () => {
+			if (mutationEpoch !== active.mutationEpoch) return;
+			const clientMutationId = this.createMutationId();
 			const result = await this.options.transport.submit(
 				active.lease,
 				active.authoritativeRevision,
@@ -283,9 +402,69 @@ export class DaemonQuestionnaireHost {
 				draft,
 			);
 			this.applyMutationResult(active, result, clientMutationId);
-		} catch {
-			await this.failPresentation(active);
-		}
+		});
+	}
+
+	private async submitRemote(
+		active: ActivePresentation,
+		base: DaemonQuestionnaireRemoteSnapshot,
+		completedDraft: QuestionnaireDraft,
+	): Promise<DaemonQuestionnaireRemoteSubmitResult> {
+		const frozenBase = cloneDraft(base.draft);
+		const completed = cloneDraft(completedDraft);
+		const result = await this.enqueueMutation(active, true, async () => {
+			if (!sameLease(base.lease, active.lease)) return { status: "stale-lease" } as const;
+			const changedQuestionIds = frozenBase.states.flatMap((state, index) =>
+				JSON.stringify(state) === JSON.stringify(active.latestDraft.states[index]) ? [] : [state.questionId],
+			);
+			if (changedQuestionIds.length > 0)
+				return {
+					status: "conflict",
+					authoritativeRevision: active.authoritativeRevision,
+					snapshot: this.remoteSnapshot(active),
+					draft: cloneDraft(active.latestDraft),
+					changedQuestionIds,
+				} as const;
+			const clientMutationId = this.createMutationId();
+			const mutation = await this.options.transport.submit(
+				active.lease,
+				active.authoritativeRevision,
+				clientMutationId,
+				completed,
+			);
+			switch (mutation.status) {
+				case "ack":
+					return { status: "unavailable" } as const;
+				case "conflict":
+					if (!mutation.snapshot || !sameLease(mutation.snapshot.lease, active.lease))
+						return { status: "unavailable" } as const;
+					active.authoritativeRevision = mutation.authoritativeRevision;
+					active.mutationEpoch++;
+					active.latestDraft = cloneDraft(mutation.snapshot.draft);
+					active.component.applyDraft(mutation.snapshot.draft);
+					return {
+						status: "conflict",
+						authoritativeRevision: mutation.authoritativeRevision,
+						snapshot: this.remoteSnapshot(active),
+						draft: cloneDraft(mutation.snapshot.draft),
+						changedQuestionIds: frozenBase.states.flatMap((state, index) =>
+							JSON.stringify(state) === JSON.stringify(mutation.snapshot!.draft.states[index])
+								? []
+								: [state.questionId],
+						),
+					} as const;
+				case "terminal":
+					// A submit reaching terminal is the phone's remote success, never a local preemption.
+					this.closeActive(active, "suspend");
+					return { status: "submitted" } as const;
+				case "stale-lease":
+					this.closeActive(active, "revoke");
+					return { status: "stale-lease" } as const;
+				case "mutation-id-collision":
+					return { status: "unavailable" } as const;
+			}
+		});
+		return result ?? { status: "unavailable" };
 	}
 
 	private async dismiss(active: ActivePresentation): Promise<void> {
@@ -317,7 +496,10 @@ export class DaemonQuestionnaireHost {
 		return !active.closed && this.active === active && !this.disposed;
 	}
 
-	private closeActive(active: ActivePresentation): void {
+	private closeActive(
+		active: ActivePresentation,
+		remoteDisposition: "terminal" | "revoke" | "suspend" = "revoke",
+	): void {
 		if (active.closed) return;
 		active.closed = true;
 		this.cancelTextCheckpoint(active);
@@ -325,5 +507,10 @@ export class DaemonQuestionnaireHost {
 		active.handle.hide();
 		active.component.dispose();
 		active.latestDraft = { version: 1, currentStep: { kind: "review" }, states: [] };
+		const registration = this.options.remoteRegistration;
+		if (registration && active.remotePresented && remoteDisposition !== "suspend") {
+			const operation = remoteDisposition === "terminal" ? registration.terminal : registration.revoke;
+			void Promise.resolve(operation?.call(registration)).catch(() => undefined);
+		}
 	}
 }

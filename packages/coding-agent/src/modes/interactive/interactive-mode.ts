@@ -117,6 +117,7 @@ import { resolvePrimeInferencePostLoginModelAction } from "../../core/prime-infe
 import { parseCommandArgs } from "../../core/prompt-templates.js";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.js";
 import { SessionImportFileNotFoundError } from "../../core/session-import-errors.js";
+import type { SettingsManager } from "../../core/settings-manager.js";
 import { parseSkillBlock } from "../../core/skill-blocks.js";
 import {
 	BUILTIN_SLASH_COMMANDS,
@@ -219,7 +220,7 @@ import {
 import { TreeSelectorComponent } from "./components/tree-selector.js";
 import { UserMessageComponent } from "./components/user-message.js";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.js";
-import { DaemonQuestionnaireHost } from "./daemon-questionnaire-host.js";
+import { DaemonQuestionnaireHost, type DaemonQuestionnaireRemoteRegistration } from "./daemon-questionnaire-host.js";
 import { FeatureHintDeck } from "./feature-hints.js";
 import { scopeHeartbeatsToSession } from "./heartbeat-scope.js";
 import {
@@ -237,6 +238,8 @@ import type {
 import { type OnboardingStartupState, shouldRunOnboarding, shouldRunPrimeCliOnboardingSplash } from "./onboarding.js";
 import type { ClientPromptStashStore, PromptStash, PromptStashState } from "./prompt-stash-state.js";
 import { InteractiveQuestionnaireHost } from "./questionnaire-host.js";
+import { RemoteQuestionnaireManager } from "./remote-questionnaire-manager.js";
+import { reapRemoteQuestionnaireOrphans } from "./remote-questionnaire-orphans.js";
 import { formatResumeHint } from "./resume-hint.js";
 import {
 	getAvailableThemes,
@@ -743,6 +746,21 @@ export interface InteractiveInitialPrompt {
 	images?: ImageContent[];
 }
 
+export interface InteractiveRemoteQuestionnaireRuntime {
+	platform: NodeJS.Platform;
+	createManager(
+		settings: NonNullable<ReturnType<SettingsManager["getRemoteQuestionnaireSettings"]>>,
+		labels: () => { projectLabel: string; sessionLabel: string | undefined },
+	): DaemonQuestionnaireRemoteRegistration & { dispose(): Promise<void> };
+	reap(): Promise<void>;
+}
+
+const defaultInteractiveRemoteQuestionnaireRuntime: InteractiveRemoteQuestionnaireRuntime = {
+	platform: process.platform,
+	createManager: (settings, labels) => new RemoteQuestionnaireManager(settings, { labels }),
+	reap: reapRemoteQuestionnaireOrphans,
+};
+
 export interface InteractiveModeOptions {
 	/** Providers that were migrated to auth.json (shows warning) */
 	migratedProviders?: string[];
@@ -793,6 +811,8 @@ export interface InteractiveModeOptions {
 	promptStashStore?: ClientPromptStashStore;
 	/** Initial stable session id used to scope prompt stash state. */
 	promptStashSessionId?: string;
+	/** Injectable local-only remote-questionnaire runtime; used by focused lifecycle tests. */
+	remoteQuestionnaireRuntime?: InteractiveRemoteQuestionnaireRuntime;
 }
 
 export interface InteractiveModeRunResult {
@@ -996,6 +1016,11 @@ export class InteractiveMode {
 	private extensionEditor: ExtensionEditorComponent | undefined = undefined;
 	private extensionQuestionnaireHost: InteractiveQuestionnaireHost | undefined;
 	private daemonQuestionnaireHost: DaemonQuestionnaireHost | undefined;
+	private remoteQuestionnaireManager:
+		| (DaemonQuestionnaireRemoteRegistration & { dispose(): Promise<void> })
+		| undefined;
+	private remoteQuestionnaireManagerDisposal: Promise<void> | undefined;
+	private remoteQuestionnaireReaperStarted = false;
 	private extensionTerminalInputUnsubscribers = new Set<() => void>();
 	private activeConnectionExtensionUiRequests = new Map<string, { cancelLocal: () => void }>();
 
@@ -3728,10 +3753,25 @@ export class InteractiveMode {
 	private getDaemonQuestionnaireHost(): DaemonQuestionnaireHost | undefined {
 		const transport = this.agentConnection.questionnaire;
 		if (!transport) return undefined;
+		const remoteRuntime = this.options.remoteQuestionnaireRuntime ?? defaultInteractiveRemoteQuestionnaireRuntime;
+		const remoteSettings =
+			remoteRuntime.platform === "darwin" ? this.settingsManager.getRemoteQuestionnaireSettings() : undefined;
+		// Reap detached tunnels at the next Darwin rich presenter even if remote delivery is disabled.
+		if (remoteRuntime.platform === "darwin" && !this.remoteQuestionnaireReaperStarted) {
+			this.remoteQuestionnaireReaperStarted = true;
+			void remoteRuntime.reap().catch(() => undefined);
+		}
+		if (remoteSettings && !this.remoteQuestionnaireManager) {
+			this.remoteQuestionnaireManager = remoteRuntime.createManager(remoteSettings, () => ({
+				projectLabel: path.basename(this.getCurrentCwd()),
+				sessionLabel: this.getCurrentSessionName() ?? this.connectionState?.sessionId,
+			}));
+		}
 		this.daemonQuestionnaireHost ??= new DaemonQuestionnaireHost({
 			ui: this.ui,
 			keybindings: this.keybindings,
 			transport,
+			...(this.remoteQuestionnaireManager ? { remoteRegistration: this.remoteQuestionnaireManager } : {}),
 		});
 		return this.daemonQuestionnaireHost;
 	}
@@ -3741,6 +3781,18 @@ export class InteractiveMode {
 		if (!transport) return;
 		if (presentable) this.getDaemonQuestionnaireHost();
 		await transport.setPresentable(presentable);
+	}
+
+	private disposeRemoteQuestionnaireManager(): Promise<void> {
+		if (!this.remoteQuestionnaireManager) return Promise.resolve();
+		if (!this.remoteQuestionnaireManagerDisposal) {
+			try {
+				this.remoteQuestionnaireManagerDisposal = this.remoteQuestionnaireManager.dispose();
+			} catch (error) {
+				this.remoteQuestionnaireManagerDisposal = Promise.reject(error);
+			}
+		}
+		return this.remoteQuestionnaireManagerDisposal;
 	}
 
 	/**
@@ -5096,7 +5148,7 @@ export class InteractiveMode {
 						await this.refreshHeartbeatCatalog();
 						await this.setDaemonQuestionnairePresentable?.(true).catch(() => undefined);
 					} else {
-						this.daemonQuestionnaireHost?.conceal();
+						this.daemonQuestionnaireHost?.suspend();
 					}
 				} else if (event.type === "heartbeats_changed") {
 					await this.refreshHeartbeatCatalog();
@@ -6735,6 +6787,7 @@ export class InteractiveMode {
 
 		this.stop();
 		try {
+			await this.disposeRemoteQuestionnaireManager();
 			await this.agentConnection.dispose();
 		} finally {
 			await this.options.onShutdown?.();
@@ -6793,6 +6846,7 @@ export class InteractiveMode {
 		let handoffComplete = false;
 		try {
 			try {
+				await this.disposeRemoteQuestionnaireManager();
 				await this.agentConnection.dispose();
 			} finally {
 				await this.options.onShutdown?.();
@@ -9716,6 +9770,9 @@ ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}${shor
 	}
 
 	stop(options: { preserveAltScreen?: boolean } = {}): void {
+		// `stop` has synchronous callers (fatal cleanup and signal paths); begin the
+		// idempotent remote teardown there, while normal shutdown/handoff awaits it.
+		void this.disposeRemoteQuestionnaireManager();
 		this.unregisterSignalHandlers();
 		this.clearCtrlCExitHint({ render: false });
 		this.clearEscapeRepeat();

@@ -1,3 +1,5 @@
+import { readFileSync } from "fs";
+import { fileURLToPath } from "url";
 import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import {
 	assertQuestionnaireEnvelopeBudget,
@@ -24,6 +26,7 @@ import type {
 	ExtensionUIContext,
 } from "../src/core/extensions/types.js";
 import { requestQuestionnaire as packageRootRequestQuestionnaire } from "../src/index.js";
+import { QuestionnaireDraftModel } from "../src/modes/interactive/questionnaire-draft-model.js";
 
 const request: ExtensionQuestionnaireRequestV1 = {
 	version: 1,
@@ -52,6 +55,18 @@ const request: ExtensionQuestionnaireRequestV1 = {
 		{ id: "long", kind: "multiline-text", prompt: "Notes?", placeholder: "Optional" },
 	],
 };
+
+describe("questionnaire draft model module", () => {
+	it("keeps the shared draft model free of TUI and ANSI imports", () => {
+		const modelSource = readFileSync(
+			fileURLToPath(new URL("../src/modes/interactive/questionnaire-draft-model.ts", import.meta.url)),
+			"utf8",
+		);
+		expect(modelSource).not.toContain("@earendil-works/pi-tui");
+		expect(modelSource).not.toContain("strip-ansi");
+		expect(new QuestionnaireDraftModel(request).responses()).toHaveLength(request.questions.length);
+	});
+});
 
 describe("questionnaire public contract", () => {
 	it("keeps an old structural UI context assignable", () => {

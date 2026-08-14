@@ -254,6 +254,10 @@ Use `/settings` to modify common options, or edit JSON files directly:
 
 See [docs/settings.md](docs/settings.md) for all options.
 
+### Remote questionnaire delivery
+
+On macOS, an interactive rich-questionnaire presenter can optionally send a delayed iMessage link to a mobile form. Configure the global-only, disabled-by-default `remoteQuestionnaire` setting in `~/.prime/agent/settings.json`; see [Remote questionnaire settings](docs/settings.md#remotequestionnaire) for the exact JSON, prerequisites, privacy boundary, delivery limits, and recovery behavior. Prime Agent does not install `cloudflared` or configure Messages, and this best-effort feature leaves the terminal questionnaire usable if remote delivery is unavailable.
+
 ### Update checks
 
 Prime Agent stable builds fetch `https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev/latest.json` to check whether a newer version exists. Beta builds fetch `beta.json` and remain on the beta channel. Override the base URL with `PRIME_AGENT_DOWNLOAD_BASE_URL`. Disable version checks with `PI_SKIP_VERSION_CHECK=1`.

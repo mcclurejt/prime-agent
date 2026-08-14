@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Added opt-in delayed iMessage delivery of rich questionnaires to a secure mobile form on macOS.
 - Fixed sessions with open questionnaires appearing under Running instead of Needs Input.
 - Fixed questionnaires filling the terminal workspace and made the Review Submit action visibly high-contrast in light and dark themes.
 - Changed questionnaire Review to focus one filled Submit action by default while keeping answer rows directly editable from the keyboard.
