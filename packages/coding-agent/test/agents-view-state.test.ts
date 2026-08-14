@@ -143,6 +143,62 @@ describe("agents view state", () => {
 		expect(classifyAgentsViewSession(makeSummary({ activity: "idle", taskState: undefined }))).toBe("idle");
 	});
 
+	test("places sessions with an open questionnaire in Needs Input while the tool call is active", () => {
+		for (const questionnaireState of ["waiting", "offered", "presenting"] as const) {
+			const summary = makeSummary({
+				activity: "working",
+				isStreaming: true,
+				isRunningTools: true,
+				questionnaireState,
+				questionnaireQueueDepth: 1,
+			});
+
+			expect(classifyAgentsViewSession(summary)).toBe("needs-input");
+			expect(buildAgentsViewRows([summary])[0]).toMatchObject({
+				section: "needs-input",
+				statusLabel: "needs input",
+			});
+		}
+
+		const [heartbeatRecord] = reconcileUnifiedSessions(
+			[makeSummary({ questionnaireState: "presenting", questionnaireQueueDepth: 1 })],
+			[],
+			[heartbeat("questionnaire-heartbeat", undefined, "active-1")],
+		);
+		expect(heartbeatRecord?.section).toBe("needs-input");
+
+		const settled = makeSummary({ activity: "working", isStreaming: true, isRunningTools: true });
+		expect(classifyAgentsViewSession(settled)).toBe("running");
+		expect(buildAgentsViewRows([settled])[0]).toMatchObject({ section: "running", statusLabel: "running tools" });
+	});
+
+	test("keeps an open root questionnaire in Needs Input while a descendant is running", () => {
+		for (const hasActiveHeartbeat of [false, true]) {
+			const rows = buildAgentsViewRows([
+				makeSummary({
+					id: "running-child",
+					activeSessionId: "running-child",
+					sessionId: "running-child-session",
+					runtimeKind: "subagent",
+					parentActiveSessionId: "input-root",
+					activity: "working",
+					isStreaming: true,
+					hasActiveHeartbeat,
+				}),
+				makeSummary({
+					id: "input-root",
+					activeSessionId: "input-root",
+					sessionId: "input-root-session",
+					questionnaireState: "presenting",
+					questionnaireQueueDepth: 1,
+					hasRunningRlmChildren: true,
+				}),
+			]);
+
+			expect(rows[0]).toMatchObject({ section: "needs-input", statusLabel: "needs input" });
+		}
+	});
+
 	test("does not surface nested needs-input sessions in the global section", () => {
 		const rows = buildAgentsViewRows([
 			makeSummary({
@@ -169,7 +225,7 @@ describe("agents view state", () => {
 	});
 
 	test("keeps global Needs Input limited to top-level sessions", () => {
-		const rows = buildAgentsViewRows([
+		const summaries = [
 			makeSummary({
 				id: "nested-input",
 				activeSessionId: "nested-input",
@@ -179,10 +235,67 @@ describe("agents view state", () => {
 				parentActiveSessionId: "root",
 				taskState: "needs_input",
 			}),
+			makeSummary({
+				id: "nested-questionnaire",
+				activeSessionId: "nested-questionnaire",
+				sessionId: "nested-questionnaire-session",
+				sessionName: "Nested questionnaire",
+				runtimeKind: "subagent",
+				parentActiveSessionId: "root",
+				activity: "working",
+				isStreaming: true,
+				questionnaireState: "presenting",
+				questionnaireQueueDepth: 1,
+			}),
 			makeSummary({ id: "root", activeSessionId: "root", sessionId: "root-session", sessionName: "Root" }),
+		];
+		const collapsed = buildAgentsViewRows(summaries);
+
+		expect(collapsed.some((row) => row.section === "needs-input")).toBe(false);
+		const root = collapsed.find((row) => row.title === "Root");
+		const expanded = buildAgentsViewRows(summaries, new Set([root?.identity ?? ""]));
+		expect(expanded.find((row) => row.title === "Nested questionnaire")).toMatchObject({
+			kind: "subagent",
+			section: "running",
+			statusLabel: "needs input",
+			selectable: true,
+		});
+		expect(expanded.some((row) => row.title === "Nested input")).toBe(false);
+
+		const scoped = buildAgentsViewRows(summaries, new Set(), new Set(), {
+			sessionId: "root-session",
+			activeSessionId: "root",
+		});
+		expect(scoped.find((row) => row.title === "Nested questionnaire")).toMatchObject({
+			kind: "agent",
+			section: "idle",
+			statusLabel: "needs input",
+			selectable: true,
+		});
+	});
+
+	test("reclassifies an orphaned questionnaire child after promoting it to a root row", () => {
+		const [row] = buildAgentsViewRows([
+			makeSummary({
+				id: "orphaned-questionnaire",
+				activeSessionId: "orphaned-questionnaire",
+				sessionId: "orphaned-questionnaire-session",
+				sessionName: "Orphaned questionnaire",
+				runtimeKind: "subagent",
+				parentActiveSessionId: "missing-parent",
+				activity: "working",
+				isStreaming: true,
+				questionnaireState: "presenting",
+				questionnaireQueueDepth: 1,
+			}),
 		]);
 
-		expect(rows.some((row) => row.section === "needs-input")).toBe(false);
+		expect(row).toMatchObject({
+			kind: "agent",
+			section: "needs-input",
+			statusLabel: "needs input",
+			selectable: true,
+		});
 	});
 
 	test("retains ordinary descendants directly under a collapsed needs-input parent", () => {

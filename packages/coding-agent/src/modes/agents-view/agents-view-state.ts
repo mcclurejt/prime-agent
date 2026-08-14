@@ -87,7 +87,12 @@ export interface AgentsViewRow {
 	heartbeat?: UnifiedSessionHeartbeat;
 }
 
+function hasOpenQuestionnaire(summary: SessionSummary): boolean {
+	return summary.questionnaireState !== undefined;
+}
+
 export function classifyAgentsViewSession(summary: SessionSummary): AgentsViewSection {
+	if (hasOpenQuestionnaire(summary)) return "needs-input";
 	const rosterStatus = classifySessionRosterStatus(summary);
 	if (rosterStatus !== "idle") return rosterStatus;
 	return summary.taskState === "needs_input" ? "needs-input" : "idle";
@@ -96,6 +101,9 @@ export function classifyAgentsViewSession(summary: SessionSummary): AgentsViewSe
 export function classifyUnifiedSession(record: Pick<UnifiedSessionRecord, "daemon" | "heartbeat">): AgentsViewSection {
 	if (!record.daemon) {
 		return "inactive";
+	}
+	if (hasOpenQuestionnaire(record.daemon)) {
+		return "needs-input";
 	}
 	if ((record.heartbeat?.activeCount ?? 0) > 0) {
 		return "running";
@@ -635,9 +643,16 @@ export function buildAgentsViewRows(
 	const isDirectScopeChild = (summary: SessionSummary): boolean =>
 		scopeRoot !== undefined && getParentKeys(summary).some((key) => scopeRootKeys.has(key));
 	const baseRows = inputs.map(({ summary, record }): MutableAgentsViewRow => {
-		const section = record?.section ?? classifyAgentsViewSession(summary);
+		const kind = isSubagentSummary(summary) && !isDirectScopeChild(summary) ? "subagent" : "agent";
+		// A questionnaire is attached to this exact live session. Keep a nested
+		// child visible and countable until the user navigates to its view depth,
+		// where it is re-rooted and can present the questionnaire.
+		const section =
+			kind === "subagent" && hasOpenQuestionnaire(summary)
+				? "running"
+				: (record?.section ?? classifyAgentsViewSession(summary));
 		return {
-			kind: isSubagentSummary(summary) && !isDirectScopeChild(summary) ? "subagent" : "agent",
+			kind,
 			// Needs Input is a global inbox. Scoped views retain the original three
 			// categories, where a non-busy session belongs in Idle.
 			section: scope && section === "needs-input" ? "idle" : section,
@@ -666,6 +681,9 @@ export function buildAgentsViewRows(
 			// Saved catalogs stream progressively, so a child can arrive before its
 			// parent. Keep it reachable as a root until the parent record appears.
 			row.kind = "agent";
+			if (hasOpenQuestionnaire(row.summary)) {
+				row.section = classifyAgentsViewSession(row.summary);
+			}
 			continue;
 		}
 		nestedRows.add(row);
@@ -805,12 +823,14 @@ function propagateRunningStateToAncestors(
 		let ancestor = parentByChild.get(row);
 		while (ancestor && !visited.has(ancestor)) {
 			visited.add(ancestor);
-			const wasRunning = ancestor.section === "running";
-			ancestor.section = "running";
-			if (hasHeartbeat) {
-				ancestor.statusLabel = getSessionStatusLabel(ancestor.summary, true);
-			} else if (!wasRunning) {
-				ancestor.statusLabel = "subagents running";
+			if (ancestor.section !== "needs-input") {
+				const wasRunning = ancestor.section === "running";
+				ancestor.section = "running";
+				if (hasHeartbeat) {
+					ancestor.statusLabel = getSessionStatusLabel(ancestor.summary, true);
+				} else if (!wasRunning) {
+					ancestor.statusLabel = "subagents running";
+				}
 			}
 			ancestor = parentByChild.get(ancestor);
 		}
@@ -1038,6 +1058,9 @@ function getSessionSubtitle(summary: SessionSummary): string {
 }
 
 function getSessionStatusLabel(summary: SessionSummary, hasActiveHeartbeat = summary.hasActiveHeartbeat): string {
+	if (hasOpenQuestionnaire(summary)) {
+		return "needs input";
+	}
 	if (summary.isCompacting) {
 		return "compacting";
 	}
