@@ -16,7 +16,7 @@ const SESSION_COOKIE = "remote_questionnaire";
 const TOKEN_BYTES = 32;
 const ROUTE_BYTES = 16;
 const BOOTSTRAP_SCRIPT = `const secret=location.hash.slice(1);const showError=()=>{const alert=document.createElement("p");alert.setAttribute("role","alert");alert.textContent="Unable to establish session. Keep this link open and retry.";document.body.prepend(alert)};if(secret){fetch(location.pathname+"/bootstrap",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({secret}),credentials:"same-origin"}).then(r=>{if(r.ok){history.replaceState(null,"",location.pathname);location.reload()}else showError()}).catch(showError)}`;
-const STATUS_POLL_SCRIPT = `setInterval(()=>fetch(location.pathname+"/status",{credentials:"same-origin"}).then(r=>r.json()).then(s=>{if(["terminal","stale","revoked","expired"].includes(s.status))location.reload()}).catch(()=>{}),3000)`;
+const STATUS_POLL_SCRIPT = `const route=location.pathname.endsWith("/mutate")?location.pathname.slice(0,-7):location.pathname;if(route!==location.pathname)history.replaceState(null,"",route);setInterval(()=>fetch(route+"/status",{credentials:"same-origin"}).then(r=>r.json()).then(s=>{if(["terminal","stale","revoked","expired"].includes(s.status))location.reload()}).catch(()=>{}),3000)`;
 
 export type RemoteQuestionnaireStatus = "active" | "stale" | "terminal" | "revoked" | "expired";
 
@@ -402,7 +402,7 @@ export class RemoteQuestionnaireServer {
 				}
 				if (action.action === "reload") {
 					this.setActive();
-					return isForm ? this.redirectToPage(response) : this.respond(response, 204);
+					return isForm ? this.pageShell(response, session) : this.respond(response, 204);
 				}
 				if (this.page) {
 					try {
@@ -421,23 +421,13 @@ export class RemoteQuestionnaireServer {
 						return this.respondValidation(response, session, "Unable to save answer.", isForm);
 					}
 				}
-				return isForm ? this.redirectToPage(response) : this.respond(response, 204);
+				return isForm ? this.pageShell(response, session) : this.respond(response, 204);
 			} catch {
 				return this.respond(response, 503);
 			} finally {
 				release?.();
 			}
 		});
-	}
-
-	private redirectToPage(response: ServerResponse): undefined {
-		response.setHeader("location", this.route);
-		response.setHeader("content-type", "text/html; charset=utf-8");
-		return this.respond(
-			response,
-			303,
-			'<!doctype html><html lang="en"><title>Continuing</title><p>Continuing…</p></html>',
-		);
 	}
 
 	private respondValidation(response: ServerResponse, session: Session, message: string, isForm: boolean): undefined {

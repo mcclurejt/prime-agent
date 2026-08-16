@@ -268,7 +268,8 @@ describe("RemoteQuestionnaireServer", () => {
 		const authenticated = await bootstrap(server);
 		const html = (await send(server.url, { headers: { cookie: cookie(authenticated) } })).body;
 		expect(html).toContain(`action="/r/${server.routeId}/mutate"`);
-		expect(html).toContain('location.pathname+"/status"');
+		expect(html).toContain('route+"/status"');
+		expect(html).toContain('location.pathname.endsWith("/mutate")');
 		expect((await send(server.url)).body).toContain('location.pathname+"/bootstrap"');
 	});
 
@@ -377,7 +378,7 @@ describe("RemoteQuestionnaireServer", () => {
 		expect(html).toContain("Detail");
 		expect(html).toContain("Preview");
 		expect(html).toContain("Required alternative");
-		expect(html).toContain('fetch(location.pathname+"/status",{credentials:"same-origin"})');
+		expect(html).toContain('fetch(route+"/status",{credentials:"same-origin"})');
 		expect(html.match(/<script>/gu)).toHaveLength(1);
 		expect(html).not.toMatch(/<(?:img|a)\b/iu);
 		expect(html).not.toContain("javascript:");
@@ -506,7 +507,7 @@ describe("RemoteQuestionnaireServer adversarial loopback contracts", () => {
 					body: "action=set-multi&questionId=regions&choiceIds=&otherSelected=false&otherText=",
 				})
 			).status,
-		).toBe(303);
+		).toBe(200);
 		expect(page.model.getState("regions")).toMatchObject({ choiceIds: [] });
 		expect(
 			(
@@ -626,7 +627,7 @@ describe("RemoteQuestionnaireServer adversarial loopback contracts", () => {
 });
 
 describe("RemoteQuestionnaireServer browser form regressions", () => {
-	it("uses POST/303/GET for URL-encoded forms and retains answer, navigation, and review", async () => {
+	it("renders updated HTML for URL-encoded form posts and retains answer, navigation, and review", async () => {
 		const page = new RemoteQuestionnairePage({
 			version: 1,
 			questions: [{ id: "q", kind: "short-text", prompt: "Answer" }],
@@ -639,18 +640,17 @@ describe("RemoteQuestionnaireServer browser form regressions", () => {
 			headers: { cookie: cookie(boot), "content-type": "application/x-www-form-urlencoded" },
 			body: new URLSearchParams({ csrf, action: "update-text", questionId: "q", text: "browser answer" }).toString(),
 		});
-		expect(form.status).toBe(303);
-		expect(form.headers.location).toBe(`/r/${server.routeId}`);
+		expect(form.status).toBe(200);
+		expect(form.headers.location).toBeUndefined();
 		expect(form.headers["content-type"]).toBe("text/html; charset=utf-8");
-		expect(form.body).toContain("Continuing");
-		expect((await send(server.url, { headers: { cookie: cookie(boot) } })).body).toContain('value="browser answer"');
+		expect(form.body).toContain('value="browser answer"');
 		const review = await send(`${server.url}/mutate`, {
 			method: "POST",
 			headers: { cookie: cookie(boot), "content-type": "application/x-www-form-urlencoded" },
 			body: new URLSearchParams({ csrf, action: "review" }).toString(),
 		});
-		expect(review.status).toBe(303);
-		expect((await send(server.url, { headers: { cookie: cookie(boot) } })).body).toContain("browser answer");
+		expect(review.status).toBe(200);
+		expect(review.body).toContain("browser answer");
 	});
 
 	it("does not let authenticated polling exhaust a keep-alive socket but bounds unauthenticated requests", async () => {
@@ -741,7 +741,7 @@ describe("RemoteQuestionnaireServer form-state and CSP regressions", () => {
 				otherText: "",
 			}).toString(),
 		});
-		expect(response.status).toBe(303);
+		expect(response.status).toBe(200);
 		expect(page.model.getState("multi")).toMatchObject({ otherSelected: false });
 	});
 
@@ -814,7 +814,7 @@ describe("RemoteQuestionnaireServer form-state and CSP regressions", () => {
 					text: "custom",
 				}).toString(),
 			});
-			expect(confirm.status).toBe(303);
+			expect(confirm.status).toBe(200);
 			await send(`${server.url}/mutate`, {
 				method: "POST",
 				headers,
@@ -840,7 +840,7 @@ describe("RemoteQuestionnaireServer form-state and CSP regressions", () => {
 					text: "ignored",
 				}).toString(),
 			});
-			expect(back.status).toBe(303);
+			expect(back.status).toBe(200);
 			page.goToReview();
 			expect((await send(server.url, { headers: { cookie: cookie(boot) } })).body).toContain("<p>a</p>");
 		});
@@ -872,16 +872,16 @@ describe("RemoteQuestionnaireServer form-state and CSP regressions", () => {
 			expect((await send(server.url, { headers: { cookie: cookie(boot) } })).body).toContain('name="text"');
 			expect(
 				(await post({ action: "answer-confirm", questionId: "confirm", selection: "yes", text: "" })).status,
-			).toBe(303);
+			).toBe(200);
 			expect(page.model.getState("confirm")).toMatchObject({ selection: "yes", otherText: "" });
 			expect(
 				(await post({ action: "answer-confirm", questionId: "confirm", selection: "no", text: "stale" })).status,
-			).toBe(303);
+			).toBe(200);
 			expect(page.model.getState("confirm")).toMatchObject({ selection: "no", otherText: "" });
 			expect(
 				(await post({ action: "answer-confirm", questionId: "confirm", selection: "other", text: "custom" }))
 					.status,
-			).toBe(303);
+			).toBe(200);
 			expect(page.model.getState("confirm")).toMatchObject({ selection: "other", otherText: "custom" });
 			expect(
 				(await post({ action: "answer-confirm", questionId: "confirm", selection: "other", text: "" })).status,

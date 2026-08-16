@@ -353,7 +353,8 @@ describe("RemoteQuestionnaireManager", () => {
 				headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
 				body: new URLSearchParams({ csrf, action: "reload" }).toString(),
 			});
-			expect(reload.status).toBe(303);
+			expect(reload.status).toBe(200);
+			expect(reload.headers["content-type"]).toBe("text/html; charset=utf-8");
 			const active = await http(server.url, { headers: { cookie } });
 			expect(active.body).toContain("authoritative");
 			await http(`${server.url}/mutate`, {
