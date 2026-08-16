@@ -379,6 +379,10 @@ describe("RemoteQuestionnaireServer", () => {
 		expect(html).toContain("Preview");
 		expect(html).toContain("Required alternative");
 		expect(html).toContain('fetch(route+"/status",{credentials:"same-origin"})');
+		expect(html).toContain('"x-prime-questionnaire-fetch":"1"');
+		expect(html).toContain('document.addEventListener("submit"');
+		expect(html).toContain('fetch(route+"/mutate"');
+		expect(html).not.toContain("fetch(form.action");
 		expect(html.match(/<script>/gu)).toHaveLength(1);
 		expect(html).not.toMatch(/<(?:img|a)\b/iu);
 		expect(html).not.toContain("javascript:");
@@ -644,6 +648,56 @@ describe("RemoteQuestionnaireServer browser form regressions", () => {
 		expect(form.headers.location).toBeUndefined();
 		expect(form.headers["content-type"]).toBe("text/html; charset=utf-8");
 		expect(form.body).toContain('value="browser answer"');
+		const pageScript = /<script>(.*?)<\/script>/su.exec(form.body)?.[1];
+		expect(pageScript).toBeDefined();
+		expect(() => new Function(pageScript!)).not.toThrow();
+		let submitHandler: ((event: { target: unknown; submitter: unknown; preventDefault(): void }) => void) | undefined;
+		const fetchCalls: string[] = [];
+		const button = { name: "action", value: "update-text", disabled: false };
+		const fakeForm = {
+			tagName: "FORM",
+			action: button,
+			querySelector: () => button,
+		};
+		class FakeFormData {
+			set(_key: string, _value: string): void {}
+			entries(): IterableIterator<[string, string]> {
+				return [["csrf", csrf] as [string, string]][Symbol.iterator]();
+			}
+		}
+		const execute = new Function(
+			"location",
+			"document",
+			"history",
+			"fetch",
+			"setInterval",
+			"FormData",
+			"URLSearchParams",
+			pageScript!,
+		);
+		execute(
+			{ pathname: `/r/${server.routeId}`, assign: () => undefined },
+			{
+				documentElement: { dataset: { remoteStatus: "active" } },
+				addEventListener: (type: string, handler: typeof submitHandler) => {
+					if (type === "submit") submitHandler = handler;
+				},
+				getElementById: () => undefined,
+				querySelector: () => ({ prepend: () => undefined }),
+				createElement: () => ({ setAttribute: () => undefined }),
+			},
+			{ replaceState: () => undefined },
+			(url: string) => {
+				fetchCalls.push(String(url));
+				return Promise.resolve({ ok: true, status: 204 });
+			},
+			() => 0,
+			FakeFormData,
+			URLSearchParams,
+		);
+		expect(submitHandler).toBeDefined();
+		submitHandler?.({ target: fakeForm, submitter: button, preventDefault: () => undefined });
+		expect(fetchCalls).toEqual([`/r/${server.routeId}/mutate`]);
 		const review = await send(`${server.url}/mutate`, {
 			method: "POST",
 			headers: { cookie: cookie(boot), "content-type": "application/x-www-form-urlencoded" },
@@ -651,6 +705,29 @@ describe("RemoteQuestionnaireServer browser form regressions", () => {
 		});
 		expect(review.status).toBe(200);
 		expect(review.body).toContain("browser answer");
+		const invalidEnhanced = await send(`${server.url}/mutate`, {
+			method: "POST",
+			headers: {
+				cookie: cookie(boot),
+				"content-type": "application/x-www-form-urlencoded",
+				"x-prime-questionnaire-fetch": "1",
+			},
+			body: new URLSearchParams({ csrf, action: "answer-confirm", questionId: "q", text: "" }).toString(),
+		});
+		expect(invalidEnhanced.status).toBe(422);
+		expect(invalidEnhanced.headers["content-type"]).toBe("application/json; charset=utf-8");
+		expect(invalidEnhanced.body).toContain("Select an answer");
+		const enhanced = await send(`${server.url}/mutate`, {
+			method: "POST",
+			headers: {
+				cookie: cookie(boot),
+				"content-type": "application/x-www-form-urlencoded",
+				"x-prime-questionnaire-fetch": "1",
+			},
+			body: new URLSearchParams({ csrf, action: "edit", questionId: "q" }).toString(),
+		});
+		expect(enhanced.status).toBe(204);
+		expect(enhanced.body).toBe("");
 	});
 
 	it("does not let authenticated polling exhaust a keep-alive socket but bounds unauthenticated requests", async () => {

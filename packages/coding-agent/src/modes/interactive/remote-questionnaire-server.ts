@@ -16,7 +16,7 @@ const SESSION_COOKIE = "remote_questionnaire";
 const TOKEN_BYTES = 32;
 const ROUTE_BYTES = 16;
 const BOOTSTRAP_SCRIPT = `const secret=location.hash.slice(1);const showError=()=>{const alert=document.createElement("p");alert.setAttribute("role","alert");alert.textContent="Unable to establish session. Keep this link open and retry.";document.body.prepend(alert)};if(secret){fetch(location.pathname+"/bootstrap",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({secret}),credentials:"same-origin"}).then(r=>{if(r.ok){history.replaceState(null,"",location.pathname);location.reload()}else showError()}).catch(showError)}`;
-const STATUS_POLL_SCRIPT = `const route=location.pathname.endsWith("/mutate")?location.pathname.slice(0,-7):location.pathname;if(route!==location.pathname)history.replaceState(null,"",route);setInterval(()=>fetch(route+"/status",{credentials:"same-origin"}).then(r=>r.json()).then(s=>{if(["terminal","stale","revoked","expired"].includes(s.status))location.reload()}).catch(()=>{}),3000)`;
+const STATUS_POLL_SCRIPT = `const route=location.pathname.endsWith("/mutate")?location.pathname.slice(0,-7):location.pathname;if(route!==location.pathname)history.replaceState(null,"",route);const initialStatus=document.documentElement.dataset.remoteStatus;let submitting=false;const showError=message=>{let alert=document.getElementById("form-error");if(!alert){alert=document.createElement("p");alert.id="form-error";alert.setAttribute("role","alert");document.querySelector("main")?.prepend(alert)}alert.textContent=message};document.addEventListener("submit",event=>{const form=event.target;const button=event.submitter??form?.querySelector?.('button[name="action"]');if(!form||form.tagName!=="FORM"||!button)return;event.preventDefault();if(submitting)return;submitting=true;button.disabled=true;const restore=()=>{submitting=false;button.disabled=false};const data=new FormData(form);if(button.name)data.set(button.name,button.value);const body=new URLSearchParams(Array.from(data.entries(),([key,value])=>[key,String(value)]));fetch(route+"/mutate",{method:"POST",headers:{"content-type":"application/x-www-form-urlencoded","x-prime-questionnaire-fetch":"1"},body,credentials:"same-origin"}).then(async response=>{if(response.status===422){const result=await response.json();restore();showError(result.message??"Unable to save answer.");return}if(response.ok){location.assign(route);return}restore();showError("Unable to save answer.")}).catch(()=>{restore();showError("Unable to save answer.")})});setInterval(()=>fetch(route+"/status",{credentials:"same-origin"}).then(r=>r.json()).then(s=>{if((s.status!==initialStatus&&["terminal","stale","revoked","expired"].includes(s.status))||(initialStatus==="suspended"&&s.status==="active"))location.reload()}).catch(()=>{}),3000)`;
 
 export type RemoteQuestionnaireStatus = "active" | "stale" | "terminal" | "revoked" | "expired";
 
@@ -297,7 +297,7 @@ export class RemoteQuestionnaireServer {
 						this.route,
 					);
 		response.end(
-			`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(view.title ?? "Questionnaire")}</title><style>${PAGE_CSS}</style><main><header><p>Secure questionnaire</p><p>${[
+			`<!doctype html><html lang="en" data-remote-status="active"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(view.title ?? "Questionnaire")}</title><style>${PAGE_CSS}</style><main><header><p>Secure questionnaire</p><p>${[
 				this.presentation?.projectLabel,
 				this.presentation?.sessionLabel,
 			]
@@ -317,12 +317,13 @@ export class RemoteQuestionnaireServer {
 	}
 
 	private stalePageShell(title: string | undefined, csrf: string): string {
-		return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(title ?? "Questionnaire")}</title><main><h1>${escapeHtml(title ?? "Questionnaire")}</h1><p role="alert">${escapeHtml(this.statusMessage ?? "The questionnaire changed.")}</p><form method="post" action="${this.route}/mutate"><input type="hidden" name="csrf" value="${csrf}"><button name="action" value="reload">Reload latest</button></form></main>`;
+		return `<!doctype html><html lang="en" data-remote-status="stale"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(title ?? "Questionnaire")}</title><main><h1>${escapeHtml(title ?? "Questionnaire")}</h1><p role="alert">${escapeHtml(this.statusMessage ?? "The questionnaire changed.")}</p><form method="post" action="${this.route}/mutate"><input type="hidden" name="csrf" value="${csrf}"><button name="action" value="reload">Reload latest</button></form></main><script>${STATUS_POLL_SCRIPT}</script>`;
 	}
 
 	private terminalPageShell(title: string | undefined): string {
 		const status = this.statusMessage ?? (this.statusValue === "terminal" ? "Answered elsewhere." : this.statusValue);
-		return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(title ?? "Questionnaire")}</title><main><h1>${escapeHtml(title ?? "Questionnaire")}</h1><p role="status">${escapeHtml(status)}</p></main>`;
+		const pageStatus = this.suspended ? "suspended" : this.statusValue;
+		return `<!doctype html><html lang="en" data-remote-status="${pageStatus}"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(title ?? "Questionnaire")}</title><main><h1>${escapeHtml(title ?? "Questionnaire")}</h1><p role="status">${escapeHtml(status)}</p></main><script>${STATUS_POLL_SCRIPT}</script>`;
 	}
 
 	private bootstrap(request: IncomingMessage, response: ServerResponse): undefined {
@@ -353,6 +354,7 @@ export class RemoteQuestionnaireServer {
 		if (!this.acceptsProvenance(request)) return this.respond(response, 403);
 		const contentType = request.headers["content-type"];
 		const isForm = contentType === "application/x-www-form-urlencoded";
+		const renderFormResponse = isForm && request.headers["x-prime-questionnaire-fetch"] !== "1";
 		if (contentType !== "application/json" && !isForm) return this.respond(response, 415);
 		const session = this.authenticate(request);
 		if (!session) return this.respond(response, 401);
@@ -364,21 +366,31 @@ export class RemoteQuestionnaireServer {
 			const action = parsePageAction(body.value);
 			if (!action) {
 				if (isForm && isIncompleteBrowserAnswer(body.value))
-					return this.respondValidation(response, session, "Select an answer before saving.", true);
+					return this.respondValidation(response, session, "Select an answer before saving.", renderFormResponse);
 				return this.respond(response, 400);
 			}
 			if (
 				action.action === "submit" &&
 				(!this.page || this.page.model.currentStep.kind !== "review" || this.page.view().submitted)
 			)
-				return this.respondValidation(response, session, "Review the questionnaire before submitting.", isForm);
+				return this.respondValidation(
+					response,
+					session,
+					"Review the questionnaire before submitting.",
+					renderFormResponse,
+				);
 			if (isForm && isEmptyOtherAnswer(action))
-				return this.respondValidation(response, session, "Enter an Other answer before saving.", true);
+				return this.respondValidation(
+					response,
+					session,
+					"Enter an Other answer before saving.",
+					renderFormResponse,
+				);
 			if (
 				(this.status !== "active" || this.suspended) &&
 				!(this.statusValue === "stale" && action.action === "reload")
 			)
-				return this.respondMutationStatus(response, session, isForm);
+				return this.respondMutationStatus(response, session, renderFormResponse);
 			const prior = this.mutationTail;
 			let release: (() => void) | undefined;
 			this.mutationTail = new Promise<void>((resolve) => {
@@ -390,19 +402,21 @@ export class RemoteQuestionnaireServer {
 					(this.status !== "active" || this.suspended) &&
 					!(this.statusValue === "stale" && action.action === "reload")
 				)
-					return this.respondMutationStatus(response, session, isForm);
+					return this.respondMutationStatus(response, session, renderFormResponse);
 				const result = (await this.dependencies.onMutation({ sessionId: session.id, page: action })) ?? {
 					kind: "accepted" as const,
 				};
-				if (result.kind === "suspended") return this.respondSuspended(result.message, response, session, isForm);
-				if (result.kind === "stale") return this.setStaleResult(result.message, response, session, isForm);
+				if (result.kind === "suspended")
+					return this.respondSuspended(result.message, response, session, renderFormResponse);
+				if (result.kind === "stale")
+					return this.setStaleResult(result.message, response, session, renderFormResponse);
 				if (result.kind === "terminal") {
 					this.setTerminal(result.message);
-					return this.respondMutationStatus(response, session, isForm);
+					return this.respondMutationStatus(response, session, renderFormResponse);
 				}
 				if (action.action === "reload") {
 					this.setActive();
-					return isForm ? this.pageShell(response, session) : this.respond(response, 204);
+					return renderFormResponse ? this.pageShell(response, session) : this.respond(response, 204);
 				}
 				if (this.page) {
 					try {
@@ -414,14 +428,14 @@ export class RemoteQuestionnaireServer {
 									response,
 									session,
 									mutation.message ?? "Unable to save answer.",
-									isForm,
+									renderFormResponse,
 								);
 						}
 					} catch {
-						return this.respondValidation(response, session, "Unable to save answer.", isForm);
+						return this.respondValidation(response, session, "Unable to save answer.", renderFormResponse);
 					}
 				}
-				return isForm ? this.pageShell(response, session) : this.respond(response, 204);
+				return renderFormResponse ? this.pageShell(response, session) : this.respond(response, 204);
 			} catch {
 				return this.respond(response, 503);
 			} finally {
@@ -431,7 +445,10 @@ export class RemoteQuestionnaireServer {
 	}
 
 	private respondValidation(response: ServerResponse, session: Session, message: string, isForm: boolean): undefined {
-		if (!isForm) return this.respond(response, 422, JSON.stringify({ message }));
+		if (!isForm) {
+			response.setHeader("content-type", "application/json; charset=utf-8");
+			return this.respond(response, 422, JSON.stringify({ message }));
+		}
 		response.statusCode = 422;
 		response.setHeader("content-type", "text/html; charset=utf-8");
 		return this.page

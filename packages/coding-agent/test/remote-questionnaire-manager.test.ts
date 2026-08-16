@@ -348,13 +348,18 @@ describe("RemoteQuestionnaireManager", () => {
 			expect(submit.status).toBe(200);
 			expect(submit.body).toContain("Reload latest");
 			expect(submit.body).toContain("Prompt");
+			expect(submit.body).toContain('fetch(route+"/mutate"');
 			const reload = await http(`${server.url}/mutate`, {
 				method: "POST",
-				headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+				headers: {
+					cookie,
+					"content-type": "application/x-www-form-urlencoded",
+					"x-prime-questionnaire-fetch": "1",
+				},
 				body: new URLSearchParams({ csrf, action: "reload" }).toString(),
 			});
-			expect(reload.status).toBe(200);
-			expect(reload.headers["content-type"]).toBe("text/html; charset=utf-8");
+			expect(reload.status).toBe(204);
+			expect(reload.body).toBe("");
 			const active = await http(server.url, { headers: { cookie } });
 			expect(active.body).toContain("authoritative");
 			await http(`${server.url}/mutate`, {
