@@ -730,6 +730,55 @@ describe("RemoteQuestionnaireServer browser form regressions", () => {
 		expect(enhanced.body).toBe("");
 	});
 
+	it("persists enhanced multi-select choices through review and submission", async () => {
+		const page = new RemoteQuestionnairePage({
+			version: 2,
+			questions: [
+				{
+					id: "multi",
+					kind: "multi-select",
+					prompt: "Choose colors",
+					choices: [
+						{ id: "red", label: "Red" },
+						{ id: "blue", label: "Blue" },
+					],
+				},
+			],
+		});
+		const server = await create({ page });
+		const boot = await bootstrap(server);
+		const csrf = (JSON.parse(boot.body) as { csrf: string }).csrf;
+		const headers = {
+			cookie: cookie(boot),
+			"content-type": "application/x-www-form-urlencoded",
+			"x-prime-questionnaire-fetch": "1",
+		};
+		const save = await send(`${server.url}/mutate`, {
+			method: "POST",
+			headers,
+			body:
+				"csrf=" +
+				encodeURIComponent(csrf) +
+				"&action=set-multi&questionId=multi&choiceIds=&choiceIds=red&choiceIds=blue&otherText=",
+		});
+		expect(save.status).toBe(204);
+		expect(page.model.getState("multi")).toMatchObject({ choiceIds: ["red", "blue"] });
+		const review = await send(`${server.url}/mutate`, {
+			method: "POST",
+			headers,
+			body: new URLSearchParams({ csrf, action: "review" }).toString(),
+		});
+		expect(review.status).toBe(204);
+		expect(page.submit()).toEqual([
+			{
+				questionId: "multi",
+				status: "answered",
+				kind: "multi-select",
+				choiceIds: ["red", "blue"],
+			},
+		]);
+	});
+
 	it("does not let authenticated polling exhaust a keep-alive socket but bounds unauthenticated requests", async () => {
 		const page = new RemoteQuestionnairePage({
 			version: 1,
