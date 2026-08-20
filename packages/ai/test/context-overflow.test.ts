@@ -19,7 +19,7 @@ import { complete } from "../src/stream.js";
 import type { AssistantMessage, Context, Model, Usage } from "../src/types.js";
 import { isContextOverflow } from "../src/utils/overflow.js";
 import { hasAzureOpenAICredentials } from "./azure-utils.js";
-import { hasBedrockCredentials } from "./bedrock-utils.js";
+import { hasBedrockCredentials, hasBedrockMantleCredentials } from "./bedrock-utils.js";
 import { getKimiCodingTestModel } from "./kimi-test-model.js";
 import { resolveApiKey } from "./oauth.js";
 import { getZaiTestModel } from "./zai-test-model.js";
@@ -710,5 +710,11 @@ describe("Context overflow error handling", () => {
 			expect(result.stopReason).toBe("error");
 			expect(isContextOverflow(result.response, model.contextWindow)).toBe(true);
 		}, 120000);
+	});
+	describe.skipIf(!hasBedrockMantleCredentials())("Amazon Bedrock Mantle Provider", () => {
+		const llm = getModel("amazon-bedrock-mantle", "openai.gpt-5.6-luna");
+		it("should support the Mantle representative", { retry: 3, timeout: 30000 }, async () => {
+			await testContextOverflow(llm, "");
+		});
 	});
 });

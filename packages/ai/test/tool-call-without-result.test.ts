@@ -9,7 +9,7 @@ import { getZaiTestModel } from "./zai-test-model.js";
 type StreamOptionsWithExtras = StreamOptions & Record<string, unknown>;
 
 import { hasAzureOpenAICredentials, resolveAzureDeploymentName } from "./azure-utils.js";
-import { hasBedrockCredentials } from "./bedrock-utils.js";
+import { hasBedrockCredentials, hasBedrockMantleCredentials } from "./bedrock-utils.js";
 import { hasCloudflareAiGatewayCredentials, hasCloudflareWorkersAICredentials } from "./cloudflare-utils.js";
 import { resolveApiKey } from "./oauth.js";
 
@@ -318,5 +318,11 @@ describe("Tool Call Without Result Tests", () => {
 				await testToolCallWithoutResult(model, { apiKey: openaiCodexToken });
 			},
 		);
+	});
+	describe.skipIf(!hasBedrockMantleCredentials())("Amazon Bedrock Mantle Provider", () => {
+		const llm = getModel("amazon-bedrock-mantle", "openai.gpt-5.6-luna");
+		it("should support the Mantle representative", { retry: 3, timeout: 30000 }, async () => {
+			await testToolCallWithoutResult(llm);
+		});
 	});
 });

@@ -439,7 +439,7 @@ export class AuthStorage {
 	}
 
 	private getAmbientEnvironmentIdentityMaterial(provider: string): string {
-		if (provider === "amazon-bedrock") {
+		if (provider === "amazon-bedrock" || provider === "amazon-bedrock-mantle") {
 			if (process.env.AWS_PROFILE) return `amazon-bedrock:profile:${process.env.AWS_PROFILE}`;
 			if (process.env.AWS_ACCESS_KEY_ID) {
 				return `amazon-bedrock:access-key:${process.env.AWS_ACCESS_KEY_ID}:${process.env.AWS_SECRET_ACCESS_KEY ?? ""}:${process.env.AWS_SESSION_TOKEN ?? ""}`;

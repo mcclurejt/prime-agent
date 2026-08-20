@@ -39,6 +39,7 @@ await build({
 		// still needs it as a lazy sibling entry because the runtime import resolves
 		// relative to dist/bundle/register-builtins' generated chunk.
 		"amazon-bedrock": join(packageDir, "..", "ai", "dist", "providers", "amazon-bedrock.js"),
+		"amazon-bedrock-mantle": join(packageDir, "..", "ai", "dist", "providers", "amazon-bedrock-mantle.js"),
 	},
 	outdir,
 	bundle: true,

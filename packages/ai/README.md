@@ -80,7 +80,7 @@ Unified LLM API with automatic model discovery, provider configuration, token an
 - **Vercel AI Gateway**
 - **MiniMax**
 - **GitHub Copilot** (requires OAuth, see below)
-- **Amazon Bedrock**
+- **Amazon Bedrock** (native Converse API and Mantle Responses API)
 - **OpenCode Zen**
 - **OpenCode Go**
 - **Fireworks** (uses Anthropic-compatible API)
@@ -655,6 +655,7 @@ The library uses a registry of API implementations. Built-in APIs include:
 - **`openai-codex-responses`**: OpenAI Codex Responses API (`streamOpenAICodexResponses`, `OpenAICodexResponsesOptions`)
 - **`azure-openai-responses`**: Azure OpenAI Responses API (`streamAzureOpenAIResponses`, `AzureOpenAIResponsesOptions`)
 - **`bedrock-converse-stream`**: Amazon Bedrock Converse API (`streamBedrock`, `BedrockOptions`)
+- **`bedrock-mantle-responses`**: Amazon Bedrock Mantle OpenAI Responses API (`streamBedrockMantle`, `BedrockMantleOptions`)
 
 ### Faux provider for tests
 
@@ -1035,7 +1036,7 @@ const response = await complete(model, {
 
 ### Browser Compatibility Notes
 
-- Amazon Bedrock (`bedrock-converse-stream`) is not supported in browser environments.
+- Amazon Bedrock (`bedrock-converse-stream` and `bedrock-mantle-responses`) is not supported in browser environments.
 - OAuth login flows are not supported in browser environments. Use the `prime-agent-ai/oauth` entry point in Node.js.
 - In browser builds, Bedrock can still appear in model lists. Calls to Bedrock models fail at runtime.
 - Use a server-side proxy or backend service if you need Bedrock or OAuth-based auth from a web app.

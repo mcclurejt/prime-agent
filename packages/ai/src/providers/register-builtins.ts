@@ -11,6 +11,7 @@ import type {
 } from "../types.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import type { BedrockOptions } from "./amazon-bedrock.js";
+import type { BedrockMantleOptions } from "./amazon-bedrock-mantle.js";
 import type { AnthropicOptions } from "./anthropic.js";
 import type { AzureOpenAIResponsesOptions } from "./azure-openai-responses.js";
 import type { GoogleOptions } from "./google.js";
@@ -73,6 +74,11 @@ interface OpenAIResponsesProviderModule {
 	streamSimpleOpenAIResponses: StreamFunction<"openai-responses", SimpleStreamOptions>;
 }
 
+interface BedrockMantleProviderModule {
+	streamBedrockMantle: StreamFunction<"bedrock-mantle-responses", BedrockMantleOptions>;
+	streamSimpleBedrockMantle: StreamFunction<"bedrock-mantle-responses", SimpleStreamOptions>;
+}
+
 interface BedrockProviderModule {
 	streamBedrock: (
 		model: Model<"bedrock-converse-stream">,
@@ -118,11 +124,21 @@ let bedrockProviderModuleOverride:
 let bedrockProviderModulePromise:
 	| Promise<LazyProviderModule<"bedrock-converse-stream", BedrockOptions, SimpleStreamOptions>>
 	| undefined;
+let bedrockMantleProviderModuleOverride:
+	| LazyProviderModule<"bedrock-mantle-responses", BedrockMantleOptions, SimpleStreamOptions>
+	| undefined;
+let bedrockMantleProviderModulePromise:
+	| Promise<LazyProviderModule<"bedrock-mantle-responses", BedrockMantleOptions, SimpleStreamOptions>>
+	| undefined;
 
 export function setBedrockProviderModule(module: BedrockProviderModule): void {
-	bedrockProviderModuleOverride = {
-		stream: module.streamBedrock,
-		streamSimple: module.streamSimpleBedrock,
+	bedrockProviderModuleOverride = { stream: module.streamBedrock, streamSimple: module.streamSimpleBedrock };
+}
+
+export function setBedrockMantleProviderModule(module: BedrockMantleProviderModule): void {
+	bedrockMantleProviderModuleOverride = {
+		stream: module.streamBedrockMantle,
+		streamSimple: module.streamSimpleBedrockMantle,
 	};
 }
 
@@ -304,6 +320,17 @@ function loadOpenAIResponsesProviderModule(): Promise<
 	return openAIResponsesProviderModulePromise;
 }
 
+function loadBedrockMantleProviderModule(): Promise<
+	LazyProviderModule<"bedrock-mantle-responses", BedrockMantleOptions, SimpleStreamOptions>
+> {
+	if (bedrockMantleProviderModuleOverride) return Promise.resolve(bedrockMantleProviderModuleOverride);
+	bedrockMantleProviderModulePromise ||= importNodeOnlyProvider("./amazon-bedrock-mantle.js").then((module) => {
+		const provider = module as BedrockMantleProviderModule;
+		return { stream: provider.streamBedrockMantle, streamSimple: provider.streamSimpleBedrockMantle };
+	});
+	return bedrockMantleProviderModulePromise;
+}
+
 function loadBedrockProviderModule(): Promise<
 	LazyProviderModule<"bedrock-converse-stream", BedrockOptions, SimpleStreamOptions>
 > {
@@ -338,6 +365,8 @@ export const streamOpenAIResponses = createLazyStream(loadOpenAIResponsesProvide
 export const streamSimpleOpenAIResponses = createLazySimpleStream(loadOpenAIResponsesProviderModule);
 const streamBedrockLazy = createLazyStream(loadBedrockProviderModule);
 const streamSimpleBedrockLazy = createLazySimpleStream(loadBedrockProviderModule);
+const streamBedrockMantleLazy = createLazyStream(loadBedrockMantleProviderModule);
+const streamSimpleBedrockMantleLazy = createLazySimpleStream(loadBedrockMantleProviderModule);
 
 export function registerBuiltInApiProviders(): void {
 	registerApiProvider({
@@ -392,6 +421,12 @@ export function registerBuiltInApiProviders(): void {
 		api: "bedrock-converse-stream",
 		stream: streamBedrockLazy,
 		streamSimple: streamSimpleBedrockLazy,
+	});
+
+	registerApiProvider({
+		api: "bedrock-mantle-responses",
+		stream: streamBedrockMantleLazy,
+		streamSimple: streamSimpleBedrockMantleLazy,
 	});
 }
 

@@ -142,6 +142,8 @@ export AZURE_OPENAI_DEPLOYMENT_NAME_MAP=gpt-4=my-gpt4,gpt-4o=my-gpt4o
 
 ### Amazon Bedrock
 
+Prime Agent supports the native Converse provider (`amazon-bedrock`) and the OpenAI Responses-compatible Bedrock Mantle provider (`amazon-bedrock-mantle`). Both use the ambient AWS credential chain, including `AWS_PROFILE` and AWS IAM Identity Center (SSO); neither uses an OpenAI API key. Mantle requires SigV4 credentials and does not support Bedrock bearer-token-only setup. Mantle GPT-5.6 prompt caching is implicit: stable prefixes of at least 1024 tokens can be reused for 30 minutes; usage reports cache read and cache write tokens, with writes billed at 1.25× input and reads at the catalog cache-read rate.
+
 ```bash
 # Option 1: AWS Profile
 export AWS_PROFILE=your-profile
@@ -161,6 +163,12 @@ Also supports ECS task roles (`AWS_CONTAINER_CREDENTIALS_*`) and IRSA (`AWS_WEB_
 
 ```bash
 prime-agent --provider amazon-bedrock --model us.anthropic.claude-sonnet-4-20250514-v1:0
+
+# Bedrock Mantle Responses API (GPT-5.6 Luna, Terra, and Sol; ambient AWS SigV4 only)
+prime-agent --provider amazon-bedrock-mantle --model openai.gpt-5.6-luna
+
+# Mantle uses implicit prompt caching: keep stable prefixes of at least 1024 tokens.
+# Cache entries have a 30-minute TTL. Prime Agent retains session affinity via prompt_cache_key.
 ```
 
 Prompt caching is enabled automatically for Claude models whose ID contains a recognizable model name (base models and system-defined inference profiles). For application inference profiles (whose ARNs don't contain the model name), set `AWS_BEDROCK_FORCE_CACHE=1` to enable cache points:

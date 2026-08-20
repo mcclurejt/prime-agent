@@ -53,6 +53,14 @@
 		"./bedrock-provider": {
 			"types": "./dist/bedrock-provider.d.ts",
 			"import": "./dist/bedrock-provider.js"
+		},
+		"./amazon-bedrock-mantle": {
+			"types": "./dist/providers/amazon-bedrock-mantle.d.ts",
+			"import": "./dist/providers/amazon-bedrock-mantle.js"
+		},
+		"./bedrock-mantle-provider": {
+			"types": "./dist/bedrock-mantle-provider.d.ts",
+			"import": "./dist/bedrock-mantle-provider.js"
 		}
 	},
 	"bin": {
@@ -74,13 +82,17 @@
 	"dependencies": {
 		"@anthropic-ai/sdk": "^0.91.1",
 		"@aws-sdk/client-bedrock-runtime": "^3.1083.0",
+		"@aws-sdk/credential-provider-node": "^3.972.66",
 		"@google/genai": "^1.40.0",
 		"@mistralai/mistralai": "^2.2.0",
-		"typebox": "^1.1.24",
+		"@smithy/core": "^3.29.2",
+		"@smithy/hash-node": "^4.3.0",
+		"@smithy/signature-v4": "^5.6.3",
 		"chalk": "^5.6.2",
 		"openai": "6.47.0",
 		"partial-json": "^0.1.7",
 		"proxy-agent": "^6.5.0",
+		"typebox": "^1.1.24",
 		"undici": "^7.28.0",
 		"zod-to-json-schema": "^3.24.6"
 	},
