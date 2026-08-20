@@ -184,8 +184,8 @@ export function getEnvApiKey(provider: string): string | undefined {
 		}
 	}
 
-	if (provider === "amazon-bedrock") {
-		// Amazon Bedrock supports multiple credential sources:
+	if (provider === "amazon-bedrock" || provider === "amazon-bedrock-mantle") {
+		// Amazon Bedrock Mantle accepts ambient AWS SigV4 credentials only; native Bedrock also accepts bearer tokens.
 		// 1. AWS_PROFILE - named profile from ~/.aws/credentials
 		// 2. AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY - standard IAM keys
 		// 3. AWS_BEARER_TOKEN_BEDROCK - Bedrock bearer token
@@ -195,13 +195,13 @@ export function getEnvApiKey(provider: string): string | undefined {
 		if (
 			process.env.AWS_PROFILE ||
 			(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) ||
-			process.env.AWS_BEARER_TOKEN_BEDROCK ||
+			(provider === "amazon-bedrock" && process.env.AWS_BEARER_TOKEN_BEDROCK) ||
 			process.env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI ||
 			process.env.AWS_CONTAINER_CREDENTIALS_FULL_URI ||
 			process.env.AWS_WEB_IDENTITY_TOKEN_FILE ||
 			getProcEnv("AWS_PROFILE") ||
 			(getProcEnv("AWS_ACCESS_KEY_ID") && getProcEnv("AWS_SECRET_ACCESS_KEY")) ||
-			getProcEnv("AWS_BEARER_TOKEN_BEDROCK") ||
+			(provider === "amazon-bedrock" && getProcEnv("AWS_BEARER_TOKEN_BEDROCK")) ||
 			getProcEnv("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI") ||
 			getProcEnv("AWS_CONTAINER_CREDENTIALS_FULL_URI") ||
 			getProcEnv("AWS_WEB_IDENTITY_TOKEN_FILE")

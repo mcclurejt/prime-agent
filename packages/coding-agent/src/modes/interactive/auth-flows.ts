@@ -52,7 +52,7 @@ export type AuthenticationResult =
 	| { status: "cancelled" }
 	| { status: "failed" };
 
-export const BEDROCK_PROVIDER_ID = "amazon-bedrock";
+export const BEDROCK_PROVIDER_IDS = new Set(["amazon-bedrock", "amazon-bedrock-mantle"]);
 
 export const ANTHROPIC_SUBSCRIPTION_AUTH_WARNING =
 	"Anthropic subscription auth is active. Third-party harness usage draws from extra usage and is billed per token, not your Claude plan limits. Manage extra usage at https://claude.ai/settings/usage.";
@@ -188,7 +188,7 @@ export class ProviderAuthFlows {
 		if (providerOption.id === PRIME_INFERENCE_PROVIDER_ID) {
 			return this.runPrimeInferenceLogin();
 		}
-		if (providerOption.id === BEDROCK_PROVIDER_ID) {
+		if (BEDROCK_PROVIDER_IDS.has(providerOption.id)) {
 			return this.showBedrockSetupDialog(providerOption.id, providerOption.name);
 		}
 		return this.showApiKeyLoginDialog(providerOption.id, providerOption.name, kind);

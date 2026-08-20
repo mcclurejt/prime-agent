@@ -1,3 +1,4 @@
+import { BEDROCK_MANTLE_MODELS } from "./catalog/bedrock-mantle.js";
 import { MODELS } from "./models.generated.js";
 import type { Api, KnownProvider, Model, ModelThinkingLevel, Usage } from "./types.js";
 
@@ -11,29 +12,39 @@ for (const [provider, models] of Object.entries(MODELS)) {
 	}
 	modelRegistry.set(provider, providerModels);
 }
+modelRegistry.set("amazon-bedrock-mantle", new Map(Object.entries(BEDROCK_MANTLE_MODELS)));
 
-type ModelApi<
-	TProvider extends KnownProvider,
+type GeneratedProvider = keyof typeof MODELS;
+type GeneratedModelApi<
+	TProvider extends GeneratedProvider,
 	TModelId extends keyof (typeof MODELS)[TProvider],
 > = (typeof MODELS)[TProvider][TModelId] extends { api: infer TApi } ? (TApi extends Api ? TApi : never) : never;
 
-export function getModel<TProvider extends KnownProvider, TModelId extends keyof (typeof MODELS)[TProvider]>(
+export function getModel<TProvider extends GeneratedProvider, TModelId extends keyof (typeof MODELS)[TProvider]>(
 	provider: TProvider,
 	modelId: TModelId,
-): Model<ModelApi<TProvider, TModelId>> {
+): Model<GeneratedModelApi<TProvider, TModelId>>;
+export function getModel(
+	provider: "amazon-bedrock-mantle",
+	modelId: keyof typeof BEDROCK_MANTLE_MODELS,
+): Model<"bedrock-mantle-responses">;
+export function getModel(provider: KnownProvider, modelId: string): Model<Api> {
 	const providerModels = modelRegistry.get(provider);
-	return providerModels?.get(modelId as string) as Model<ModelApi<TProvider, TModelId>>;
+	return providerModels?.get(modelId) as Model<Api>;
 }
 
 export function getProviders(): KnownProvider[] {
 	return Array.from(modelRegistry.keys()) as KnownProvider[];
 }
 
-export function getModels<TProvider extends KnownProvider>(
+export function getModels<TProvider extends GeneratedProvider>(
 	provider: TProvider,
-): Model<ModelApi<TProvider, keyof (typeof MODELS)[TProvider]>>[] {
+): Model<GeneratedModelApi<TProvider, keyof (typeof MODELS)[TProvider]>>[];
+export function getModels(provider: "amazon-bedrock-mantle"): Model<"bedrock-mantle-responses">[];
+export function getModels(provider: KnownProvider): Model<Api>[];
+export function getModels(provider: KnownProvider): Model<Api>[] {
 	const models = modelRegistry.get(provider);
-	return models ? (Array.from(models.values()) as Model<ModelApi<TProvider, keyof (typeof MODELS)[TProvider]>>[]) : [];
+	return models ? (Array.from(models.values()) as Model<Api>[]) : [];
 }
 
 export function supportsFastMode<TApi extends Api>(model: Model<TApi>): boolean {

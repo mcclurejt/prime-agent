@@ -8,7 +8,7 @@ import { getZaiTestModel } from "./zai-test-model.js";
 type StreamOptionsWithExtras = StreamOptions & Record<string, unknown>;
 
 import { hasAzureOpenAICredentials, resolveAzureDeploymentName } from "./azure-utils.js";
-import { hasBedrockCredentials } from "./bedrock-utils.js";
+import { hasBedrockCredentials, hasBedrockMantleCredentials } from "./bedrock-utils.js";
 import { hasCloudflareAiGatewayCredentials, hasCloudflareWorkersAICredentials } from "./cloudflare-utils.js";
 import { resolveApiKey } from "./oauth.js";
 
@@ -316,6 +316,12 @@ describe("Token Statistics on Abort", () => {
 		const llm = getModel("amazon-bedrock", "global.anthropic.claude-sonnet-4-5-20250929-v1:0");
 
 		it("should include token stats when aborted mid-stream", { retry: 3, timeout: 30000 }, async () => {
+			await testTokensOnAbort(llm);
+		});
+	});
+	describe.skipIf(!hasBedrockMantleCredentials())("Amazon Bedrock Mantle Provider", () => {
+		const llm = getModel("amazon-bedrock-mantle", "openai.gpt-5.6-luna");
+		it("should support the Mantle representative", { retry: 3, timeout: 30000 }, async () => {
 			await testTokensOnAbort(llm);
 		});
 	});

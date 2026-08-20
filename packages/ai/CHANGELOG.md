@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added the Amazon Bedrock Mantle provider for SigV4-authenticated GPT-5.6 Responses API sessions.
+
 - Fixed Bedrock Claude Opus 5 prompt caching for system-defined and application inference profiles.
 
 ## [0.7.0] - 2026-08-05

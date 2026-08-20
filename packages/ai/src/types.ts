@@ -11,6 +11,7 @@ export type KnownApi =
 	| "openai-codex-responses"
 	| "anthropic-messages"
 	| "bedrock-converse-stream"
+	| "bedrock-mantle-responses"
 	| "google-generative-ai"
 	| "google-vertex";
 
@@ -18,6 +19,7 @@ export type Api = KnownApi | (string & {});
 
 export type KnownProvider =
 	| "amazon-bedrock"
+	| "amazon-bedrock-mantle"
 	| "anthropic"
 	| "google"
 	| "google-vertex"

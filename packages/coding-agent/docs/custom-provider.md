@@ -200,6 +200,7 @@ The `api` field determines which streaming implementation is used:
 | `google-generative-ai` | Google Generative AI API |
 | `google-vertex` | Google Vertex AI API |
 | `bedrock-converse-stream` | Amazon Bedrock Converse API |
+| `bedrock-mantle-responses` | Amazon Bedrock Mantle OpenAI Responses API (built-in; uses ambient AWS SigV4) |
 
 Most OpenAI-compatible providers work with `openai-completions`. Use model-level `thinkingLevelMap` for model-specific thinking levels, and `compat` for provider quirks:
 

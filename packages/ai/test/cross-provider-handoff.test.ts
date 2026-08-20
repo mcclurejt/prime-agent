@@ -29,6 +29,7 @@ import { getModel } from "../src/models.js";
 import { completeSimple, getEnvApiKey } from "../src/stream.js";
 import type { Api, AssistantMessage, Message, Model, Tool, ToolResultMessage } from "../src/types.js";
 import { hasAzureOpenAICredentials } from "./azure-utils.js";
+import { hasBedrockMantleCredentials } from "./bedrock-utils.js";
 import { hasCloudflareAiGatewayCredentials, hasCloudflareWorkersAICredentials } from "./cloudflare-utils.js";
 import { getKimiCodingTestModel } from "./kimi-test-model.js";
 import { resolveApiKey } from "./oauth.js";
@@ -82,6 +83,8 @@ const PROVIDER_MODEL_PAIRS: ProviderModelPair[] = [
 		model: "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
 		label: "bedrock-claude-sonnet-4-5",
 	},
+	// Amazon Bedrock Mantle
+	{ provider: "amazon-bedrock-mantle", model: "openai.gpt-5.6-luna", label: "bedrock-mantle-gpt-5.6-luna" },
 	// xAI
 	{ provider: "xai", model: "grok-code-fast-1", label: "xai-grok-code-fast-1" },
 	// Cerebras
@@ -157,6 +160,7 @@ async function getApiKey(provider: string): Promise<string | undefined> {
  * Synchronous check for API key availability (env vars only, for skipIf)
  */
 function hasApiKey(pair: ProviderModelPair): boolean {
+	if (pair.provider === "amazon-bedrock-mantle") return hasBedrockMantleCredentials();
 	if (pair.provider === "azure-openai-responses") {
 		return hasAzureOpenAICredentials();
 	}
