@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { setLogSink } from "../src/log.js";
 import type { AssistantMessage } from "../src/types.js";
+import { AWS_SSO_EXPIRED_ERROR_TYPE } from "../src/utils/aws-sso.js";
 import {
 	classifyStreamFailure,
 	extractStreamFailureInfo,
@@ -167,5 +168,62 @@ describe("recordStreamFailure", () => {
 		recordStreamFailure(model, output, new Error("Request was aborted"));
 		expect(output.diagnostics).toBeUndefined();
 		expect(logged).toEqual([]);
+	});
+});
+
+describe("AWS SSO expiry classification", () => {
+	const TOKEN_PROVIDER_MESSAGE =
+		"Token is expired. To refresh this SSO session run 'aws sso login' with the corresponding profile.";
+
+	function tokenProviderError(): Error {
+		const error = new Error(TOKEN_PROVIDER_MESSAGE);
+		error.name = "TokenProviderError";
+		return error;
+	}
+
+	test("classifies a native Bedrock SSO expiry as a permanent auth failure", () => {
+		expect(extractStreamFailureInfo(tokenProviderError())).toMatchObject({
+			kind: "auth",
+			providerErrorType: AWS_SSO_EXPIRED_ERROR_TYPE,
+		});
+	});
+
+	test("classifies the Bedrock Mantle wrapper by inspecting the cause chain", () => {
+		const wrapped = new Error(
+			"Failed to resolve AWS credentials for Bedrock. Verify your AWS profile, environment variables, or runtime identity configuration and try again.",
+		) as Error & { cause?: unknown };
+		wrapped.name = "OpenAIError";
+		wrapped.cause = tokenProviderError();
+		expect(extractStreamFailureInfo(wrapped)).toMatchObject({
+			kind: "auth",
+			providerErrorType: AWS_SSO_EXPIRED_ERROR_TYPE,
+		});
+	});
+
+	test("produces one uniform user-facing message for both Bedrock providers", () => {
+		expect(formatStreamFailureMessage(tokenProviderError())).toBe(
+			`Provider authentication failed (${AWS_SSO_EXPIRED_ERROR_TYPE}): ${TOKEN_PROVIDER_MESSAGE}`,
+		);
+	});
+
+	test("persists the SSO marker in the structured diagnostic", () => {
+		const output = makeOutput({ api: "bedrock-converse-stream", provider: "amazon-bedrock" });
+		recordStreamFailure(
+			{ provider: "amazon-bedrock", id: "claude-sonnet-4-6", api: "bedrock-converse-stream" },
+			output,
+			tokenProviderError(),
+		);
+		expect(output.diagnostics?.[0]).toMatchObject({
+			type: "provider_stream_failure",
+			details: { kind: "auth", providerErrorType: AWS_SSO_EXPIRED_ERROR_TYPE },
+		});
+	});
+
+	test("leaves other AWS credential failures unchanged", () => {
+		const generic = new Error(
+			"Could not find credentials for Bedrock. Pass AWS credentials to `bedrock(...)` or configure the default AWS credential chain.",
+		);
+		expect(extractStreamFailureInfo(generic).kind).toBe("unknown");
+		expect(formatStreamFailureMessage(generic)).toBe(generic.message);
 	});
 });

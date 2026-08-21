@@ -147,6 +147,28 @@ When a provider requests a retry delay longer than `retry.provider.maxRetryDelay
 }
 ```
 
+### Amazon Bedrock
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `bedrock.autoSsoRefresh` | boolean | `true` | Run `aws sso login` automatically when the AWS SSO session behind Bedrock or Bedrock Mantle expires, then retry the turn |
+
+A sign-in starts after a request fails on an expired session, or before a request when the cached
+token is stale and its refresh grant is gone (while the grant exists, the AWS SDK refreshes silently).
+
+Requires the AWS CLI on `PATH`. Only SSO-backed profiles are affected: static keys, bearer tokens,
+container roles, and IRSA are left alone. One sign-in runs per host (other sessions wait on a lock
+file), at most one attempt per 10 minutes per process, with the browser sign-in wait capped at 180s.
+See [Providers](providers.md#automatic-aws-sso-refresh).
+
+```json
+{
+  "bedrock": {
+    "autoSsoRefresh": true
+  }
+}
+```
+
 ### Message Delivery
 
 | Setting | Type | Default | Description |

@@ -1494,6 +1494,47 @@ describe("DaemonAgentConnection", () => {
 		]);
 	});
 
+	it("forwards additive aws sso refresh session events verbatim", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");
+		const events: AgentConnectionEvent[] = [];
+		connection.subscribe((event) => {
+			events.push(event);
+		});
+		await connection.attach();
+
+		fakeClient.emitMessage({
+			type: "session_event",
+			activeSessionId: "active-1",
+			event: { type: "aws_sso_refresh_start", profile: "bedrock", reason: "expired" },
+		});
+		fakeClient.emitMessage({
+			type: "session_event",
+			activeSessionId: "active-1",
+			event: {
+				type: "aws_sso_refresh_end",
+				profile: "bedrock",
+				status: "timeout",
+				message:
+					'AWS SSO sign-in for profile "bedrock" did not complete within 180s. Run: aws sso login --profile bedrock',
+			},
+		});
+
+		expect(events).toEqual([
+			{ type: "session_event", event: { type: "aws_sso_refresh_start", profile: "bedrock", reason: "expired" } },
+			{
+				type: "session_event",
+				event: {
+					type: "aws_sso_refresh_end",
+					profile: "bedrock",
+					status: "timeout",
+					message:
+						'AWS SSO sign-in for profile "bedrock" did not complete within 180s. Run: aws sso login --profile bedrock',
+				},
+			},
+		]);
+	});
+
 	it("forwards catch-up snapshots as non-destructive resync events", async () => {
 		const fakeClient = new FakeDaemonClient();
 		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");

@@ -1002,6 +1002,7 @@ export class InteractiveMode {
 	// Auto-retry state
 	private retryLoader: Loader | undefined = undefined;
 	private retryCountdown: CountdownTimer | undefined = undefined;
+	private awsSsoRefreshLoader: Loader | undefined = undefined;
 	private traceUploadAllAbortController: AbortController | undefined = undefined;
 
 	// Session-owned queued messages mirrored from connection events.
@@ -3392,8 +3393,8 @@ export class InteractiveMode {
 			this.startCompactionLoader("manual");
 			return;
 		}
-		// Compaction/retry own the status container while active; don't fight them.
-		if (this.autoCompactionLoader || this.retryLoader) {
+		// Compaction/retry/SSO sign-in own the status container while active; don't fight them.
+		if (this.autoCompactionLoader || this.retryLoader || this.awsSsoRefreshLoader) {
 			return;
 		}
 		if (this.shouldShowWorkingLoader()) {
@@ -5726,6 +5727,40 @@ export class InteractiveMode {
 
 			case "auth_stale": {
 				this.applyAuthStaleEvent(event);
+				this.ui.requestRender();
+				break;
+			}
+
+			case "aws_sso_refresh_start": {
+				// The AWS CLI opens the browser itself; explain the wait instead of
+				// leaving an unexplained pause (and, before a turn, an idle screen).
+				this.stopWorkingLoader();
+				this.statusContainer.clear();
+				this.awsSsoRefreshLoader = new Loader(
+					this.ui,
+					(spinner) => theme.fg("muted", spinner),
+					(text) => theme.fg("muted", text),
+					`AWS SSO session expired for profile ${event.profile}, approve the browser sign-in... (${keyText(
+						"app.clear",
+					)} to cancel)`,
+				);
+				this.statusContainer.addChild(this.awsSsoRefreshLoader);
+				this.ui.requestRender();
+				break;
+			}
+
+			case "aws_sso_refresh_end": {
+				if (this.awsSsoRefreshLoader) {
+					this.awsSsoRefreshLoader.stop();
+					this.awsSsoRefreshLoader = undefined;
+					this.statusContainer.clear();
+				}
+				this.syncWorkingLoader();
+				if (event.status === "refreshed") {
+					this.showWarning(`AWS SSO session refreshed for profile ${event.profile}.`);
+				} else if (event.message) {
+					this.showError(event.message);
+				}
 				this.ui.requestRender();
 				break;
 			}

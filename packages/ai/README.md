@@ -657,6 +657,27 @@ The library uses a registry of API implementations. Built-in APIs include:
 - **`bedrock-converse-stream`**: Amazon Bedrock Converse API (`streamBedrock`, `BedrockOptions`)
 - **`bedrock-mantle-responses`**: Amazon Bedrock Mantle OpenAI Responses API (`streamBedrockMantle`, `BedrockMantleOptions`)
 
+### AWS SSO session status (`prime-agent-ai/aws-sso`)
+
+Both Bedrock APIs sign requests with ambient AWS credentials, so an expired AWS IAM Identity Center
+(SSO) token fails every request. Stream failures caused by an expired session are classified as
+`kind: "auth"` with `providerErrorType: "aws_sso_token_expired"`, detected through the error's `cause`
+chain so the Bedrock Mantle wrapper (`Failed to resolve AWS credentials for Bedrock`) is not mistaken
+for an unknown, retryable error.
+
+The `aws-sso` subpath exposes that detection plus read-only session inspection (no network calls, no
+process spawning, no writes to `~/.aws`):
+
+```typescript
+import { isAwsSsoExpiryError, readAwsSsoSessionStatus } from 'prime-agent-ai/aws-sso';
+
+const status = await readAwsSsoSessionStatus(process.env.AWS_PROFILE);
+// { profile, ssoSession, ssoBacked, expiresAt, secondsRemaining, expired }
+```
+
+Re-establishing an expired session requires an interactive `aws sso login`, which is the host
+application's responsibility.
+
 ### Faux provider for tests
 
 `registerFauxProvider()` registers a temporary in-memory provider for tests and demos. It is opt-in and not part of the built-in provider set.

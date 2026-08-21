@@ -67,8 +67,9 @@ export const DAEMON_COMMAND_ENVELOPE_MIN_PROTOCOL_VERSION = 7;
 // Revision 16 adds questionnaire CAS mutations and targeted presentation snapshots.
 // Revision 17 adds rich dismissal and post-accept presentation-error commands.
 // Revision 18 adds capability-gated questionnaire v2 requests and drafts.
-export const DAEMON_SCHEMA_REVISION = 18;
-export const DAEMON_SCHEMA_ID = "protocol-7-schema-18-2bb0a36e87f0";
+// Revision 19 adds additive aws_sso_refresh_start/aws_sso_refresh_end session events.
+export const DAEMON_SCHEMA_REVISION = 19;
+export const DAEMON_SCHEMA_ID = "protocol-7-schema-19-2bb0a36e87f0";
 
 export type DaemonProtocolName = typeof DAEMON_PROTOCOL_NAME;
 export type DaemonProtocolVersion = number;

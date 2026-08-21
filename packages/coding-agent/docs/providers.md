@@ -161,6 +161,31 @@ export AWS_REGION=us-west-2
 
 Also supports ECS task roles (`AWS_CONTAINER_CREDENTIALS_*`) and IRSA (`AWS_WEB_IDENTITY_TOKEN_FILE`).
 
+#### Automatic AWS SSO refresh
+
+When the profile is backed by AWS IAM Identity Center (SSO), Prime Agent keeps the session alive for
+both Bedrock providers. If a request fails because the SSO session expired, it runs
+`aws sso login --profile <profile>` for you and retries the turn once the browser sign-in completes.
+This requires the AWS CLI on `PATH`; without it, the failure is reported once with the exact command
+to run instead of being retried three more times.
+
+Before each Bedrock request the cached token is also checked, but a sign-in only starts when the token
+is stale *and* the cached refresh grant is gone. While that grant exists, the AWS SDK refreshes the
+token silently, so no browser window is opened for a session the SDK can heal on its own.
+
+Only one sign-in runs per host: concurrent sessions and subagents wait for the same login through a
+lock file in the agent directory. A refresh is attempted at most once every 10 minutes per process,
+and the wait for the browser sign-in is capped at 180 seconds. Static keys, bearer tokens, container
+roles, and IRSA are never touched.
+
+Disable it in `settings.json`:
+
+```json
+{
+  "bedrock": { "autoSsoRefresh": false }
+}
+```
+
 ```bash
 prime-agent --provider amazon-bedrock --model us.anthropic.claude-sonnet-4-20250514-v1:0
 

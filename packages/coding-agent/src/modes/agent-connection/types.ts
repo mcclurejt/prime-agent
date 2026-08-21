@@ -3,6 +3,7 @@ import type { Api, ImageContent, Model, ServiceTier, TextContent, Transport, Usa
 import type { AgentSessionMessageReceipt, AgentSessionMessageSafetyStatus } from "../../core/agent-messages.js";
 import type { AuthSourceToken } from "../../core/auth-storage.js";
 import type { AgentAutonomousStatus } from "../../core/autonomous.js";
+import type { AwsSsoRefreshReason, AwsSsoRefreshStatus } from "../../core/aws-sso-refresh.js";
 import type { BashResult } from "../../core/bash-executor.js";
 import type { CompactionResult } from "../../core/compaction/index.js";
 import type { ContextTreeNode } from "../../core/context-tree.js";
@@ -650,6 +651,8 @@ export type AgentConnectionSessionEvent =
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
 	| { type: "auth_stale"; provider: string; sourceTokens?: readonly AuthSourceToken[] }
+	| { type: "aws_sso_refresh_start"; profile: string; reason: AwsSsoRefreshReason }
+	| { type: "aws_sso_refresh_end"; profile: string; status: AwsSsoRefreshStatus; message?: string }
 	| { type: "rlm_child_update"; child: AgentConnectionRlmChildAgentSnapshot }
 	| { type: "recap_update"; recap: string | undefined }
 	| { type: "goal_update"; goal: GoalState }

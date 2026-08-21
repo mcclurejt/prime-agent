@@ -1466,6 +1466,16 @@ class DaemonAttachTerminal {
 			case "auto_retry_end":
 				this.writeLine(chalk.dim(event.success ? "Retry succeeded." : `Retry failed: ${event.finalError ?? ""}`));
 				return;
+			case "aws_sso_refresh_start":
+				this.writeLine(chalk.dim(`AWS SSO sign-in started for profile ${event.profile} (${event.reason}).`));
+				return;
+			case "aws_sso_refresh_end":
+				this.writeLine(
+					event.status === "refreshed"
+						? chalk.dim(`AWS SSO session refreshed for profile ${event.profile}.`)
+						: chalk.red(event.message ?? `AWS SSO refresh ${event.status} for profile ${event.profile}.`),
+				);
+				return;
 			case "rlm_child_update":
 				this.writeLine(chalk.dim(`Subagent ${event.child.label}: ${event.child.status}`));
 				return;

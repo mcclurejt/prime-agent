@@ -1,5 +1,6 @@
 import { getLogger } from "../log.js";
 import type { AssistantMessage } from "../types.js";
+import { AWS_SSO_EXPIRED_ERROR_TYPE, findAwsSsoExpiryMessage } from "./aws-sso.js";
 import { appendAssistantMessageDiagnostic, extractDiagnosticError } from "./diagnostics.js";
 
 /**
@@ -116,6 +117,18 @@ export function truncateRawPayload(raw: string): string {
 
 function extractStreamFailureParts(error: unknown): { info: StreamFailureInfo; detail?: string } {
 	if (error instanceof StreamFailureError) return { info: error.info };
+
+	// An expired AWS SSO session is an unrecoverable auth failure whose real cause
+	// is often wrapped (Bedrock Mantle hides it behind an OpenAIError), so it is
+	// classified from the cause chain before the generic name/status heuristics.
+	const ssoExpiryMessage = findAwsSsoExpiryMessage(error);
+	if (ssoExpiryMessage) {
+		return {
+			info: { kind: "auth", providerErrorType: AWS_SSO_EXPIRED_ERROR_TYPE },
+			detail: ssoExpiryMessage,
+		};
+	}
+
 	if (!(error instanceof Error)) return { info: { kind: "unknown" } };
 
 	const err = error as Error & {

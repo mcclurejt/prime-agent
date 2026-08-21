@@ -27,7 +27,8 @@ describe("questionnaire daemon wire gates", () => {
 	});
 
 	it("requires schema 18 and questionnaire_v2 for v2 CAS while retaining the v1 gate", () => {
-		expect(DAEMON_SCHEMA_REVISION).toBe(18);
+		// The v2 gate is pinned at 18; later additive revisions must keep satisfying it.
+		expect(DAEMON_SCHEMA_REVISION).toBeGreaterThanOrEqual(18);
 		expect(DAEMON_DEFAULT_SERVER_CAPABILITIES).toEqual(
 			expect.arrayContaining(["extension_ui", "questionnaire_v1", "questionnaire_v2"]),
 		);

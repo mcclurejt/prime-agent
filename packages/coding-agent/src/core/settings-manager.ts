@@ -50,6 +50,11 @@ export interface TerminalSettings {
 	fullscreenMouse?: boolean; // default: true (wheel scrolling in fullscreen; disable if it breaks selection)
 }
 
+export interface BedrockSettings {
+	/** default: true - run `aws sso login` automatically when the AWS SSO session behind Bedrock expires */
+	autoSsoRefresh?: boolean;
+}
+
 export interface ImageSettings {
 	autoResize?: boolean; // default: true (resize images to 2000x2000 max for better model compatibility)
 	blockImages?: boolean; // default: false - when true, prevents all images from being sent to LLM providers
@@ -156,6 +161,7 @@ export interface Settings {
 	agentTraces?: AgentTracesSettings;
 	branchSummary?: BranchSummarySettings;
 	retry?: RetrySettings;
+	bedrock?: BedrockSettings;
 	hideThinkingBlock?: boolean;
 	shellPath?: string; // Custom shell path (e.g., for Cygwin users on Windows)
 	quietStartup?: boolean;
@@ -1203,6 +1209,10 @@ export class SettingsManager {
 		this.globalSettings.images.autoResize = enabled;
 		this.markModified("images", "autoResize");
 		this.save();
+	}
+
+	getBedrockAutoSsoRefresh(): boolean {
+		return this.settings.bedrock?.autoSsoRefresh ?? true;
 	}
 
 	getBlockImages(): boolean {

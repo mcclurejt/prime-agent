@@ -7,6 +7,7 @@ import type { AgentSessionCreationOptions } from "./agent-session-services.js";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.js";
 import { AuthStorage } from "./auth-storage.js";
 import type { AgentAutonomousConfig } from "./autonomous.js";
+import { type AwsSsoRefresher, createAwsSsoRefresher, isBedrockApi } from "./aws-sso-refresh.js";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.js";
 import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.js";
 import { McpManager } from "./mcp/mcp-manager.js";
@@ -62,6 +63,12 @@ export interface CreateAgentSessionOptions extends AgentSessionCreationOptions {
 
 	/** MCP integration manager. When omitted, MCP host handlers are not wired. */
 	mcpManager?: McpManager;
+
+	/**
+	 * Recovers an expired AWS SSO session behind Bedrock/Bedrock Mantle. When
+	 * omitted, one is created from the settings manager and agent dir.
+	 */
+	awsSsoRefresher?: AwsSsoRefresher;
 
 	/** Session manager. Default: SessionManager.create(cwd) */
 	sessionManager?: SessionManager;
@@ -171,6 +178,20 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const mcpManager =
 		options.mcpManager ?? new McpManager({ authStorage, getUserServers: () => settingsManager.getMcpServers() });
 	modelRegistry.setOnOAuthProvidersReset(() => mcpManager.registerUserProviders());
+
+	// The preflight expiry check runs inside streamFn, before the session exists,
+	// so its progress is published through the session once it is constructed.
+	const sessionRef: { current?: AgentSession } = {};
+	const awsSsoRefresher =
+		options.awsSsoRefresher ??
+		createAwsSsoRefresher({
+			settingsManager,
+			agentDir,
+			// Reactive (post-failure) progress is emitted by AgentSession itself.
+			onEvent: (event) => {
+				if (event.reason === "preflight") sessionRef.current?.publishAwsSsoRefreshEvent(event);
+			},
+		});
 
 	if (!resourceLoader) {
 		resourceLoader = new DefaultResourceLoader({
@@ -308,6 +329,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			if (!auth.ok) {
 				throw new Error(auth.error);
 			}
+			// Bedrock and Bedrock Mantle sign every request with ambient AWS
+			// credentials, so an SSO session that is about to lapse is refreshed
+			// before the request instead of failing mid-turn. Any non-refreshed
+			// outcome is non-fatal: the request proceeds and the post-failure path
+			// is the backstop.
+			if (isBedrockApi(model.api)) {
+				await awsSsoRefresher.ensureFresh("preflight", options?.signal ? { signal: options.signal } : undefined);
+			}
 			const providerRetrySettings = settingsManager.getProviderRetrySettings();
 			return streamSimple(model, context, {
 				...options,
@@ -379,6 +408,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		customTools: options.customTools,
 		modelRegistry,
 		mcpManager,
+		awsSsoRefresher,
 		initialActiveToolNames,
 		allowedToolNames,
 		includeGoals,
@@ -399,6 +429,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		serializedRefine: options.serializedRefine,
 		initialGoal: options.initialGoal,
 	});
+	sessionRef.current = session;
 	const extensionsResult = resourceLoader.getExtensions();
 
 	return {

@@ -14,6 +14,7 @@ import type { AgentObserveController } from "../../src/core/agent-observe.js";
 import { AgentSession, type AgentSessionEvent, type AutoRefineReviewer } from "../../src/core/agent-session.js";
 import { AuthStorage } from "../../src/core/auth-storage.js";
 import type { AgentAutonomousConfig } from "../../src/core/autonomous.js";
+import type { AwsSsoRefresher } from "../../src/core/aws-sso-refresh.js";
 import type { ExtensionRunner } from "../../src/core/extensions/index.js";
 import { convertToLlm } from "../../src/core/messages.js";
 import { ModelRegistry } from "../../src/core/model-registry.js";
@@ -79,6 +80,7 @@ export interface HarnessOptions {
 	autoRefineReviewer?: AutoRefineReviewer;
 	serializedRefine?: boolean;
 	initialGoal?: { objective: string; tokenBudget?: number };
+	awsSsoRefresher?: AwsSsoRefresher;
 }
 
 export interface Harness {
@@ -203,6 +205,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		autoRefineReviewer: options.autoRefineReviewer,
 		serializedRefine: options.serializedRefine,
 		initialGoal: options.initialGoal,
+		awsSsoRefresher: options.awsSsoRefresher,
 	});
 
 	const events: AgentSessionEvent[] = [];

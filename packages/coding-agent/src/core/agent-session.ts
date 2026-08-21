@@ -48,6 +48,7 @@ import {
 	resetApiProviders,
 	supportsFastMode,
 } from "@earendil-works/pi-ai";
+import { AWS_SSO_EXPIRED_ERROR_TYPE, isAwsSsoExpiryError } from "@earendil-works/pi-ai/aws-sso";
 import { theme } from "../modes/interactive/theme/theme.js";
 import { stripFrontmatter } from "../utils/frontmatter.js";
 import { sleep } from "../utils/sleep.js";
@@ -102,6 +103,13 @@ import {
 	refreshAutonomousQualityGates,
 	setAutonomousEnabled,
 } from "./autonomous.js";
+import type {
+	AwsSsoRefresher,
+	AwsSsoRefreshOutcome,
+	AwsSsoRefreshProgress,
+	AwsSsoRefreshReason,
+	AwsSsoRefreshStatus,
+} from "./aws-sso-refresh.js";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.js";
 import {
 	COMPACT_SKILL_NAME,
@@ -363,6 +371,18 @@ export type AgentSessionEvent =
 			provider: string;
 			sourceTokens?: readonly AuthSourceToken[];
 	  }
+	| {
+			type: "aws_sso_refresh_start";
+			profile: string;
+			reason: AwsSsoRefreshReason;
+	  }
+	| {
+			type: "aws_sso_refresh_end";
+			profile: string;
+			status: AwsSsoRefreshStatus;
+			/** Actionable one-liner for every status that leaves the session unusable. */
+			message?: string;
+	  }
 	| { type: "rlm_child_update"; child: RlmChildAgentSnapshot }
 	| { type: "recap_update"; recap: string | undefined }
 	| { type: "goal_update"; goal: GoalState }
@@ -454,6 +474,11 @@ export interface AgentSessionConfig {
 	 * (refresh, begin_login) are exposed to the kernel.
 	 */
 	mcpManager?: McpManager;
+	/**
+	 * Recovers an expired AWS SSO session behind Bedrock/Bedrock Mantle. When
+	 * omitted, an expired session is reported once instead of being retried.
+	 */
+	awsSsoRefresher?: AwsSsoRefresher;
 	/**
 	 * Override base tools (useful for custom runtimes).
 	 *
@@ -969,6 +994,8 @@ const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "hi
 
 /** Cap on the post-compaction kernel namespace probe so a wedged kernel can't stall recovery. */
 const KERNEL_STATE_LISTING_TIMEOUT_MS = 5000;
+/** Bounds automatic AWS SSO recoveries per session so a persistently failing session cannot loop. */
+const MAX_AWS_SSO_RECOVERY_ATTEMPTS = 2;
 const RLM_MAX_DEPTH_STATE_CUSTOM_TYPE = "rlm_max_depth_state";
 
 function noopRlmChildAbort(): void {}
@@ -1154,6 +1181,9 @@ export class AgentSession {
 	private _retryPromise: Promise<void> | undefined = undefined;
 	private _retryResolve: (() => void) | undefined = undefined;
 	private _retryAuthFailureSources: AuthSourceToken[] = [];
+	private readonly _awsSsoRefresher: AwsSsoRefresher | undefined;
+	private _awsSsoRefreshAbortController: AbortController | undefined = undefined;
+	private _awsSsoRecoveryAttempts = 0;
 	private _agentMessageOutcomes = new Map<string, AgentMessageOutcome>();
 	private _lateIpythonSentAgentMessages = new Map<string, KernelSentAgentMessage[]>();
 	/** Outcome disclosures whose session-file append failed; retained for context rebuilds. */
@@ -1307,6 +1337,7 @@ export class AgentSession {
 		this._agentMessageController = config.agentMessageController;
 		this._agentObserveController = config.agentObserveController;
 		this._mcpManager = config.mcpManager;
+		this._awsSsoRefresher = config.awsSsoRefresher;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
 		const headerRlmDepth = this.sessionManager.getHeader()?.rlmDepth;
@@ -1487,6 +1518,26 @@ export class AgentSession {
 	// =========================================================================
 	// Event Subscription
 	// =========================================================================
+
+	/**
+	 * Publish AWS SSO refresh progress that originates outside the agent event
+	 * loop (the per-request preflight expiry check in `streamFn`). The
+	 * post-failure path emits its own events directly.
+	 */
+	publishAwsSsoRefreshEvent(event: AwsSsoRefreshProgress): void {
+		if (event.phase === "started") {
+			this._emit({ type: "aws_sso_refresh_start", profile: event.profile, reason: event.reason });
+			return;
+		}
+		if (event.phase === "finished" && event.status) {
+			this._emit({
+				type: "aws_sso_refresh_end",
+				profile: event.profile,
+				status: event.status,
+				...(event.message !== undefined ? { message: event.message } : {}),
+			});
+		}
+	}
 
 	/** Emit an event to all listeners */
 	private _emit(event: AgentSessionEvent): void {
@@ -3528,6 +3579,10 @@ export class AgentSession {
 					this._captureRetryAuthFailureSource(assistantMsg);
 				}
 
+				if (assistantMsg.stopReason !== "error") {
+					this._awsSsoRecoveryAttempts = 0;
+				}
+
 				// Reset retry counter immediately on successful assistant response
 				// This prevents accumulation across multiple LLM calls within a turn
 				if (assistantMsg.stopReason !== "error" && this._retryAttempt > 0) {
@@ -3565,11 +3620,20 @@ export class AgentSession {
 				return;
 			}
 
+			// An expired AWS SSO session cannot be fixed by retrying, so it is refreshed
+			// (one browser sign-in per host) before the retry decision, and suppresses
+			// retries entirely when the session could not be restored.
+			const ssoRecovery = await this._recoverExpiredAwsSsoSession(msg);
+			if (ssoRecovery === "refreshed") {
+				// The pre-refresh failures were unavoidable; the recovered turn gets a full budget.
+				this._retryAttempt = 0;
+			}
+
 			// Check for retryable errors first (overloaded, rate limit, server errors)
 			const concreteAuthFailure = this._isConcreteProviderAuthFailure(msg);
 			const retryConcreteAuthFailure =
 				concreteAuthFailure && !this._isStructuredPermanentProviderRetryExhausted(msg);
-			if (this._isRetryableError(msg) || retryConcreteAuthFailure) {
+			if (ssoRecovery !== "unrecoverable" && (this._isRetryableError(msg) || retryConcreteAuthFailure)) {
 				if (retryConcreteAuthFailure) {
 					this._captureRetryAuthFailureSource(msg);
 				}
@@ -9958,6 +10022,98 @@ export class AgentSession {
 	}
 
 	// =========================================================================
+	// AWS SSO recovery
+	// =========================================================================
+
+	/**
+	 * True when a stream failed because the AWS IAM Identity Center session
+	 * behind Bedrock/Bedrock Mantle is no longer usable. The structured marker
+	 * is authoritative; the text fallback covers sessions recorded before
+	 * providers classified the failure.
+	 */
+	private _isAwsSsoExpiryFailure(message: AssistantMessage): boolean {
+		if (message.stopReason !== "error" || !message.errorMessage) return false;
+		if (this._getProviderStreamFailureDetails(message)?.providerErrorType === AWS_SSO_EXPIRED_ERROR_TYPE) {
+			return true;
+		}
+		return isAwsSsoExpiryError(message.errorMessage);
+	}
+
+	/** Profile the ambient AWS credential chain would use, for messages emitted before a refresh resolves one. */
+	private _awsProfileHint(): string {
+		return process.env.AWS_PROFILE?.trim() || "default";
+	}
+
+	private _applyAwsSsoFailureGuidance(message: AssistantMessage, guidance: string | undefined): void {
+		const profile = this._awsProfileHint();
+		message.errorMessage =
+			guidance ?? `AWS SSO session for profile "${profile}" is expired. Run: aws sso login --profile ${profile}`;
+		this._markProviderAuthStale(message);
+	}
+
+	/**
+	 * Refresh an expired AWS SSO session so the failed turn can be retried.
+	 * Returns "not_applicable" for unrelated failures, "refreshed" when the
+	 * session is usable again, and "unrecoverable" when retrying would only
+	 * reproduce the same failure.
+	 */
+	private async _recoverExpiredAwsSsoSession(
+		message: AssistantMessage,
+	): Promise<"not_applicable" | "refreshed" | "unrecoverable"> {
+		if (!this._isAwsSsoExpiryFailure(message)) return "not_applicable";
+
+		const refresher = this._awsSsoRefresher;
+		if (!refresher) {
+			this._applyAwsSsoFailureGuidance(message, undefined);
+			return "unrecoverable";
+		}
+		const profileHint = this._awsProfileHint();
+		if (this._awsSsoRecoveryAttempts >= MAX_AWS_SSO_RECOVERY_ATTEMPTS) {
+			this._applyAwsSsoFailureGuidance(
+				message,
+				`AWS SSO session for profile "${profileHint}" keeps failing after ${this._awsSsoRecoveryAttempts} ` +
+					`refresh attempts. Run: aws sso login --profile ${profileHint}`,
+			);
+			return "unrecoverable";
+		}
+
+		this._emit({ type: "aws_sso_refresh_start", profile: profileHint, reason: "expired" });
+
+		const abortController = new AbortController();
+		this._awsSsoRefreshAbortController = abortController;
+		let outcome: AwsSsoRefreshOutcome;
+		try {
+			outcome = await refresher.ensureFresh("expired", { signal: abortController.signal });
+		} catch (error) {
+			outcome = {
+				status: "login_failed",
+				message: `AWS SSO refresh failed: ${error instanceof Error ? error.message : String(error)}`,
+			};
+		} finally {
+			this._awsSsoRefreshAbortController = undefined;
+		}
+
+		const profile = outcome.profile ?? profileHint;
+		this._emit({
+			type: "aws_sso_refresh_end",
+			profile,
+			status: outcome.status,
+			...(outcome.message !== undefined ? { message: outcome.message } : {}),
+		});
+
+		if (outcome.status === "not_sso") {
+			// Ambient credentials are not SSO-backed after all: fall through to normal retry handling.
+			return "not_applicable";
+		}
+		if (outcome.status === "refreshed" || outcome.status === "already_valid") {
+			this._awsSsoRecoveryAttempts++;
+			return "refreshed";
+		}
+		this._applyAwsSsoFailureGuidance(message, outcome.message);
+		return "unrecoverable";
+	}
+
+	// =========================================================================
 	// Auto-Retry
 	// =========================================================================
 
@@ -10229,6 +10385,9 @@ export class AgentSession {
 	 * Cancel in-progress retry.
 	 */
 	abortRetry(): void {
+		if (this._awsSsoRefreshAbortController) {
+			this._awsSsoRefreshAbortController.abort();
+		}
 		if (this._retryAbortController) {
 			this._retryAbortController.abort();
 			return;

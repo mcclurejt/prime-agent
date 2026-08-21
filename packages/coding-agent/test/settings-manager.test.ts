@@ -592,4 +592,21 @@ describe("SettingsManager", () => {
 			expect(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")).idleEvictionMinutes).toBe("off");
 		});
 	});
+
+	describe("bedrock automatic SSO refresh", () => {
+		it("defaults to enabled", () => {
+			expect(SettingsManager.create(projectDir, agentDir).getBedrockAutoSsoRefresh()).toBe(true);
+		});
+
+		it("can be disabled globally and re-enabled per project", () => {
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ bedrock: { autoSsoRefresh: false } }));
+			expect(SettingsManager.create(projectDir, agentDir).getBedrockAutoSsoRefresh()).toBe(false);
+
+			writeFileSync(
+				join(projectDir, ".prime", "agent", "settings.json"),
+				JSON.stringify({ bedrock: { autoSsoRefresh: true } }),
+			);
+			expect(SettingsManager.create(projectDir, agentDir).getBedrockAutoSsoRefresh()).toBe(true);
+		});
+	});
 });

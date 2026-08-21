@@ -58,6 +58,10 @@
 			"types": "./dist/providers/amazon-bedrock-mantle.d.ts",
 			"import": "./dist/providers/amazon-bedrock-mantle.js"
 		},
+		"./aws-sso": {
+			"types": "./dist/aws-sso.d.ts",
+			"import": "./dist/aws-sso.js"
+		},
 		"./bedrock-mantle-provider": {
 			"types": "./dist/bedrock-mantle-provider.d.ts",
 			"import": "./dist/bedrock-mantle-provider.js"
