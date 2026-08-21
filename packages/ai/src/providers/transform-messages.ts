@@ -152,36 +152,47 @@ export function transformMessages<TApi extends Api>(
 		return msg;
 	});
 
-	// Second pass: insert synthetic empty tool results for orphaned tool calls
-	// This preserves thinking signatures and satisfies API requirements
+	// Second pass: pair each tool result with the assistant turn that issued it.
+	// User messages can be persisted before an interrupted tool reports its result
+	// (for example during a live update), so defer those messages until the tool
+	// turn is complete instead of synthesizing a duplicate result.
 	const result: Message[] = [];
 	let pendingToolCalls: ToolCall[] = [];
 	let existingToolResultIds = new Set<string>();
-	const insertSyntheticToolResults = () => {
-		if (pendingToolCalls.length > 0) {
-			for (const tc of pendingToolCalls) {
-				if (!existingToolResultIds.has(tc.id)) {
-					result.push({
-						role: "toolResult",
-						toolCallId: tc.id,
-						toolName: tc.name,
-						content: [{ type: "text", text: "No result provided" }],
-						isError: true,
-						timestamp: Date.now(),
-					} as ToolResultMessage);
-				}
-			}
-			pendingToolCalls = [];
-			existingToolResultIds = new Set();
-		}
+	let deferredMessages: Message[] = [];
+
+	const flushDeferredMessages = () => {
+		result.push(...deferredMessages);
+		deferredMessages = [];
 	};
 
-	for (let i = 0; i < transformed.length; i++) {
-		const msg = transformed[i];
+	const clearPendingToolCalls = () => {
+		pendingToolCalls = [];
+		existingToolResultIds = new Set();
+		flushDeferredMessages();
+	};
 
+	const finishPendingToolCalls = () => {
+		if (pendingToolCalls.length === 0) return;
+		for (const tc of pendingToolCalls) {
+			if (!existingToolResultIds.has(tc.id)) {
+				result.push({
+					role: "toolResult",
+					toolCallId: tc.id,
+					toolName: tc.name,
+					content: [{ type: "text", text: "No result provided" }],
+					isError: true,
+					timestamp: Date.now(),
+				} as ToolResultMessage);
+			}
+		}
+		clearPendingToolCalls();
+	};
+
+	for (const msg of transformed) {
 		if (msg.role === "assistant") {
-			// If we have pending orphaned tool calls from a previous assistant, insert synthetic results now
-			insertSyntheticToolResults();
+			// A new assistant turn closes any unresolved tool flow from the previous turn.
+			finishPendingToolCalls();
 
 			// Skip errored/aborted assistant messages entirely.
 			// These are incomplete turns that shouldn't be replayed:
@@ -193,7 +204,6 @@ export function transformMessages<TApi extends Api>(
 				continue;
 			}
 
-			// Track tool calls from this assistant message
 			const toolCalls = assistantMsg.content.filter((b) => b.type === "toolCall") as ToolCall[];
 			if (toolCalls.length > 0) {
 				pendingToolCalls = toolCalls;
@@ -202,19 +212,25 @@ export function transformMessages<TApi extends Api>(
 
 			result.push(msg);
 		} else if (msg.role === "toolResult") {
+			const matchesPendingCall = pendingToolCalls.some((toolCall) => toolCall.id === msg.toolCallId);
+			if (!matchesPendingCall || existingToolResultIds.has(msg.toolCallId)) {
+				continue;
+			}
+
 			existingToolResultIds.add(msg.toolCallId);
 			result.push(msg);
-		} else if (msg.role === "user") {
-			// User message interrupts tool flow - insert synthetic results for orphaned calls
-			insertSyntheticToolResults();
-			result.push(msg);
+			if (pendingToolCalls.every((toolCall) => existingToolResultIds.has(toolCall.id))) {
+				clearPendingToolCalls();
+			}
+		} else if (msg.role === "user" && pendingToolCalls.length > 0) {
+			deferredMessages.push(msg);
 		} else {
 			result.push(msg);
 		}
 	}
 
 	// If the conversation ends with unresolved tool calls, synthesize results now.
-	insertSyntheticToolResults();
+	finishPendingToolCalls();
 
 	return result;
 }

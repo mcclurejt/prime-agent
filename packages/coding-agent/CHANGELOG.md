@@ -6,6 +6,7 @@
 - Added Amazon Bedrock Mantle GPT-5.6 models to provider selection using ambient AWS credentials.
 - Added automatic `aws sso login` refresh for Bedrock and Bedrock Mantle when the AWS SSO session expires, with a single sign-in per host and a `bedrock.autoSsoRefresh` setting to disable it.
 
+- Fixed Bedrock sessions failing to resume after a live update when the interrupted tool result was persisted after the update notice.
 - Fixed sessions with open questionnaires appearing under Running instead of Needs Input.
 - Fixed questionnaires filling the terminal workspace and made the Review Submit action visibly high-contrast in light and dark themes.
 - Changed questionnaire Review to focus one filled Submit action by default while keeping answer rows directly editable from the keyboard.

@@ -5,6 +5,7 @@
 - Added the Amazon Bedrock Mantle provider for SigV4-authenticated GPT-5.6 Responses API sessions.
 - Added AWS SSO expiry detection for Bedrock and Bedrock Mantle, classified as an authentication failure instead of an unknown retryable error, with an `aws-sso` subpath for reading SSO session status.
 
+- Fixed Bedrock replay after a live update sending a synthetic tool result in addition to the interrupted tool's persisted result, which caused tool-use validation errors.
 - Fixed Bedrock Claude Opus 5 prompt caching for system-defined and application inference profiles.
 
 ## [0.7.0] - 2026-08-05
