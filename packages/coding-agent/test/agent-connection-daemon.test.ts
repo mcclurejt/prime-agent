@@ -400,6 +400,13 @@ class FakeDaemonClient {
 					success: true,
 					data: { ok: true, method: "trash" },
 				};
+			case "compact":
+				return {
+					type: "response",
+					command: command.type,
+					success: true,
+					data: { summary: "Compacted", firstKeptEntryId: "entry-1", tokensBefore: 100 },
+				};
 			case "refine":
 				return {
 					type: "response",
@@ -2812,6 +2819,25 @@ describe("DaemonAgentConnection", () => {
 			"questionnaire_presentation_error",
 			"questionnaire_withdraw_ack",
 		]);
+	});
+
+	it("uses the long-running timeout for compaction requests through the daemon protocol", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");
+		await connection.attach();
+
+		await expect(connection.compact("preserve findings")).resolves.toMatchObject({
+			summary: "Compacted",
+			tokensBefore: 100,
+		});
+
+		expect(fakeClient.requests[1]).toMatchObject({
+			type: "compact",
+			activeSessionId: "active-1",
+			customInstructions: "preserve findings",
+		});
+		expect(fakeClient.requestTimeouts[0]).toBe(30_000);
+		expect(fakeClient.requestTimeouts[1]).toBe(24 * 60 * 60 * 1000);
 	});
 
 	it("uses an extended timeout for refine requests through the daemon protocol", async () => {

@@ -1095,11 +1095,14 @@ export class DaemonAgentConnection implements AgentConnection {
 	}
 
 	async compact(customInstructions?: string): Promise<CompactionResult> {
-		return this.requestData<CompactionResult>({
-			type: "compact",
-			activeSessionId: this.activeSessionId,
-			customInstructions,
-		});
+		return this.requestData<CompactionResult>(
+			{
+				type: "compact",
+				activeSessionId: this.activeSessionId,
+				customInstructions,
+			},
+			DAEMON_LONG_RUNNING_REQUEST_TIMEOUT_MS,
+		);
 	}
 
 	async refine(
