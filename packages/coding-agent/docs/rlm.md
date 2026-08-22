@@ -41,14 +41,20 @@ config_files = list(Path(".").rglob("*.toml"))
 large_files = [path for path in config_files if path.stat().st_size > 10_000]
 ```
 
-Run a project's normal commands through its own environment from an IPython cell:
+Run targeted project commands through the project's own environment from an IPython cell:
 
 ```bash
 %%bash
-npm run check
+npm test -- src/one.test.ts
 ```
 
 Each `%%bash` cell is a temporary subshell, while Python state and `%cd` changes persist in the kernel. Prime Agent extensions may intentionally add custom tools, but the built-in RLM design does not require a separate model tool for every capability.
+
+#### Root validation delegates before it blocks
+
+At RLM depth zero, Prime Agent inspects validated `ipython` arguments before kernel execution and blocks high-confidence broad validation such as repository-wide build, lint, formatting, type-check, and test commands. This applies to both `%%bash` cells and Python subprocess calls. The root should delegate one coherent validation batch to a child and end its turn; the same payload is allowed at child depth. Focused checks known to finish promptly remain available in the root.
+
+The guard examines executable call structure rather than assistant prose, command output, comments, or strings that merely mention a validation command. It has no model-controlled bypass. A blocked call returns an error tool result before the kernel or subprocess receives it.
 
 ### 2. Subagents are native RLM calls
 

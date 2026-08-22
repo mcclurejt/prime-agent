@@ -556,6 +556,68 @@ describe("AgentSession model and extension characterization", () => {
 		);
 	});
 
+	it("blocks broad IPython validation at root depth before execution", async () => {
+		let executed = false;
+		const ipythonTool: AgentTool = {
+			name: "ipython",
+			label: "IPython",
+			description: "Execute code",
+			parameters: Type.Object({ code: Type.String() }),
+			execute: async () => {
+				executed = true;
+				return { content: [{ type: "text", text: "executed" }], details: {} };
+			},
+		};
+		const harness = await createHarness({ tools: [ipythonTool], rlmDepth: 0 });
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage([fauxToolCall("ipython", { code: "%%bash\nmake lint && make test" })], {
+				stopReason: "toolUse",
+			}),
+			(context) => {
+				const result = context.messages.find((message) => message.role === "toolResult");
+				return fauxAssistantMessage(result?.role === "toolResult" ? getMessageText(result) : "missing result");
+			},
+		]);
+
+		await harness.session.prompt("validate");
+
+		expect(executed).toBe(false);
+		expect(getAssistantTexts(harness).join("\n")).toContain("Root broad validation is blocked");
+		expect(
+			harness.session.messages.find((message) => message.role === "toolResult" && message.isError),
+		).toBeDefined();
+	});
+
+	it("allows broad IPython validation in a subagent", async () => {
+		let executed = false;
+		const ipythonTool: AgentTool = {
+			name: "ipython",
+			label: "IPython",
+			description: "Execute code",
+			parameters: Type.Object({ code: Type.String() }),
+			execute: async () => {
+				executed = true;
+				return { content: [{ type: "text", text: "executed" }], details: {} };
+			},
+		};
+		const harness = await createHarness({ tools: [ipythonTool], rlmDepth: 1 });
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage([fauxToolCall("ipython", { code: "%%bash\nmake lint && make test" })], {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("done"),
+		]);
+
+		await harness.session.prompt("validate");
+
+		expect(executed).toBe(true);
+		expect(
+			harness.session.messages.find((message) => message.role === "toolResult" && message.isError),
+		).toBeUndefined();
+	});
+
 	it("allows extension tool_call handlers to block tool execution", async () => {
 		const echoTool: AgentTool = {
 			name: "echo",

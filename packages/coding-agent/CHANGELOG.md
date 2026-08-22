@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Added a root-only pre-execution guard that blocks broad validation in IPython and directs agents to delegate coherent validation batches to subagents.
 - Changed the bundled RLM heartbeat skill to proactively replace sleeps and manual polling with nonblocking supervision of local and remote asynchronous work.
 - Added opt-in inline terminal images for live tool results in supported terminals outside fullscreen mode.
 - Added opt-in delayed iMessage delivery of rich questionnaires to a secure mobile form on macOS.

@@ -246,6 +246,7 @@ import {
 	type RlmSubagentRuntime,
 	type SubagentRuntimeHost,
 } from "./rlm-runtime.js";
+import { rootValidationGuardReason } from "./root-validation-guard.js";
 import {
 	ActionStore,
 	type ActionTicket,
@@ -1456,6 +1457,15 @@ export class AgentSession {
 	 */
 	private _installAgentToolHooks(): void {
 		this.agent.beforeToolCall = async ({ toolCall, args }) => {
+			const validationGuardReason = rootValidationGuardReason({
+				rlmDepth: this._rlmDepth,
+				toolName: toolCall.name,
+				args,
+			});
+			if (validationGuardReason) {
+				return { block: true, reason: validationGuardReason };
+			}
+
 			const runner = this._extensionRunner;
 			if (!runner.hasHandlers("tool_call")) {
 				return undefined;
