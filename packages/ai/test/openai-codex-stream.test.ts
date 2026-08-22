@@ -82,6 +82,52 @@ function buildSSEPayload({
 }
 
 describe("openai-codex streaming", () => {
+	it("uses the supplied fetch implementation for SSE requests", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "pi-codex-stream-"));
+		process.env.PI_CODING_AGENT_DIR = tempDir;
+		const token = mockToken();
+		const sse = buildSSEPayload({ status: "completed", includeDone: true });
+		const globalFetch = vi.fn(
+			async (_input: string | URL | Request, _init?: RequestInit) =>
+				new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } }),
+		);
+		global.fetch = globalFetch as typeof fetch;
+		const customFetch = vi.fn(
+			async (_input: string | URL | Request, _init?: RequestInit) =>
+				new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } }),
+		);
+
+		const model: Model<"openai-codex-responses"> = {
+			id: "gpt-5.1-codex",
+			name: "GPT-5.1 Codex",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: "https://chatgpt.com/backend-api",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 400000,
+			maxTokens: 128000,
+		};
+		const context: Context = {
+			systemPrompt: "You are a helpful assistant.",
+			messages: [{ role: "user", content: "Say hello", timestamp: Date.now() }],
+		};
+
+		const result = await streamOpenAICodexResponses(model, context, {
+			apiKey: token,
+			transport: "sse",
+			fetch: customFetch as typeof fetch,
+		}).result();
+
+		expect(result.stopReason).toBe("stop");
+		expect(customFetch).toHaveBeenCalledOnce();
+		expect(customFetch.mock.calls[0]?.[0]).toBe("https://chatgpt.com/backend-api/codex/responses");
+		expect(
+			globalFetch.mock.calls.some(([input]) => String(input) === "https://chatgpt.com/backend-api/codex/responses"),
+		).toBe(false);
+	});
+
 	it("streams SSE responses into AssistantMessageEventStream", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "pi-codex-stream-"));
 		process.env.PI_CODING_AGENT_DIR = tempDir;

@@ -100,6 +100,11 @@ export interface StreamOptions {
 	 */
 	sessionId?: string;
 	/**
+	 * Optional fetch implementation for providers that issue HTTP requests directly.
+	 * Providers that do not support custom HTTP transports may reject or ignore it.
+	 */
+	fetch?: typeof globalThis.fetch;
+	/**
 	 * Optional callback for inspecting or replacing provider payloads before sending.
 	 * Return undefined to keep the payload unchanged.
 	 */
