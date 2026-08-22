@@ -245,13 +245,24 @@ describe("builtin skills", () => {
 			expect(compact?.kind === "python" && compact.python.importName).toBe("compact");
 		});
 
-		it("loads the bundled RLM heartbeat skill as a python skill", () => {
+		it("loads the bundled RLM heartbeat skill with proactive wait guidance", () => {
 			const { skills } = loadSkillsFromDir({ dir: getBundledSkillsDir(), source: "builtin" });
 
 			const rlmHeartbeat = skills.find((s) => s.name === "rlm-heartbeat");
 			expect(rlmHeartbeat).toBeDefined();
 			expect(rlmHeartbeat?.kind).toBe("python");
 			expect(rlmHeartbeat?.kind === "python" && rlmHeartbeat.python.importName).toBe("rlm_heartbeat");
+			expect(rlmHeartbeat?.description).toBe(
+				"Manage agent-owned RLM heartbeats from IPython. Use proactively whenever the agent would otherwise sleep, wait, poll, or recheck later to monitor changing local or remote state; no explicit user request is required. Do not use merely to await a native child, and use the user's /heartbeat only when explicitly requested.",
+			);
+
+			const instructions = readFileSync(join(getBundledSkillsDir(), "rlm-heartbeat", "SKILL.md"), "utf-8");
+			expect(instructions).toContain("Future or repeated local/remote state");
+			expect(instructions).toContain("await its `agent_message`; do not poll it or create a heartbeat");
+			expect(instructions).toContain("detached with log and completion-sentinel artifacts");
+			expect(instructions).toContain("condition-aware bounded wait or readiness primitive");
+			expect(instructions).toContain("never an arbitrary fixed-duration sleep");
+			expect(instructions).toContain("Do not use this skill to satisfy a request to configure `/heartbeat`");
 		});
 
 		it("does not ship orchestration heartbeat as a built-in skill", () => {

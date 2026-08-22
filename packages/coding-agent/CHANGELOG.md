@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Changed the bundled RLM heartbeat skill to proactively replace sleeps and manual polling with nonblocking supervision of local and remote asynchronous work.
 - Added opt-in inline terminal images for live tool results in supported terminals outside fullscreen mode.
 - Added opt-in delayed iMessage delivery of rich questionnaires to a secure mobile form on macOS.
 - Added Amazon Bedrock Mantle GPT-5.6 models to provider selection using ambient AWS credentials.
