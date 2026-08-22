@@ -9,6 +9,7 @@ import {
 	type SessionMessageEntry,
 	type ThinkingLevelChangeEntry,
 } from "../../src/core/session-manager.js";
+import { buildContextEntries, sessionEntryToContextMessages } from "../../src/index.js";
 
 function msg(id: string, parentId: string | null, role: "user" | "assistant", text: string): SessionMessageEntry {
 	const base = { type: "message" as const, id, parentId, timestamp: "2025-01-01T00:00:00Z" };
@@ -295,5 +296,27 @@ describe("buildSessionContext", () => {
 			// Should only get the orphan since parent chain is broken
 			expect(ctx.messages).toHaveLength(1);
 		});
+	});
+});
+
+describe("compaction extension compatibility", () => {
+	it("exports compaction-aware session entry projection helpers", () => {
+		const entries: SessionEntry[] = [
+			msg("1", null, "user", "first"),
+			msg("2", "1", "assistant", "response1"),
+			msg("3", "2", "user", "second"),
+			msg("4", "3", "assistant", "response2"),
+			compaction("5", "4", "Summary of first turn", "3"),
+			msg("6", "5", "user", "third"),
+		];
+
+		const contextEntries = buildContextEntries(entries);
+		expect(contextEntries.map((entry) => entry.id)).toEqual(["5", "3", "4", "6"]);
+		expect(contextEntries.flatMap(sessionEntryToContextMessages).map((message) => message.role)).toEqual([
+			"compactionSummary",
+			"user",
+			"assistant",
+			"user",
+		]);
 	});
 });

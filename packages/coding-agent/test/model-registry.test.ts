@@ -88,6 +88,25 @@ describe("ModelRegistry", () => {
 		messages: [],
 	};
 
+	describe("provider lookup", () => {
+		test("returns the registered API provider for a provider model", () => {
+			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
+			const model = registry.getAll().find((candidate) => candidate.provider === "openai-codex");
+			expect(model).toBeDefined();
+
+			const provider = registry.getProvider("openai-codex");
+
+			expect(provider).toBe(getApiProvider(model!.api));
+			expect(typeof provider?.stream).toBe("function");
+		});
+
+		test("returns undefined for an unknown provider", () => {
+			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
+
+			expect(registry.getProvider("missing-provider")).toBeUndefined();
+		});
+	});
+
 	describe("baseUrl override (no custom models)", () => {
 		test("overriding baseUrl keeps all built-in models", () => {
 			writeRawModelsJson({

@@ -7,8 +7,10 @@ import { createHash } from "node:crypto";
 import {
 	type AnthropicMessagesCompat,
 	type Api,
+	type ApiProvider,
 	type AssistantMessageEventStream,
 	type Context,
+	getApiProvider,
 	getModels,
 	getProviders,
 	type KnownProvider,
@@ -1380,6 +1382,14 @@ export class ModelRegistry {
 			source: source.source,
 			...(source.label ? { label: source.label } : {}),
 		};
+	}
+
+	/**
+	 * Get the registered API implementation used by a provider's models.
+	 */
+	getProvider(provider: string): ApiProvider | undefined {
+		const api = this.models.find((model) => model.provider === provider)?.api;
+		return api ? getApiProvider(api) : undefined;
 	}
 
 	/**

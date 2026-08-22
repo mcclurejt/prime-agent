@@ -216,6 +216,7 @@ export type { SessionActionSnapshot } from "./core/session-action-store.js";
 export { SessionImportFileNotFoundError } from "./core/session-import-errors.js";
 export {
 	type BranchSummaryEntry,
+	buildContextEntries,
 	buildSessionContext,
 	type CompactionEntry,
 	CURRENT_SESSION_VERSION,
@@ -238,6 +239,7 @@ export {
 	type SessionState,
 	type SessionStateEntry,
 	type SessionStateStatus,
+	sessionEntryToContextMessages,
 	type ThinkingLevelChangeEntry,
 } from "./core/session-manager.js";
 export type { SessionStats } from "./core/session-stats.js";

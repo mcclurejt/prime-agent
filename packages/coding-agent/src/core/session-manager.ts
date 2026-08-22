@@ -469,6 +469,85 @@ export function getLatestCompactionEntry(entries: SessionEntry[]): CompactionEnt
 	return null;
 }
 
+function buildSessionPath(
+	entries: SessionEntry[],
+	leafId?: string | null,
+	byId?: Map<string, SessionEntry>,
+): SessionEntry[] {
+	const index = byId ?? new Map<string, SessionEntry>(entries.map((entry) => [entry.id, entry]));
+	if (leafId === null) return [];
+
+	let leaf = leafId ? index.get(leafId) : undefined;
+	leaf ??= entries[entries.length - 1];
+	if (!leaf) return [];
+
+	const path: SessionEntry[] = [];
+	let current: SessionEntry | undefined = leaf;
+	while (current) {
+		path.push(current);
+		current = current.parentId ? index.get(current.parentId) : undefined;
+	}
+	path.reverse();
+	return path;
+}
+
+/** Project one selected session entry into LLM/runtime messages. */
+export function sessionEntryToContextMessages(entry: SessionEntry): AgentMessage[] {
+	if (entry.type === "message") {
+		const message = entry.message;
+		if (
+			(message.role === "user" || message.role === "assistant" || message.role === "toolResult") &&
+			message.content == null
+		) {
+			return [{ ...message, content: [] }];
+		}
+		return [message];
+	}
+	if (entry.type === "custom_message") {
+		return [
+			createCustomMessage(entry.customType, entry.content ?? [], entry.display, entry.details, entry.timestamp),
+		];
+	}
+	if (entry.type === "branch_summary" && entry.summary) {
+		return [createBranchSummaryMessage(entry.summary, entry.fromId, entry.timestamp)];
+	}
+	if (entry.type === "compaction") {
+		return [
+			createCompactionSummaryMessage(entry.summary, entry.tokensBefore, entry.timestamp, entry.customInstructions),
+		];
+	}
+	return [];
+}
+
+/**
+ * Build the active, compaction-aware session entry list for the selected branch.
+ */
+export function buildContextEntries(
+	entries: SessionEntry[],
+	leafId?: string | null,
+	byId?: Map<string, SessionEntry>,
+): SessionEntry[] {
+	const path = buildSessionPath(entries, leafId, byId);
+	let compaction: CompactionEntry | null = null;
+	for (const entry of path) {
+		if (entry.type === "compaction") compaction = entry;
+	}
+	if (!compaction) return path;
+
+	const compactionIdx = path.findIndex((entry) => entry.id === compaction.id);
+	if (compactionIdx < 0) return path;
+
+	const contextEntries: SessionEntry[] = [compaction];
+	let foundFirstKept = false;
+	for (let i = 0; i < compactionIdx; i++) {
+		const entry = path[i];
+		if (entry.id === compaction.firstKeptEntryId) foundFirstKept = true;
+		if (foundFirstKept) contextEntries.push(entry);
+	}
+	contextEntries.push(...path.slice(compactionIdx + 1));
+	return contextEntries;
+}
+
 /**
  * Build the session context from entries using tree traversal.
  * If leafId is provided, walks from that entry to root.
