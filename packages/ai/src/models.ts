@@ -47,6 +47,11 @@ export function getModels(provider: KnownProvider): Model<Api>[] {
 	return models ? (Array.from(models.values()) as Model<Api>[]) : [];
 }
 
+/** Runtime-checked API narrowing for dynamically selected models. */
+export function hasApi<TApi extends Api>(model: Model<Api>, api: TApi): model is Model<TApi> {
+	return model.api === api;
+}
+
 export function supportsFastMode<TApi extends Api>(model: Model<TApi>): boolean {
 	return (
 		model.provider === "openai-codex" &&
