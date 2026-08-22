@@ -210,9 +210,24 @@ Remote delivery is best-effort. Failures in idle detection, the loopback server,
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `terminal.showImages` | boolean | `true` | Show image type and dimensions in terminal |
+| `terminal.inlineImages` | boolean | `false` | Render live images with a supported terminal graphics protocol when fullscreen mode is off |
 | `terminal.clearOnShrink` | boolean | `false` | Clear empty rows when content shrinks (can cause flicker) |
 | `images.autoResize` | boolean | `true` | Resize images to 2000x2000 max |
 | `images.blockImages` | boolean | `false` | Block all images from being sent to LLM |
+
+Inline terminal graphics are opt-in and apply only to live tool results. Historical session replay remains metadata-only so reopening a session does not retransmit old images. Fullscreen mode also uses metadata because terminal images cannot be safely clipped or repositioned in its scrollable viewport. To display inline images in iTerm2, use:
+
+```json
+{
+  "terminal": {
+    "showImages": true,
+    "inlineImages": true,
+    "fullscreen": false
+  }
+}
+```
+
+Prime Agent detects iTerm2 automatically from its terminal environment. Kitty, Ghostty, and WezTerm use the Kitty graphics protocol. Inline graphics remain disabled under tmux and GNU Screen, where protocol passthrough is not reliable.
 
 ### Shell
 

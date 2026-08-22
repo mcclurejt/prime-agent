@@ -514,7 +514,7 @@ const spacer = new Spacer(2); // 2 empty lines (default: 1)
 
 ### Image
 
-Renders Kitty or iTerm2 terminal graphics when supported. Set `fallbackOnly: true` to show compact image metadata instead; Prime Agent uses this metadata-only mode.
+Renders Kitty or iTerm2 terminal graphics when supported. Set `fallbackOnly: true` to show compact image metadata instead. Prime Agent uses metadata by default and enables terminal graphics only for opted-in live results outside fullscreen mode.
 
 ```typescript
 interface ImageTheme {

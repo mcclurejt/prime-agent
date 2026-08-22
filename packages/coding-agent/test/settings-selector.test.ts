@@ -12,6 +12,7 @@ const config: SettingsConfig = {
 	autoCompact: true,
 	idleEvictionMinutes: 90,
 	showImages: true,
+	inlineImages: false,
 	autoResizeImages: true,
 	blockImages: false,
 	enableSkillCommands: true,
@@ -39,6 +40,7 @@ const callbacks: SettingsCallbacks = {
 	onAutoCompactChange: () => {},
 	onIdleEvictionMinutesChange: () => {},
 	onShowImagesChange: () => {},
+	onInlineImagesChange: () => {},
 	onAutoResizeImagesChange: () => {},
 	onBlockImagesChange: () => {},
 	onEnableSkillCommandsChange: () => {},
@@ -73,12 +75,24 @@ describe("SettingsSelectorComponent", () => {
 			const rendered = stripAnsi(component.render(120).join("\n"));
 
 			expect(rendered).toContain("Show image metadata");
+			expect(rendered).toContain("Inline terminal images");
 			expect(rendered).toContain("Auto-resize images");
 			for (const character of "idle") component.getSettingsList().handleInput(character);
 			expect(stripAnsi(component.render(120).join("\n"))).toContain("Idle worker eviction");
 		} finally {
 			resetCapabilitiesCache();
 		}
+	});
+
+	test("enables inline terminal images through the settings toggle", () => {
+		const onInlineImagesChange = vi.fn();
+		const component = new SettingsSelectorComponent(config, { ...callbacks, onInlineImagesChange });
+		const list = component.getSettingsList();
+		for (const character of "inline terminal") list.handleInput(character);
+
+		list.handleInput("\r");
+
+		expect(onInlineImagesChange).toHaveBeenCalledWith(true);
 	});
 
 	test("cycles a custom idle eviction value to the next numeric option", () => {

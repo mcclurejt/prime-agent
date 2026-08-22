@@ -1,11 +1,12 @@
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import { type Component, Container, Image, Text, type TUI } from "@earendil-works/pi-tui";
+import { type Component, Container, getCapabilities, Image, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
 import type { ToolDefinition, ToolRenderContext, ToolRenderResultOptions } from "../../../core/extensions/types.js";
 import type { KernelSentAgentMessage } from "../../../core/kernel/index.js";
 import { createBashToolDefinition } from "../../../core/tools/bash.js";
 import { createEditToolDefinition } from "../../../core/tools/edit.js";
 import { createAllToolDefinitions } from "../../../core/tools/index.js";
 import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.js";
+import { convertToPng } from "../../../utils/image-convert.js";
 import type { AgentConnectionToolDefinition } from "../../agent-connection/index.js";
 import { type Theme, theme } from "../theme/theme.js";
 import { getWorkingPulseFrame, workingIconFrame } from "../theme/working-icon.js";
@@ -15,6 +16,9 @@ import { ToolPanel } from "./tool-panel.js";
 
 export interface ToolExecutionOptions {
 	showImages?: boolean;
+	/** Whether live results may emit terminal image protocol escape sequences. */
+	allowInlineImages?: boolean;
+	imageWidthCells?: number;
 	/** Whether image metadata may parse dimensions from base64 data. */
 	includeImageDimensions?: boolean;
 }
@@ -75,12 +79,15 @@ export class ToolExecutionComponent extends Container {
 	private ipythonCellComponent?: IPythonCellComponent;
 	private rendererState: any = {};
 	private imageComponents: Image[] = [];
+	private imageSpacers: Spacer[] = [];
 	private toolName: string;
 	private toolCallId: string;
 	private args: any;
 	private expanded = false;
 	private showExpandHint = true;
 	private showImages: boolean;
+	private allowInlineImages: boolean;
+	private imageWidthCells: number;
 	private includeImageDimensions: boolean;
 	private isPartial = true;
 	private toolDefinition?: ToolExecutionDefinition;
@@ -95,6 +102,8 @@ export class ToolExecutionComponent extends Container {
 		isError: boolean;
 		details?: any;
 	};
+	private convertedImages = new Map<string, { data: string; mimeType: string }>();
+	private convertingImages = new Set<string>();
 	private hideComponent = false;
 
 	constructor(
@@ -113,6 +122,8 @@ export class ToolExecutionComponent extends Container {
 		this.toolDefinition = toolDefinition;
 		this.builtInToolDefinition = createReplayBuiltInToolDefinition(toolName, cwd, toolDefinition);
 		this.showImages = options.showImages ?? true;
+		this.allowInlineImages = options.allowInlineImages ?? false;
+		this.imageWidthCells = options.imageWidthCells ?? 60;
 		this.includeImageDimensions = options.includeImageDimensions ?? true;
 		this.ui = ui;
 		this.cwd = cwd;
@@ -172,6 +183,10 @@ export class ToolExecutionComponent extends Container {
 
 	private shouldUseIpythonRenderer(): boolean {
 		return this.toolName === "ipython" && !this.toolDefinition?.renderCall && !this.toolDefinition?.renderResult;
+	}
+
+	private shouldRenderInlineImages(): boolean {
+		return this.showImages && this.allowInlineImages;
 	}
 
 	private getRenderContext(lastComponent: Component | undefined): ToolRenderContext {
@@ -248,8 +263,10 @@ export class ToolExecutionComponent extends Container {
 			}
 		}
 		this.result = sentAgentMessages.length > 0 ? { ...result, details: { ...details, sentAgentMessages } } : result;
+		this.pruneConvertedImages();
 		this.isPartial = isPartial;
 		this.updateDisplay();
+		this.maybeConvertImagesForKitty();
 	}
 
 	appendSentAgentMessage(message: KernelSentAgentMessage): void {
@@ -259,6 +276,51 @@ export class ToolExecutionComponent extends Container {
 		this.pendingSentAgentMessages.push(message);
 		if (this.result) {
 			this.updateResult(this.result, this.isPartial);
+		}
+	}
+
+	private imageConversionKey(data: string, mimeType: string): string {
+		return `${mimeType}\0${data}`;
+	}
+
+	private currentImageConversionKeys(): Set<string> {
+		const keys = new Set<string>();
+		for (const content of this.result?.content ?? []) {
+			if (content.type === "image" && content.data && content.mimeType) {
+				keys.add(this.imageConversionKey(content.data, content.mimeType));
+			}
+		}
+		return keys;
+	}
+
+	private pruneConvertedImages(): void {
+		const currentKeys = this.currentImageConversionKeys();
+		for (const key of this.convertedImages.keys()) {
+			if (!currentKeys.has(key)) this.convertedImages.delete(key);
+		}
+	}
+
+	private maybeConvertImagesForKitty(): void {
+		if (!this.shouldRenderInlineImages()) return;
+		const caps = getCapabilities();
+		if (caps.images !== "kitty" || !this.result) return;
+
+		const imageBlocks = this.result.content.filter((content) => content.type === "image");
+		for (const image of imageBlocks) {
+			if (!image.data || !image.mimeType || image.mimeType === "image/png") continue;
+			const key = this.imageConversionKey(image.data, image.mimeType);
+			if (this.convertedImages.has(key) || this.convertingImages.has(key)) continue;
+
+			this.convertingImages.add(key);
+			void convertToPng(image.data, image.mimeType)
+				.then((converted) => {
+					if (!converted || !this.currentImageConversionKeys().has(key)) return;
+					this.convertedImages.set(key, converted);
+					this.updateDisplay();
+					this.ui.requestRender();
+				})
+				.catch(() => {})
+				.finally(() => this.convertingImages.delete(key));
 		}
 	}
 
@@ -277,6 +339,18 @@ export class ToolExecutionComponent extends Container {
 
 	setShowImages(show: boolean): void {
 		this.showImages = show;
+		if (show) this.maybeConvertImagesForKitty();
+		this.updateDisplay();
+	}
+
+	setAllowInlineImages(allow: boolean): void {
+		this.allowInlineImages = allow;
+		if (allow) this.maybeConvertImagesForKitty();
+		this.updateDisplay();
+	}
+
+	setImageWidthCells(width: number): void {
+		this.imageWidthCells = Math.max(1, Math.floor(width));
 		this.updateDisplay();
 	}
 
@@ -363,23 +437,40 @@ export class ToolExecutionComponent extends Container {
 			hasContent = true;
 		}
 
-		for (const img of this.imageComponents) {
-			this.removeChild(img);
-		}
+		for (const image of this.imageComponents) this.removeChild(image);
 		this.imageComponents = [];
+		for (const spacer of this.imageSpacers) this.removeChild(spacer);
+		this.imageSpacers = [];
 
 		if (this.result) {
-			const imageBlocks = this.result.content.filter((c) => c.type === "image");
+			const imageBlocks = this.result.content.filter((content) => content.type === "image");
+			const capabilities = getCapabilities();
+			const renderInlineImages = this.shouldRenderInlineImages();
 			for (let i = 0; i < imageBlocks.length; i++) {
-				const img = imageBlocks[i];
-				if (!this.showImages || !img.data || !img.mimeType) continue;
+				const image = imageBlocks[i];
+				if (!this.showImages || !image.data || !image.mimeType) continue;
+
+				const converted = this.convertedImages.get(this.imageConversionKey(image.data, image.mimeType));
+				const imageData = converted?.data ?? image.data;
+				const imageMimeType = converted?.mimeType ?? image.mimeType;
+				const canRenderInline =
+					renderInlineImages &&
+					capabilities.images !== null &&
+					(capabilities.images !== "kitty" || imageMimeType === "image/png");
+
+				if (canRenderInline) {
+					const spacer = new Spacer(1);
+					this.addChild(spacer);
+					this.imageSpacers.push(spacer);
+				}
 
 				const imageComponent = new Image(
-					img.data,
-					img.mimeType,
-					{ fallbackColor: (s: string) => theme.fg("toolOutput", s) },
+					imageData,
+					imageMimeType,
+					{ fallbackColor: (text: string) => theme.fg("toolOutput", text) },
 					{
-						fallbackOnly: true,
+						maxWidthCells: this.imageWidthCells,
+						fallbackOnly: !canRenderInline,
 						fallbackPrefix: "    ╰─ ",
 					},
 				);

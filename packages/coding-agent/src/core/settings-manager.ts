@@ -44,6 +44,7 @@ export interface RetrySettings {
 
 export interface TerminalSettings {
 	showImages?: boolean; // default: true (show image type and dimensions)
+	inlineImages?: boolean; // default: false (emit terminal graphics for live images outside fullscreen mode)
 	clearOnShrink?: boolean; // default: false (clear empty rows when content shrinks)
 	showTerminalProgress?: boolean; // default: false (OSC 9;4 terminal progress indicators)
 	fullscreen?: boolean; // default: true (alternate-screen rendering with scrollable transcript)
@@ -1135,6 +1136,19 @@ export class SettingsManager {
 		}
 		this.globalSettings.terminal.showImages = show;
 		this.markModified("terminal", "showImages");
+		this.save();
+	}
+
+	getInlineImages(): boolean {
+		return this.settings.terminal?.inlineImages ?? false;
+	}
+
+	setInlineImages(enabled: boolean): void {
+		if (!this.globalSettings.terminal) {
+			this.globalSettings.terminal = {};
+		}
+		this.globalSettings.terminal.inlineImages = enabled;
+		this.markModified("terminal", "inlineImages");
 		this.save();
 	}
 

@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Added opt-in inline terminal images for live tool results in supported terminals outside fullscreen mode.
 - Added opt-in delayed iMessage delivery of rich questionnaires to a secure mobile form on macOS.
 - Added Amazon Bedrock Mantle GPT-5.6 models to provider selection using ambient AWS credentials.
 - Added automatic `aws sso login` refresh for Bedrock and Bedrock Mantle when the AWS SSO session expires, with a single sign-in per host and a `bedrock.autoSsoRefresh` setting to disable it.

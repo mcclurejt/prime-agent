@@ -34,6 +34,7 @@ export interface SettingsConfig {
 	autoCompact: boolean;
 	idleEvictionMinutes: IdleEvictionMinutes;
 	showImages: boolean;
+	inlineImages: boolean;
 	autoResizeImages: boolean;
 	blockImages: boolean;
 	enableSkillCommands: boolean;
@@ -61,6 +62,7 @@ export interface SettingsCallbacks {
 	onAutoCompactChange: (enabled: boolean) => void;
 	onIdleEvictionMinutesChange: (value: IdleEvictionMinutes) => void;
 	onShowImagesChange: (enabled: boolean) => void;
+	onInlineImagesChange: (enabled: boolean) => void;
 	onAutoResizeImagesChange: (enabled: boolean) => void;
 	onBlockImagesChange: (blocked: boolean) => void;
 	onEnableSkillCommandsChange: (enabled: boolean) => void;
@@ -344,8 +346,16 @@ export class SettingsSelectorComponent extends Container {
 			values: ["true", "false"],
 		});
 
-		// Image auto-resize toggle (always available, affects both attached and read images)
 		items.splice(2, 0, {
+			id: "inline-images",
+			label: "Inline terminal images",
+			description: "Render live images in supported terminals when fullscreen mode is off",
+			currentValue: config.inlineImages ? "true" : "false",
+			values: ["true", "false"],
+		});
+
+		// Image auto-resize toggle (always available, affects both attached and read images)
+		items.splice(3, 0, {
 			id: "auto-resize-images",
 			label: "Auto-resize images",
 			description: "Resize large images to 2000x2000 max for better model compatibility",
@@ -460,6 +470,9 @@ export class SettingsSelectorComponent extends Container {
 						break;
 					case "show-images":
 						callbacks.onShowImagesChange(newValue === "true");
+						break;
+					case "inline-images":
+						callbacks.onInlineImagesChange(newValue === "true");
 						break;
 					case "auto-resize-images":
 						callbacks.onAutoResizeImagesChange(newValue === "true");

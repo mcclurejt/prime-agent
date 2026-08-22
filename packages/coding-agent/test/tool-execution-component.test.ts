@@ -1,7 +1,7 @@
 import { Container, resetCapabilitiesCache, setCapabilities, Text, TUI } from "@earendil-works/pi-tui";
 import stripAnsi from "strip-ansi";
 import { Type } from "typebox";
-import { beforeAll, describe, expect, test } from "vitest";
+import { beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.js";
 import type { ToolDefinition } from "../src/core/extensions/types.js";
 import { type BashOperations, createBashTool, createBashToolDefinition } from "../src/core/tools/bash.js";
@@ -10,6 +10,11 @@ import { createAgentConnectionToolDefinition } from "../src/modes/agent-connecti
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 import { getWorkingPulseFrame, workingIconFrame } from "../src/modes/interactive/theme/working-icon.js";
+import { convertToPng } from "../src/utils/image-convert.js";
+
+vi.mock("../src/utils/image-convert.js", () => ({
+	convertToPng: vi.fn(),
+}));
 
 function createBaseToolDefinition(name = "custom_tool"): ToolDefinition {
 	return {
@@ -30,6 +35,14 @@ function createFakeTui(): TUI {
 	} as unknown as TUI;
 }
 
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+	let resolve!: (value: T) => void;
+	const promise = new Promise<T>((settle) => {
+		resolve = settle;
+	});
+	return { promise, resolve };
+}
+
 function createMetadataOnlyToolDefinition(definition: ToolDefinition<any, any>) {
 	const metadata = createAgentConnectionToolDefinition(definition);
 	if (!metadata) {
@@ -41,6 +54,10 @@ function createMetadataOnlyToolDefinition(definition: ToolDefinition<any, any>) 
 describe("ToolExecutionComponent parity", () => {
 	beforeAll(() => {
 		initTheme("dark");
+	});
+
+	beforeEach(() => {
+		vi.mocked(convertToPng).mockReset();
 	});
 
 	test("stacks custom call and result renderers like the old implementation", () => {
@@ -93,6 +110,122 @@ describe("ToolExecutionComponent parity", () => {
 			expect(rendered).not.toContain("\x1b_G");
 			expect(rendered).toContain("    ╰─ [image/png · 800×600]");
 			expect(rendered.match(/image\/png/g)).toHaveLength(1);
+		} finally {
+			resetCapabilitiesCache();
+		}
+	});
+
+	test.each(["kitty", "iterm2"] as const)(
+		"renders live terminal graphics for %s when inline images are explicitly enabled",
+		(protocol) => {
+			setCapabilities({ images: protocol, trueColor: true, hyperlinks: true });
+			try {
+				const component = new ToolExecutionComponent(
+					"custom_tool",
+					`tool-image-inline-${protocol}`,
+					{},
+					{ showImages: true, allowInlineImages: true },
+					undefined,
+					createFakeTui(),
+					process.cwd(),
+				);
+				component.updateResult({
+					content: [{ type: "image", data: "AAAA", mimeType: "image/png" }],
+					isError: false,
+				});
+
+				const rendered = component.render(120).join("\n");
+				const protocolPrefix = protocol === "kitty" ? "\x1b_G" : "\x1b]1337;File=";
+				expect(rendered).toContain(protocolPrefix);
+				expect(stripAnsi(rendered)).not.toContain("[image/png · 800×600]");
+			} finally {
+				resetCapabilitiesCache();
+			}
+		},
+	);
+
+	test("ignores a stale Kitty conversion after a later result replaces the source image", async () => {
+		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+		try {
+			const first = deferred<Awaited<ReturnType<typeof convertToPng>>>();
+			const second = deferred<Awaited<ReturnType<typeof convertToPng>>>();
+			vi.mocked(convertToPng).mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+			const component = new ToolExecutionComponent(
+				"custom_tool",
+				"tool-image-inline-race",
+				{},
+				{ showImages: true, allowInlineImages: true },
+				undefined,
+				createFakeTui(),
+				process.cwd(),
+			);
+
+			component.updateResult(
+				{ content: [{ type: "image", data: "partial-a", mimeType: "image/jpeg" }], isError: false },
+				true,
+			);
+			component.updateResult({
+				content: [{ type: "image", data: "final-b", mimeType: "image/jpeg" }],
+				isError: false,
+			});
+
+			first.resolve({ data: "converted-a", mimeType: "image/png" });
+			await new Promise((resolve) => setTimeout(resolve, 0));
+
+			const rendered = component.render(120).join("\n");
+			expect(rendered).not.toContain("\x1b_G");
+			expect(stripAnsi(rendered)).toContain("[image/jpeg · 800×600]");
+			second.resolve(null);
+		} finally {
+			resetCapabilitiesCache();
+		}
+	});
+
+	test("deduplicates an in-flight Kitty conversion for repeated identical partial results", () => {
+		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+		try {
+			const conversion = deferred<Awaited<ReturnType<typeof convertToPng>>>();
+			vi.mocked(convertToPng).mockReturnValueOnce(conversion.promise);
+			const component = new ToolExecutionComponent(
+				"custom_tool",
+				"tool-image-inline-deduplicate",
+				{},
+				{ showImages: true, allowInlineImages: true },
+				undefined,
+				createFakeTui(),
+				process.cwd(),
+			);
+			const partial = {
+				content: [{ type: "image", data: "same-image", mimeType: "image/jpeg" }],
+				isError: false,
+			};
+
+			component.updateResult(partial, true);
+			component.updateResult(partial, true);
+
+			expect(convertToPng).toHaveBeenCalledTimes(1);
+			conversion.resolve(null);
+		} finally {
+			resetCapabilitiesCache();
+		}
+	});
+
+	test("falls back to metadata when inline images are enabled in an unsupported terminal", () => {
+		setCapabilities({ images: null, trueColor: true, hyperlinks: true });
+		try {
+			const component = new ToolExecutionComponent(
+				"custom_tool",
+				"tool-image-inline-unsupported",
+				{},
+				{ showImages: true, allowInlineImages: true },
+				undefined,
+				createFakeTui(),
+				process.cwd(),
+			);
+			component.updateResult({ content: [{ type: "image", data: "AAAA", mimeType: "image/png" }], isError: false });
+
+			const rendered = stripAnsi(component.render(120).join("\n"));
+			expect(rendered).toContain("    ╰─ [image/png · 800×600]");
 		} finally {
 			resetCapabilitiesCache();
 		}
@@ -193,7 +326,7 @@ describe("ToolExecutionComponent parity", () => {
 				"ipython",
 				"tool-ipython-image-fullscreen",
 				{ code: "display(image)" },
-				{ showImages: true },
+				{ showImages: true, allowInlineImages: true },
 				undefined,
 				tui,
 				process.cwd(),

@@ -248,7 +248,7 @@ md.setText("Updated markdown");
 
 ### Image
 
-Prime Agent shows compact image metadata and does not emit terminal graphics for images.
+Prime Agent shows compact image metadata by default. Live tool results may emit Kitty or iTerm2 terminal graphics when `terminal.inlineImages` is enabled, the terminal supports them, and fullscreen mode is off. Historical replay and fullscreen rendering remain metadata-only.
 
 ```typescript
 const image = new Image(

@@ -2994,6 +2994,7 @@ export class InteractiveMode {
 				latestToolCall.arguments,
 				{
 					showImages: this.settingsManager.getShowImages(),
+					allowInlineImages: this.settingsManager.getInlineImages(),
 				},
 				toolDefinition,
 				this.ui,
@@ -6550,6 +6551,7 @@ export class InteractiveMode {
 							content.arguments,
 							{
 								showImages: this.settingsManager.getShowImages(),
+								allowInlineImages: false,
 								includeImageDimensions: false,
 							},
 							this.getCachedToolDefinition(content.name),
@@ -7342,6 +7344,7 @@ export class InteractiveMode {
 					autoCompact: state.autoCompactionEnabled,
 					idleEvictionMinutes: this.settingsManager.getIdleEvictionMinutes(),
 					showImages: this.settingsManager.getShowImages(),
+					inlineImages: this.settingsManager.getInlineImages(),
 					autoResizeImages: this.settingsManager.getImageAutoResize(),
 					blockImages: this.settingsManager.getBlockImages(),
 					enableSkillCommands: this.settingsManager.getEnableSkillCommands(),
@@ -7381,6 +7384,12 @@ export class InteractiveMode {
 							if (child instanceof ToolExecutionComponent) {
 								child.setShowImages(enabled);
 							}
+						}
+					},
+					onInlineImagesChange: (enabled) => {
+						this.settingsManager.setInlineImages(enabled);
+						for (const component of this.pendingTools.values()) {
+							component.setAllowInlineImages(enabled);
 						}
 					},
 					onAutoResizeImagesChange: (enabled) => {
