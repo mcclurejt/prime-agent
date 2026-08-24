@@ -157,7 +157,7 @@ export interface Settings {
 	defaultServiceTier?: ServiceTier;
 	sessionSummary?: SessionSummarySettings;
 	remoteQuestionnaire?: RemoteQuestionnaireSettings;
-	rlmMaxDepth?: number; // default for new sessions; unset falls through to RLM_MAX_DEPTH, then 1
+	rlmMaxDepth?: number; // default for new sessions; unset falls through to RLM_MAX_DEPTH, then 2
 	idleEvictionMinutes?: number | "off"; // global daemon policy; default: 90
 	transport?: TransportSetting; // default: "auto"
 	steeringMode?: "all" | "one-at-a-time";
