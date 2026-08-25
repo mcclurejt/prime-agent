@@ -197,7 +197,7 @@ export class DaemonWorkerClient {
 					}
 				}
 			} catch {
-				// The malformed frame eventually fails the hello timeout.
+				// Invalid hello payloads are rejected by the timeout.
 			}
 		}
 		this.notifyFrameListeners(frame);

@@ -4,10 +4,10 @@ import type { AgentSession } from "./agent-session.js";
 import type { ToolDefinition } from "./extensions/index.js";
 import type { HostRequestHandler } from "./kernel/index.js";
 
+/** Request emitted by `rlm.run`; cellSourceCode preserves the spawning cell for display. */
 export interface RlmRunRequest {
 	prompt: string;
 	kwargs: Record<string, unknown>;
-	/** Source of the IPython cell that issued this rlm.run call, when available. */
 	cellSourceCode?: string;
 }
 
@@ -68,7 +68,6 @@ export const RLM_THINKING_LEVELS = [
 	"max",
 ] as const satisfies readonly ThinkingLevel[];
 
-/** Validate and normalize an orchestrator-supplied subagent session name. */
 export function normalizeRequestedRlmSubagentSessionName(value: unknown): string | undefined {
 	if (value === undefined) {
 		return undefined;
@@ -86,7 +85,6 @@ export function normalizeRequestedRlmSubagentSessionName(value: unknown): string
 	return name;
 }
 
-/** Validate and normalize an orchestrator-supplied subagent model reference. */
 export function normalizeRequestedRlmSubagentModel(value: unknown): string | undefined {
 	if (value === undefined) {
 		return undefined;
@@ -176,7 +174,7 @@ export function findRlmModelMatches(query: string, models: Model<Api>[], limit: 
 		}));
 }
 
-/** Adapt an RlmRunHandler into the typed "rlm.run" handler for the kernel host bridge. */
+/** Adapt an RlmRunHandler into the typed `rlm.run` kernel host handler. */
 export function createRlmRunHostHandler(handler: RlmRunHandler): HostRequestHandler {
 	return async (payload) => {
 		if (typeof payload.prompt !== "string") {
@@ -207,7 +205,7 @@ export function createRlmFindModelsHostHandler(handler: RlmFindModelsHandler): H
 	};
 }
 
-/** Expose the current parent session's RLM child registry to its kernel. */
+/** Expose the current parent session's direct RLM child registry to its kernel. */
 export function createRlmListSubagentsHostHandler(handler: RlmListSubagentsHandler): HostRequestHandler {
 	return async () => {
 		const { subagents } = await handler();

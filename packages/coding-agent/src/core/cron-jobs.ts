@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { lockSync } from "proper-lockfile";
+import { getSessionArtifactPathForFile } from "./session-manager.js";
 
 export const RLM_HEARTBEAT_SKILL_NAME = "rlm-heartbeat";
 
@@ -916,9 +917,7 @@ export function migrateLegacyCronJobsToSessionArtifacts(
 	const jobsByArtifact = new Map<string, AgentCronJob[]>();
 	for (const job of jobs) {
 		const artifactPath = join(
-			dirname(dirname(resolve(job.sessionFile))),
-			"session-artifacts",
-			job.sessionId,
+			getSessionArtifactPathForFile(resolve(job.sessionFile), job.sessionId),
 			SESSION_SCHEDULED_JOBS_FILENAME,
 		);
 		const grouped = jobsByArtifact.get(artifactPath) ?? [];

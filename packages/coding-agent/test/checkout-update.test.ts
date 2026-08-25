@@ -157,30 +157,29 @@ describe("checkout self-update artifacts", () => {
 });
 
 describe.skipIf(process.env.PRIME_AGENT_CHECKOUT_INTEGRATION !== "1")("checkout self-update integration", () => {
-	it(
-		"clones, installs dependencies, builds deterministically, packs, and installs into a temporary prefix",
-		{ tags: ["checkout-update-integration"], timeout: 600_000 },
-		async () => {
-			const artifact = await buildCheckoutUpdateArtifact(integrationCheckout);
-			const prefix = join(
-				tmpdir(),
-				`prime-agent-checkout-integration-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+	it("clones, installs dependencies, builds deterministically, packs, and installs into a temporary prefix", {
+		tags: ["checkout-update-integration"],
+		timeout: 600_000,
+	}, async () => {
+		const artifact = await buildCheckoutUpdateArtifact(integrationCheckout);
+		const prefix = join(
+			tmpdir(),
+			`prime-agent-checkout-integration-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+		);
+		temporaryDirectories.push(prefix);
+		try {
+			run(
+				"npm",
+				["install", "-g", "--prefix", prefix, artifact.artifactPath, "--ignore-scripts"],
+				integrationCheckout,
 			);
-			temporaryDirectories.push(prefix);
-			try {
-				run(
-					"npm",
-					["install", "-g", "--prefix", prefix, artifact.artifactPath, "--ignore-scripts"],
-					integrationCheckout,
-				);
-				const installed = join(prefix, "lib", "node_modules", "prime-agent");
-				expect(existsSync(join(installed, "dist", "bundle", "cli.js"))).toBe(true);
-				for (const name of Object.values(packageNames).slice(0, -1)) {
-					expect(existsSync(join(installed, "node_modules", ...name.split("/")))).toBe(true);
-				}
-			} finally {
-				artifact.cleanup();
+			const installed = join(prefix, "lib", "node_modules", "prime-agent");
+			expect(existsSync(join(installed, "dist", "bundle", "cli.js"))).toBe(true);
+			for (const name of Object.values(packageNames).slice(0, -1)) {
+				expect(existsSync(join(installed, "node_modules", ...name.split("/")))).toBe(true);
 			}
-		},
-	);
+		} finally {
+			artifact.cleanup();
+		}
+	});
 });

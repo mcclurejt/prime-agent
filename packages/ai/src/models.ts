@@ -4,7 +4,6 @@ import type { Api, KnownProvider, Model, ModelThinkingLevel, Usage } from "./typ
 
 const modelRegistry: Map<string, Map<string, Model<Api>>> = new Map();
 
-// Initialize registry from MODELS on module load
 for (const [provider, models] of Object.entries(MODELS)) {
 	const providerModels = new Map<string, Model<Api>>();
 	for (const [id, model] of Object.entries(models)) {
@@ -53,10 +52,12 @@ export function hasApi<TApi extends Api>(model: Model<Api>, api: TApi): model is
 }
 
 export function supportsFastMode<TApi extends Api>(model: Model<TApi>): boolean {
+	const eligibleId =
+		model.id === "gpt-5.4" || model.id === "gpt-5.5" || model.id === "gpt-5.6" || model.id.startsWith("gpt-5.6-");
 	return (
-		model.provider === "openai-codex" &&
-		model.api === "openai-codex-responses" &&
-		(model.id === "gpt-5.4" || model.id === "gpt-5.5" || model.id === "gpt-5.6" || model.id.startsWith("gpt-5.6-"))
+		eligibleId &&
+		((model.provider === "openai-codex" && model.api === "openai-codex-responses") ||
+			(model.provider === "openai" && model.api === "openai-responses"))
 	);
 }
 
@@ -111,10 +112,6 @@ export function clampThinkingLevel<TApi extends Api>(
 	return availableLevels[0] ?? "off";
 }
 
-/**
- * Check if two models are equal by comparing both their id and provider.
- * Returns false if either model is null or undefined.
- */
 export function modelsAreEqual<TApi extends Api>(
 	a: Model<TApi> | null | undefined,
 	b: Model<TApi> | null | undefined,

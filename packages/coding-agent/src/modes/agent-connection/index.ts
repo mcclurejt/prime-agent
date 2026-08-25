@@ -32,6 +32,7 @@ export type {
 	AgentConnectionQuestionnaireMutationResult,
 	AgentConnectionQuestionnairePresentation,
 	AgentConnectionQuestionnaireTransport,
+	AgentConnectionQueuedMessageMutationStatus,
 	AgentConnectionQueueMode,
 	AgentConnectionQueueState,
 	AgentConnectionReplayInfo,

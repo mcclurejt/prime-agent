@@ -16,7 +16,6 @@ const NODE_FS_SPECIFIER = "node:" + "fs";
 const NODE_OS_SPECIFIER = "node:" + "os";
 const NODE_PATH_SPECIFIER = "node:" + "path";
 
-// Eagerly load in Node.js/Bun environment only
 if (typeof process !== "undefined" && (process.versions?.node || process.versions?.bun)) {
 	dynamicImport(NODE_FS_SPECIFIER).then((m) => {
 		_existsSync = (m as { existsSync: typeof existsSync }).existsSync;
@@ -78,12 +77,10 @@ function hasVertexAdcCredentials(): boolean {
 			return false;
 		}
 
-		// Check GOOGLE_APPLICATION_CREDENTIALS env var first (standard way)
 		const gacPath = process.env.GOOGLE_APPLICATION_CREDENTIALS || getProcEnv("GOOGLE_APPLICATION_CREDENTIALS");
 		if (gacPath) {
 			cachedVertexAdcCredentialsExists = _existsSync(gacPath);
 		} else {
-			// Fall back to default ADC path (lazy evaluation)
 			cachedVertexAdcCredentialsExists = _existsSync(
 				_join(_homedir(), ".config", "gcloud", "application_default_credentials.json"),
 			);
@@ -167,8 +164,6 @@ export function getEnvApiKey(provider: string): string | undefined {
 		return process.env[envKeys[0]] || getProcEnv(envKeys[0]);
 	}
 
-	// Vertex AI supports either an explicit API key or Application Default Credentials.
-	// Auth is configured via `gcloud auth application-default login`.
 	if (provider === "google-vertex") {
 		const hasCredentials = hasVertexAdcCredentials();
 		const hasProject = !!(
@@ -213,7 +208,6 @@ export function getEnvApiKey(provider: string): string | undefined {
 	return undefined;
 }
 
-// PRIME_TEAM_ID env var, falling back to team_id in ~/.prime/config.json.
 export function getPrimeTeamId(): string | undefined {
 	const fromEnv = process.env.PRIME_TEAM_ID || getProcEnv("PRIME_TEAM_ID");
 	if (fromEnv?.trim()) return fromEnv.trim();
@@ -228,7 +222,7 @@ export function getPrimeTeamId(): string | undefined {
 			if (typeof teamId === "string" && teamId.trim()) return teamId.trim();
 		}
 	} catch {
-		// Unreadable/malformed config.json: behave as if no team is configured.
+		// Treat unreadable or malformed config as no configured team.
 	}
 	return undefined;
 }

@@ -16,7 +16,7 @@ function bundledGoalSkill(): PythonSkillRuntimeInfo {
 	};
 }
 
-describe("goal skill over the kernel host bridge", () => {
+describe("goal skill over the kernel host bridge", { tags: ["kernel-heavy"] }, () => {
 	let tempDir: string;
 	let provisioner: IpythonKernelProvisioner | undefined;
 
@@ -113,7 +113,6 @@ except RuntimeError as error:
 			'RuntimeError: host request type "goal.get" is not available in this session',
 		);
 
-		// A "type" key smuggled into the payload must not reroute the request.
 		const reroute = await manager.execute(`
 import rlm as _rlm
 try:
@@ -129,16 +128,11 @@ except RuntimeError as error:
 		provisioner = new IpythonKernelProvisioner(tempDir, {
 			pythonSkills: [bundledGoalSkill()],
 			hostHandlers: {
-				"goal.get": async () => ({ goal: null, remaining_tokens: null, completion_budget_report: null }),
+				"goal.get": async () => ({ status: "partial" }),
 			},
 		});
 
 		const manager = await provisioner.ensure();
-		type CommSender = { sendCommMessage: (commId: string, data: Record<string, unknown>) => Promise<void> };
-		const kernel = manager as unknown as CommSender;
-		const originalSend = kernel.sendCommMessage.bind(manager);
-		kernel.sendCommMessage = (commId, _data) => originalSend(commId, { status: "partial" });
-
 		const result = await manager.execute(`
 try:
     await goal.get()

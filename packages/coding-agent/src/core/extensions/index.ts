@@ -4,7 +4,6 @@
 
 export type { SlashCommandInfo, SlashCommandSource } from "../slash-commands.js";
 export type { SourceInfo } from "../source-info.js";
-// Built-in extensions
 export {
 	createHerdrAgentStateExtension,
 	hasFileBasedHerdrIntegration,
@@ -43,14 +42,11 @@ export type {
 	AfterProviderResponseEvent,
 	AgentEndEvent,
 	AgentStartEvent,
-	// Re-exports
 	AgentToolResult,
 	AgentToolUpdateCallback,
 	AppendEntryHandler,
-	// App keybindings (for custom editors)
 	AppKeybinding,
 	AutocompleteProviderFactory,
-	// Events - Tool (ToolCallEvent types)
 	BashToolCallEvent,
 	BashToolResultEvent,
 	BeforeAgentStartEvent,
@@ -58,11 +54,8 @@ export type {
 	BeforeProviderRequestEvent,
 	BeforeProviderRequestEventResult,
 	BuildSystemPromptOptions,
-	// Context
 	CompactOptions,
-	// Events - Agent
 	ContextEvent,
-	// Event Results
 	ContextEventResult,
 	ContextUsage,
 	CustomToolCallEvent,
@@ -74,13 +67,11 @@ export type {
 	ExecResult,
 	Extension,
 	ExtensionActions,
-	// API
 	ExtensionAPI,
 	ExtensionCommandContext,
 	ExtensionCommandContextActions,
 	ExtensionContext,
 	ExtensionContextActions,
-	// Errors
 	ExtensionError,
 	ExtensionEvent,
 	ExtensionFactory,
@@ -117,7 +108,6 @@ export type {
 	GetAllToolsHandler,
 	GetCommandsHandler,
 	GetThinkingLevelHandler,
-	// Events - Input
 	InputEvent,
 	InputEventResult,
 	InputSource,
@@ -125,26 +115,22 @@ export type {
 	IpythonToolResultEvent,
 	KeybindingsManager,
 	LoadExtensionsResult,
-	// Events - Message
 	MessageEndEvent,
-	// Message Rendering
 	MessageRenderer,
 	MessageRenderOptions,
 	MessageStartEvent,
 	MessageUpdateEvent,
 	ModelSelectEvent,
 	ModelSelectSource,
-	// Provider Registration
 	ProviderConfig,
 	ProviderModelConfig,
 	RefineCompleteEvent,
-	// Commands
+	RefinePreparation,
 	RegisteredCommand,
 	RegisteredTool,
 	ReplacedSessionContext,
 	ReplayBuiltInToolName,
 	ResolvedCommand,
-	// Events - Resources
 	ResourcesDiscoverEvent,
 	ResourcesDiscoverResult,
 	SendMessageHandler,
@@ -153,6 +139,8 @@ export type {
 	SessionBeforeCompactResult,
 	SessionBeforeForkEvent,
 	SessionBeforeForkResult,
+	SessionBeforeRefineEvent,
+	SessionBeforeRefineResult,
 	SessionBeforeSwitchEvent,
 	SessionBeforeSwitchResult,
 	SessionBeforeTreeEvent,
@@ -160,7 +148,6 @@ export type {
 	SessionCompactEvent,
 	SessionEvent,
 	SessionShutdownEvent,
-	// Events - Session
 	SessionStartEvent,
 	SessionTreeEvent,
 	SetActiveToolsHandler,
@@ -168,14 +155,10 @@ export type {
 	SetModelHandler,
 	SetThinkingLevelHandler,
 	TerminalInputHandler,
-	// Events - Tool
 	ToolCallEvent,
 	ToolCallEventResult,
-	// Tools
 	ToolDefinition,
-	// Events - Tool Execution
 	ToolExecutionEndEvent,
-	// Tool execution mode
 	ToolExecutionMode,
 	ToolExecutionStartEvent,
 	ToolExecutionUpdateEvent,
@@ -186,13 +169,11 @@ export type {
 	TreePreparation,
 	TurnEndEvent,
 	TurnStartEvent,
-	// Events - User Bash
 	UserBashEvent,
 	UserBashEventResult,
 	WidgetPlacement,
 	WorkingIndicatorOptions,
 } from "./types.js";
-// Type guards
 export {
 	defineTool,
 	isBashToolResult,

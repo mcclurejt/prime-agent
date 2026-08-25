@@ -62,7 +62,7 @@ import {
 	type DaemonUpdateRestartSession,
 	isUnknownDaemonCommandError,
 } from "./modes/daemon/daemon-protocol.js";
-import { defaultDaemonSocketPath } from "./modes/daemon/daemon-socket.js";
+import { defaultDaemonSocketPath, normalizeSocketPath } from "./modes/daemon/daemon-socket.js";
 import {
 	acquireDaemonShutdownAdmission,
 	persistDaemonStartupFenceFromOwner,
@@ -294,7 +294,7 @@ export function parsePackageCommand(args: string[]): PackageCommandOptions | und
 				conflictingOptions = conflictingOptions ?? "--daemon-socket can only be provided once";
 				index++;
 			} else {
-				daemonSocketPath = value;
+				daemonSocketPath = normalizeSocketPath(value);
 				index++;
 			}
 			continue;
@@ -427,7 +427,9 @@ function updateTargetIncludesExtensions(target: UpdateTarget): boolean {
 }
 
 export function resolveUpdateDaemonSocketPath(explicitSocketPath?: string): string {
-	return explicitSocketPath ?? process.env[DAEMON_WORKER_SUPERVISOR_SOCKET_ENV] ?? defaultDaemonSocketPath();
+	return normalizeSocketPath(
+		explicitSocketPath ?? process.env[DAEMON_WORKER_SUPERVISOR_SOCKET_ENV] ?? defaultDaemonSocketPath(),
+	);
 }
 
 function reportDaemonUpdateRestartStatus(status: DaemonUpdateRestartStatus): void {
@@ -1211,10 +1213,6 @@ function processIdentityFromDaemonHello(
 	};
 }
 
-function normalizedSocketPath(socketPath: string): string {
-	return process.platform === "win32" ? socketPath.toLowerCase() : resolve(socketPath);
-}
-
 function validateReplacementDaemon(
 	socketPath: string,
 	hello: DaemonHello,
@@ -1232,7 +1230,7 @@ function validateReplacementDaemon(
 	}
 	if (
 		!hello.supervisorSocketPath ||
-		normalizedSocketPath(hello.supervisorSocketPath) !== normalizedSocketPath(socketPath)
+		normalizeSocketPath(hello.supervisorSocketPath) !== normalizeSocketPath(socketPath)
 	) {
 		throw new Error(`Replacement daemon identity does not match ${socketPath}`);
 	}

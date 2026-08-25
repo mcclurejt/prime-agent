@@ -125,7 +125,9 @@ const defaultDependencies: RemoteQuestionnaireManagerDependencies = {
 			} catch {
 				try {
 					process.kill(pid, signal);
-				} catch {}
+				} catch {
+					// Best-effort cleanup: the process may already have exited.
+				}
 			}
 		},
 		waitForExit: async (pid, timeoutMs) => {
@@ -633,23 +635,33 @@ export class RemoteQuestionnaireManager {
 			try {
 				try {
 					this.dependencies.processOps.signalProcessGroupOrProcess(child.pid, "SIGTERM");
-				} catch {}
+				} catch {
+					// Continue to the bounded wait and forced termination fallback.
+				}
 				let exited = false;
 				try {
 					exited = await this.dependencies.processOps.waitForExit(child.pid, 1000);
-				} catch {}
+				} catch {
+					// Treat an unavailable exit probe as still running and escalate.
+				}
 				if (!exited) {
 					try {
 						this.dependencies.processOps.signalProcessGroupOrProcess(child.pid, "SIGKILL");
-					} catch {}
+					} catch {
+						// Best-effort termination must not prevent orphan-journal settlement.
+					}
 					try {
 						await this.dependencies.processOps.waitForExit(child.pid, 1000);
-					} catch {}
+					} catch {
+						// A failed final exit probe must not extend bounded disposal.
+					}
 				}
 			} finally {
 				try {
 					if (identity) this.dependencies.settleOrphan(this.dependencies.journalPath(), child.pid, identity);
-				} catch {}
+				} catch {
+					// Journal cleanup failure must not block manager disposal.
+				}
 			}
 		}
 		if (this.server && closeServer) {
@@ -662,7 +674,9 @@ export class RemoteQuestionnaireManager {
 			} finally {
 				try {
 					await server.close();
-				} catch {}
+				} catch {
+					// Closing is best-effort after revoke and cannot block manager disposal.
+				}
 			}
 		} else if (!child && closeServer) this.server = undefined;
 	}

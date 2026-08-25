@@ -1,7 +1,3 @@
-/**
- * Tests for AgentSession concurrent prompt guard.
- */
-
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,7 +11,7 @@ import {
 	type TextContent,
 } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { ModelRegistry } from "../src/core/model-registry.js";
@@ -24,7 +20,6 @@ import { SettingsManager } from "../src/core/settings-manager.js";
 import type { BuildSystemPromptOptions } from "../src/core/system-prompt.js";
 import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.js";
 
-// Mock stream that mimics AssistantMessageEventStream
 class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
 	constructor() {
 		super(
@@ -82,7 +77,6 @@ describe("AgentSession concurrent prompt guard", () => {
 		const model = getModel("anthropic", "claude-sonnet-4-5")!;
 		let abortSignal: AbortSignal | undefined;
 
-		// Use a stream function that responds to abort
 		const agent = new Agent({
 			getApiKey: () => "test-key",
 			initialState: {
@@ -112,7 +106,6 @@ describe("AgentSession concurrent prompt guard", () => {
 		const settingsManager = SettingsManager.create(tempDir, tempDir);
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 		const modelRegistry = ModelRegistry.create(authStorage, tempDir);
-		// Set a runtime API key so validation passes
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
 
 		session = new AgentSession({
@@ -127,40 +120,95 @@ describe("AgentSession concurrent prompt guard", () => {
 		return session;
 	}
 
+	it("awaits asynchronous dispose callbacks during graceful disposal", async () => {
+		createSession();
+		let releaseCallback: () => void = () => {};
+		const callbackGate = new Promise<void>((resolve) => {
+			releaseCallback = resolve;
+		});
+		let callbackStarted = false;
+		session.registerDisposeCallback(async () => {
+			callbackStarted = true;
+			await callbackGate;
+		});
+
+		let disposed = false;
+		const disposal = session.disposeAsync().then(() => {
+			disposed = true;
+		});
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		expect(callbackStarted).toBe(true);
+		expect(disposed).toBe(false);
+		releaseCallback();
+		await disposal;
+		expect(disposed).toBe(true);
+	});
+
+	it("awaits dispose callbacks when synchronous disposal wins during the refinement drain", async () => {
+		createSession();
+		let releaseDrain: () => void = () => {};
+		const drainGate = new Promise<void>((resolve) => {
+			releaseDrain = resolve;
+		});
+		let drainStarted = false;
+		const internals = session as unknown as {
+			_drainPendingRefinementForDisposal: () => Promise<void>;
+		};
+		vi.spyOn(internals, "_drainPendingRefinementForDisposal").mockImplementation(async () => {
+			drainStarted = true;
+			await drainGate;
+		});
+
+		let releaseCallback: () => void = () => {};
+		const callbackGate = new Promise<void>((resolve) => {
+			releaseCallback = resolve;
+		});
+		let callbackStarted = false;
+		session.registerDisposeCallback(async () => {
+			callbackStarted = true;
+			await callbackGate;
+		});
+
+		let disposed = false;
+		const disposal = session.disposeAsync().then(() => {
+			disposed = true;
+		});
+		await vi.waitFor(() => expect(drainStarted).toBe(true));
+		session.dispose();
+		expect(callbackStarted).toBe(true);
+
+		releaseDrain();
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		expect(disposed).toBe(false);
+		releaseCallback();
+		await disposal;
+		expect(disposed).toBe(true);
+	});
+
 	it("should throw when prompt() called while streaming", async () => {
 		createSession();
 
-		// Start first prompt (don't await, it will block until abort)
 		const firstPrompt = session.prompt("First message");
-
-		// Wait a tick for isStreaming to be set
 		await new Promise((resolve) => setTimeout(resolve, 10));
-
-		// Verify we're streaming
 		expect(session.isStreaming).toBe(true);
 
-		// Second prompt should reject
 		await expect(session.prompt("Second message")).rejects.toThrow(
 			"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
 		);
 
-		// Cleanup
 		await session.abort();
-		await firstPrompt.catch(() => {}); // Ignore abort error
+		await firstPrompt.catch(() => {});
 	});
 
 	it("should allow steer() while streaming", async () => {
 		createSession();
 
-		// Start first prompt
 		const firstPrompt = session.prompt("First message");
 		await new Promise((resolve) => setTimeout(resolve, 10));
 
-		// steer should work while streaming
 		expect(() => session.steer("Steering message")).not.toThrow();
 		expect(session.queuedActionCount).toBe(1);
 
-		// Cleanup
 		await session.abort();
 		await firstPrompt.catch(() => {});
 	});
@@ -168,15 +216,12 @@ describe("AgentSession concurrent prompt guard", () => {
 	it("should allow followUp() while streaming", async () => {
 		createSession();
 
-		// Start first prompt
 		const firstPrompt = session.prompt("First message");
 		await new Promise((resolve) => setTimeout(resolve, 10));
 
-		// followUp should work while streaming
 		expect(() => session.followUp("Follow-up message")).not.toThrow();
 		expect(session.queuedActionCount).toBe(1);
 
-		// Cleanup
 		await session.abort();
 		await firstPrompt.catch(() => {});
 	});
@@ -423,7 +468,6 @@ describe("AgentSession concurrent prompt guard", () => {
 	});
 
 	it("should allow prompt() after previous completes", async () => {
-		// Create session with a stream that completes immediately
 		const model = getModel("anthropic", "claude-sonnet-4-5")!;
 		const agent = new Agent({
 			getApiKey: () => "test-key",
@@ -457,13 +501,8 @@ describe("AgentSession concurrent prompt guard", () => {
 			resourceLoader: createTestResourceLoader(),
 		});
 
-		// First prompt completes
 		await session.prompt("First message");
-
-		// Should not be streaming anymore
 		expect(session.isStreaming).toBe(false);
-
-		// Second prompt should work
 		await expect(session.prompt("Second message")).resolves.not.toThrow();
 	});
 

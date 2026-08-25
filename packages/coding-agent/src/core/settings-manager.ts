@@ -1,5 +1,5 @@
 import type { ServiceTier, Transport } from "@earendil-works/pi-ai";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, isAbsolute, join } from "path";
 import lockfile from "proper-lockfile";
@@ -48,7 +48,7 @@ export interface TerminalSettings {
 	clearOnShrink?: boolean; // default: false (clear empty rows when content shrinks)
 	showTerminalProgress?: boolean; // default: false (OSC 9;4 terminal progress indicators)
 	fullscreen?: boolean; // default: true (alternate-screen rendering with scrollable transcript)
-	fullscreenMouse?: boolean; // default: true (wheel scrolling in fullscreen; disable if it breaks selection)
+	fullscreenMouse?: boolean; // default: true
 }
 
 export interface BedrockSettings {
@@ -116,15 +116,21 @@ export type McpServerConfig =
 			enabled?: boolean;
 			enabledTools?: string[];
 			disabledTools?: string[];
+			startupTimeoutMs?: number;
+			callTimeoutMs?: number;
 	  }
 	| {
 			type: "stdio";
 			command: string;
 			args?: string[];
-			env?: Record<string, string>;
+			cwd?: string;
+			/** Environment variables resolved from the kernel environment. */
+			env?: Record<string, { env: string }>;
 			enabled?: boolean;
 			enabledTools?: string[];
 			disabledTools?: string[];
+			startupTimeoutMs?: number;
+			callTimeoutMs?: number;
 	  };
 
 export interface SessionSummarySettings {
@@ -160,6 +166,7 @@ export interface Settings {
 	compaction?: CompactionSettings;
 	autoRefine?: AutoRefineSettings;
 	agentTraces?: AgentTracesSettings;
+	telemetry?: TelemetrySettings;
 	branchSummary?: BranchSummarySettings;
 	retry?: RetrySettings;
 	bedrock?: BedrockSettings;
@@ -194,6 +201,11 @@ export interface AgentTracesSettings {
 	enabled?: boolean;
 }
 
+export interface TelemetrySettings {
+	enabled?: boolean;
+	noticeShown?: boolean;
+}
+
 /** Deep merge settings: project/overrides take precedence, nested objects merge recursively */
 function deepMergeSettings(base: Settings, overrides: Settings): Settings {
 	const result: Settings = { ...base };
@@ -205,8 +217,6 @@ function deepMergeSettings(base: Settings, overrides: Settings): Settings {
 		if (overrideValue === undefined) {
 			continue;
 		}
-
-		// For nested objects, merge recursively
 		if (
 			typeof overrideValue === "object" &&
 			overrideValue !== null &&
@@ -217,7 +227,6 @@ function deepMergeSettings(base: Settings, overrides: Settings): Settings {
 		) {
 			(result as Record<string, unknown>)[key] = { ...baseValue, ...overrideValue };
 		} else {
-			// For primitives and arrays, override value wins
 			(result as Record<string, unknown>)[key] = overrideValue;
 		}
 	}
@@ -278,7 +287,6 @@ export class FileSettingsStorage implements SettingsStorage {
 
 		let release: (() => void) | undefined;
 		try {
-			// Only create directory and lock if file exists or we need to write
 			const fileExists = existsSync(path);
 			if (fileExists) {
 				release = this.acquireLockSyncWithRetry(path);
@@ -286,14 +294,19 @@ export class FileSettingsStorage implements SettingsStorage {
 			const current = fileExists ? readFileSync(path, "utf-8") : undefined;
 			const next = fn(current);
 			if (next !== undefined) {
-				// Only create directory when we actually need to write
 				if (!existsSync(dir)) {
 					mkdirSync(dir, { recursive: true });
 				}
 				if (!release) {
 					release = this.acquireLockSyncWithRetry(path);
 				}
-				writeFileSync(path, next, "utf-8");
+				const temporaryPath = `${path}.${process.pid}.${Date.now()}.tmp`;
+				try {
+					writeFileSync(temporaryPath, next, { encoding: "utf-8", mode: 0o600 });
+					renameSync(temporaryPath, path);
+				} finally {
+					if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
+				}
 			}
 		} finally {
 			if (release) {
@@ -325,6 +338,7 @@ export class SettingsManager {
 	private globalSettings: Settings;
 	private projectSettings: Settings;
 	private settings: Settings;
+	private runtimeOverrides: Settings = {};
 	private modifiedFields = new Set<keyof Settings>(); // Track global fields modified during session
 	private modifiedNestedFields = new Map<keyof Settings, Set<string>>(); // Track global nested field modifications
 	private modifiedProjectFields = new Set<keyof Settings>(); // Track project fields modified during session
@@ -414,19 +428,14 @@ export class SettingsManager {
 
 	/** Migrate old settings format to new format */
 	private static migrateSettings(settings: Record<string, unknown>): Settings {
-		// Migrate queueMode -> steeringMode
 		if ("queueMode" in settings && !("steeringMode" in settings)) {
 			settings.steeringMode = settings.queueMode;
 			delete settings.queueMode;
 		}
-
-		// Migrate legacy websockets boolean -> transport enum
 		if (!("transport" in settings) && typeof settings.websockets === "boolean") {
 			settings.transport = settings.websockets ? "websocket" : "sse";
 			delete settings.websockets;
 		}
-
-		// Migrate old skills object format to new array format
 		if (
 			"skills" in settings &&
 			typeof settings.skills === "object" &&
@@ -446,8 +455,6 @@ export class SettingsManager {
 				delete settings.skills;
 			}
 		}
-
-		// Migrate retry.maxDelayMs -> retry.provider.maxRetryDelayMs
 		if (
 			"retry" in settings &&
 			typeof settings.retry === "object" &&
@@ -469,6 +476,15 @@ export class SettingsManager {
 				};
 			}
 			delete retrySettings.maxDelayMs;
+		}
+
+		if (typeof settings.telemetry === "boolean") {
+			settings.telemetry = { enabled: settings.telemetry };
+		} else if (
+			settings.telemetry !== undefined &&
+			(typeof settings.telemetry !== "object" || settings.telemetry === null || Array.isArray(settings.telemetry))
+		) {
+			delete settings.telemetry;
 		}
 
 		return settings as Settings;
@@ -512,6 +528,7 @@ export class SettingsManager {
 
 	/** Apply additional overrides on top of current settings */
 	applyOverrides(overrides: Partial<Settings>): void {
+		this.runtimeOverrides = deepMergeSettings(this.runtimeOverrides, overrides);
 		this.settings = deepMergeSettings(this.settings, overrides);
 	}
 
@@ -880,6 +897,37 @@ export class SettingsManager {
 		this.save();
 	}
 
+	getTelemetryEnabled(): boolean {
+		const globalEnabled = this.globalSettings.telemetry?.enabled ?? true;
+		const projectEnabled = this.projectSettings.telemetry?.enabled ?? true;
+		const runtimeEnabled = this.runtimeOverrides.telemetry?.enabled ?? true;
+		return globalEnabled && projectEnabled && runtimeEnabled;
+	}
+
+	private getOrCreateGlobalTelemetrySettings(): TelemetrySettings {
+		const telemetry = this.globalSettings.telemetry;
+		if (typeof telemetry !== "object" || telemetry === null || Array.isArray(telemetry)) {
+			this.globalSettings.telemetry = {};
+		}
+		return this.globalSettings.telemetry!;
+	}
+
+	setTelemetryEnabled(enabled: boolean): void {
+		this.getOrCreateGlobalTelemetrySettings().enabled = enabled;
+		this.markModified("telemetry", "enabled");
+		this.save();
+	}
+
+	getTelemetryNoticeShown(): boolean {
+		return this.runtimeOverrides.telemetry?.noticeShown ?? this.globalSettings.telemetry?.noticeShown ?? false;
+	}
+
+	setTelemetryNoticeShown(shown: boolean): void {
+		this.getOrCreateGlobalTelemetrySettings().noticeShown = shown;
+		this.markModified("telemetry", "noticeShown");
+		this.save();
+	}
+
 	getCompactionReserveTokens(): number {
 		return this.settings.compaction?.reserveTokens ?? 16384;
 	}
@@ -1153,7 +1201,6 @@ export class SettingsManager {
 	}
 
 	getClearOnShrink(): boolean {
-		// Settings takes precedence, then env var, then default false
 		if (this.settings.terminal?.clearOnShrink !== undefined) {
 			return this.settings.terminal.clearOnShrink;
 		}
@@ -1170,7 +1217,6 @@ export class SettingsManager {
 	}
 
 	getFullscreen(): boolean {
-		// Env var overrides the setting (both directions) for one-off runs
 		if (process.env.PI_FULLSCREEN !== undefined) {
 			return process.env.PI_FULLSCREEN === "1";
 		}
@@ -1246,8 +1292,28 @@ export class SettingsManager {
 		return this.settings.enabledModels;
 	}
 
-	getMcpServers(): Record<string, McpServerConfig> | undefined {
-		return this.settings.mcpServers;
+	/** MCP execution is intentionally restricted to user/global settings. */
+	getGlobalMcpServers(): Record<string, McpServerConfig> | undefined {
+		return structuredClone(this.globalSettings.mcpServers);
+	}
+
+	setGlobalMcpServer(name: string, config: McpServerConfig, force = false): void {
+		if (this.globalSettings.mcpServers?.[name] && !force) {
+			throw new Error(`MCP server "${name}" already exists. Use --force to replace it.`);
+		}
+		this.globalSettings.mcpServers = { ...(this.globalSettings.mcpServers ?? {}), [name]: structuredClone(config) };
+		this.markModified("mcpServers", name);
+		this.save();
+	}
+
+	removeGlobalMcpServer(name: string): boolean {
+		if (!this.globalSettings.mcpServers?.[name]) return false;
+		const servers = { ...this.globalSettings.mcpServers };
+		delete servers[name];
+		this.globalSettings.mcpServers = servers;
+		this.markModified("mcpServers", name);
+		this.save();
+		return true;
 	}
 
 	setEnabledModels(patterns: string[] | undefined): void {

@@ -14,6 +14,7 @@ import type {
 	AgentHeartbeatUpdateAction,
 } from "../../core/cron-jobs.js";
 import type { ExtensionUIContext } from "../../core/extensions/types.js";
+import type { AcpMcpServerConfig } from "../../core/mcp/acp-mcp-types.js";
 import type { RefinementResult } from "../../core/refinement/index.js";
 import { type DeleteSessionFileResult, deleteSessionFile } from "../../core/session-file-actions.js";
 import { SessionManager } from "../../core/session-manager.js";
@@ -35,6 +36,7 @@ import type {
 	AgentConnectionExecuteBashOptions,
 	AgentConnectionExtensionUiResponse,
 	AgentConnectionForkOptions,
+	AgentConnectionHeadlessCompletionOptions,
 	AgentConnectionHeartbeat,
 	AgentConnectionModel,
 	AgentConnectionModelCatalog,
@@ -43,14 +45,19 @@ import type {
 	AgentConnectionNavigateTreeResult,
 	AgentConnectionNewSessionOptions,
 	AgentConnectionPromptOptions,
+	AgentConnectionQueuedMessageLane,
+	AgentConnectionQueuedMessageMutation,
+	AgentConnectionQueuedMessageMutationStatus,
 	AgentConnectionQueueMode,
 	AgentConnectionQueueState,
 	AgentConnectionResourceSnapshot,
+	AgentConnectionRlmChildAgentSnapshot,
 	AgentConnectionSavedSessionInfo,
 	AgentConnectionSavedSessionScope,
 	AgentConnectionScopedModel,
 	AgentConnectionSessionContext,
 	AgentConnectionSessionHeader,
+	AgentConnectionSessionInputPause,
 	AgentConnectionSessionListCallbacks,
 	AgentConnectionSessionTreeNode,
 	AgentConnectionSessionWatcher,
@@ -72,6 +79,7 @@ export class InProcessAgentConnection implements AgentConnection {
 	private readonly listeners = new Set<AgentConnectionEventListener>();
 	private readonly beforeSessionInvalidateListeners = new Set<AgentConnectionBeforeSessionInvalidateListener>();
 	private readonly sideQuestionRuns = new Map<string, SideQuestionRun>();
+	private readonly sessionInputPauses = new Map<string, AgentConnectionSessionInputPause>();
 	private headlessExtensionOptions: InProcessHeadlessExtensionOptions | undefined;
 	private unsubscribeSessionEvents: (() => void) | undefined;
 
@@ -103,6 +111,18 @@ export class InProcessAgentConnection implements AgentConnection {
 		await this.bindCurrentSessionExtensions();
 	}
 
+	supportsAcpMcpServers(): boolean {
+		return true;
+	}
+
+	async replaceAcpMcpServers(servers: readonly AcpMcpServerConfig[], ownerId: string): Promise<void> {
+		this.runtimeHost.session.replaceAcpMcpServers(servers, ownerId);
+	}
+
+	async releaseAcpMcpServers(ownerId: string, serverNames: readonly string[]): Promise<void> {
+		await this.runtimeHost.session.releaseAcpMcpServers(ownerId, serverNames);
+	}
+
 	subscribe(listener: AgentConnectionEventListener): () => void {
 		this.listeners.add(listener);
 		return () => {
@@ -123,6 +143,10 @@ export class InProcessAgentConnection implements AgentConnection {
 
 	async getInitialSnapshot(): Promise<AgentConnectionSnapshot> {
 		return createAgentConnectionSnapshot(this.runtimeHost);
+	}
+
+	async getRlmChildSnapshots(): Promise<AgentConnectionRlmChildAgentSnapshot[]> {
+		return this.session.getRlmChildSnapshots();
 	}
 
 	async getMessages(): Promise<AgentMessage[]> {
@@ -188,6 +212,15 @@ export class InProcessAgentConnection implements AgentConnection {
 		};
 	}
 
+	async mutateQueuedMessage(
+		lane: AgentConnectionQueuedMessageLane,
+		index: number,
+		expectedText: string,
+		mutation: AgentConnectionQueuedMessageMutation,
+	): Promise<AgentConnectionQueuedMessageMutationStatus> {
+		return this.session.mutateQueuedMessage(lane, index, expectedText, mutation);
+	}
+
 	async clearQueue(): Promise<AgentConnectionQueueState> {
 		return this.session.clearQueue();
 	}
@@ -196,6 +229,23 @@ export class InProcessAgentConnection implements AgentConnection {
 		const queue = this.session.clearQueue();
 		this.session.requestAbort();
 		return queue;
+	}
+
+	async acquireSessionInputPause(leaseKey: string): Promise<AgentConnectionSessionInputPause> {
+		const existing = this.sessionInputPauses.get(leaseKey);
+		if (existing) return existing;
+		const pause = this.session.acquireSessionInputPause();
+		let released = false;
+		const lease: AgentConnectionSessionInputPause = {
+			release: async () => {
+				if (released) return;
+				pause.release();
+				released = true;
+				if (this.sessionInputPauses.get(leaseKey) === lease) this.sessionInputPauses.delete(leaseKey);
+			},
+		};
+		this.sessionInputPauses.set(leaseKey, lease);
+		return lease;
 	}
 
 	async listCronJobs(_options: { includeInactive?: boolean } = {}): Promise<AgentCronJob[]> {
@@ -379,8 +429,8 @@ export class InProcessAgentConnection implements AgentConnection {
 		await this.session.waitForIdle();
 	}
 
-	async waitForHeadlessCompletion(): Promise<AgentAutonomousStatus> {
-		return waitForHeadlessCompletion(this.session);
+	async waitForHeadlessCompletion(options?: AgentConnectionHeadlessCompletionOptions): Promise<AgentAutonomousStatus> {
+		return waitForHeadlessCompletion(this.session, options);
 	}
 
 	async executeBash(command: string, options?: AgentConnectionExecuteBashOptions): Promise<void> {
@@ -575,6 +625,8 @@ export class InProcessAgentConnection implements AgentConnection {
 
 	async dispose(): Promise<void> {
 		this.abortAllSideQuestions();
+		await Promise.allSettled([...this.sessionInputPauses.values()].map((pause) => pause.release()));
+		this.sessionInputPauses.clear();
 		this.unsubscribeSessionEvents?.();
 		this.unsubscribeSessionEvents = undefined;
 		if (typeof this.runtimeHost.setBeforeSessionInvalidate === "function") {

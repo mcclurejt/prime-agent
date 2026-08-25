@@ -82,7 +82,7 @@ export interface SessionSummary {
 	/** Total worker-owned questionnaire requests queued for this session. */
 	questionnaireQueueDepth?: number;
 	/** Resident session-host process state, populated by the global supervisor. */
-	workerState?: "starting" | "ready" | "recovering" | "failed";
+	workerState?: "starting" | "ready" | "recovering" | "stopping" | "failed";
 	/** Diagnostic process identity; clients must not use this as a stable session identifier. */
 	workerPid?: number;
 }

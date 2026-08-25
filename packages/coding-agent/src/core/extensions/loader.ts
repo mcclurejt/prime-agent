@@ -175,7 +175,6 @@ function createExtensionAPI(
 	eventBus: EventBus,
 ): ExtensionAPI {
 	const api = {
-		// Registration methods - write to extension
 		on(event: string, handler: HandlerFn): void {
 			runtime.assertActive();
 			const list = extension.handlers.get(event) ?? [];
@@ -228,14 +227,12 @@ function createExtensionAPI(
 			extension.messageRenderers.set(customType, renderer as MessageRenderer);
 		},
 
-		// Flag access - checks extension registered it, reads from runtime
 		getFlag(name: string): boolean | string | undefined {
 			runtime.assertActive();
 			if (!extension.flags.has(name)) return undefined;
 			return runtime.flagValues.get(name);
 		},
 
-		// Action methods - delegate to shared runtime
 		sendMessage(message, options): void {
 			runtime.assertActive();
 			runtime.sendMessage(message, options);
@@ -481,7 +478,6 @@ function isExtensionFile(name: string): boolean {
  * Returns resolved paths or null if no entry points found.
  */
 function resolveExtensionEntries(dir: string): string[] | null {
-	// Check for package.json with "pi" field first
 	const packageJsonPath = path.join(dir, "package.json");
 	if (fs.existsSync(packageJsonPath)) {
 		const manifest = readPiManifest(packageJsonPath);
@@ -499,7 +495,6 @@ function resolveExtensionEntries(dir: string): string[] | null {
 		}
 	}
 
-	// Check for index.ts or index.js
 	const indexTs = path.join(dir, "index.ts");
 	const indexJs = path.join(dir, "index.js");
 	if (fs.existsSync(indexTs)) {
@@ -535,13 +530,11 @@ function discoverExtensionsInDir(dir: string): string[] {
 		for (const entry of entries) {
 			const entryPath = path.join(dir, entry.name);
 
-			// 1. Direct files: *.ts or *.js
 			if ((entry.isFile() || entry.isSymbolicLink()) && isExtensionFile(entry.name)) {
 				discovered.push(entryPath);
 				continue;
 			}
 
-			// 2 & 3. Subdirectories
 			if (entry.isDirectory() || entry.isSymbolicLink()) {
 				const entries = resolveExtensionEntries(entryPath);
 				if (entries) {
@@ -578,25 +571,20 @@ export async function discoverAndLoadExtensions(
 		}
 	};
 
-	// 1. Project-local extensions: cwd/${CONFIG_DIR_NAME}/extensions/
 	const localExtDir = path.join(cwd, CONFIG_DIR_NAME, "extensions");
 	addPaths(discoverExtensionsInDir(localExtDir));
 
-	// 2. Global extensions: agentDir/extensions/
 	const globalExtDir = path.join(agentDir, "extensions");
 	addPaths(discoverExtensionsInDir(globalExtDir));
 
-	// 3. Explicitly configured paths
 	for (const p of configuredPaths) {
 		const resolved = resolvePath(p, cwd);
 		if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
-			// Check for package.json with pi manifest or index.ts
 			const entries = resolveExtensionEntries(resolved);
 			if (entries) {
 				addPaths(entries);
 				continue;
 			}
-			// No explicit entries - discover individual files in directory
 			addPaths(discoverExtensionsInDir(resolved));
 			continue;
 		}

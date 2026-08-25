@@ -10,7 +10,6 @@ import { convertToPng } from "../../../utils/image-convert.js";
 import type { AgentConnectionToolDefinition } from "../../agent-connection/index.js";
 import { type Theme, theme } from "../theme/theme.js";
 import { getWorkingPulseFrame, workingIconFrame } from "../theme/working-icon.js";
-import { FileChangeSummaryComponent, getToolFileChanges } from "./edit-summary.js";
 import { getIpythonCodeFromArgs, IPythonCellComponent } from "./ipython-cell.js";
 import { ToolPanel } from "./tool-panel.js";
 
@@ -84,6 +83,8 @@ export class ToolExecutionComponent extends Container {
 	private toolCallId: string;
 	private args: any;
 	private expanded = false;
+	private agentMessagesExpanded = false;
+	private editDiffsExpanded = false;
 	private showExpandHint = true;
 	private showImages: boolean;
 	private allowInlineImages: boolean;
@@ -189,6 +190,13 @@ export class ToolExecutionComponent extends Container {
 		return this.showImages && this.allowInlineImages;
 	}
 
+	private isBuiltInEditTool(): boolean {
+		return (
+			this.toolName === "edit" &&
+			(this.toolDefinition === undefined || this.toolDefinition.replayBuiltInToolName === "edit")
+		);
+	}
+
 	private getRenderContext(lastComponent: Component | undefined): ToolRenderContext {
 		return {
 			args: this.args,
@@ -203,7 +211,7 @@ export class ToolExecutionComponent extends Container {
 			executionStarted: this.executionStarted,
 			argsComplete: this.argsComplete,
 			isPartial: this.isPartial,
-			expanded: this.expanded,
+			expanded: this.isBuiltInEditTool() ? this.editDiffsExpanded : this.expanded,
 			showExpandHint: this.showExpandHint,
 			showImages: this.showImages,
 			includeImageDimensions: this.includeImageDimensions,
@@ -329,6 +337,22 @@ export class ToolExecutionComponent extends Container {
 		this.updateDisplay();
 	}
 
+	setAgentMessagesExpanded(expanded: boolean): void {
+		if (this.agentMessagesExpanded === expanded) {
+			return;
+		}
+		this.agentMessagesExpanded = expanded;
+		this.updateDisplay();
+	}
+
+	setEditDiffsExpanded(expanded: boolean): void {
+		if (this.editDiffsExpanded === expanded) {
+			return;
+		}
+		this.editDiffsExpanded = expanded;
+		this.updateDisplay();
+	}
+
 	setShowExpandHint(show: boolean): void {
 		if (this.showExpandHint === show) {
 			return;
@@ -405,6 +429,8 @@ export class ToolExecutionComponent extends Container {
 					isPartial: this.isPartial,
 					isError: this.result?.isError ?? false,
 					expanded: this.expanded,
+					agentMessagesExpanded: this.agentMessagesExpanded,
+					editDiffsExpanded: this.editDiffsExpanded,
 					executionStarted: this.executionStarted,
 					argsComplete: this.argsComplete,
 					showExpandHint: this.showExpandHint,
@@ -476,18 +502,6 @@ export class ToolExecutionComponent extends Container {
 				);
 				this.imageComponents.push(imageComponent);
 				this.addChild(imageComponent);
-			}
-		}
-
-		const isBuiltInEdit =
-			this.toolName === "edit" &&
-			(this.toolDefinition === undefined || this.toolDefinition.replayBuiltInToolName === "edit");
-		if (!this.expanded && this.result && (isBuiltInEdit || this.shouldUseIpythonRenderer())) {
-			const changes = getToolFileChanges(this.toolName, this.args, this.result, this.cwd);
-			if (changes.length > 0) {
-				const container = this.usesSelfRenderShell() ? this.selfRenderContainer : this.contentPanel;
-				container.addChild(new FileChangeSummaryComponent(changes, this.cwd));
-				hasContent = true;
 			}
 		}
 

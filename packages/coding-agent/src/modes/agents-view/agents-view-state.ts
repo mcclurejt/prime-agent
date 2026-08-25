@@ -80,6 +80,8 @@ export interface AgentsViewRow {
 	parentIdentity?: string;
 	/** True when this row's subagents carry spawn code that can be revealed. */
 	hasSpawnCode?: boolean;
+	/** True when this subagent-summary row's list is expanded. */
+	expanded?: boolean;
 	/** One source line of the spawn cell, for "subagent-code" rows. */
 	code?: string;
 	/** Merged durable/live source data for unified rows. */
@@ -116,7 +118,7 @@ export function shouldShowAgentsViewSession(summary: SessionSummary, manuallyIna
 	if (manuallyInactive) {
 		return false;
 	}
-	return summary.lifecycle === "live";
+	return summary.lifecycle === "live" && (summary.workerState === undefined || summary.workerState === "ready");
 }
 
 export function sectionTitle(section: AgentsViewSection): string {
@@ -252,6 +254,7 @@ export function summaryForUnifiedRecord(record: UnifiedSessionRecord): SessionSu
 			rlmDepth: record.daemon.rlmDepth ?? saved.rlmDepth,
 			created: record.daemon.created ?? saved.created.toISOString(),
 			modified: record.daemon.modified ?? saved.modified.toISOString(),
+			lastActivityAt: record.daemon.lastActivityAt ?? saved.modified.toISOString(),
 		};
 	}
 	const saved = record.saved;
@@ -282,6 +285,7 @@ export function summaryForUnifiedRecord(record: UnifiedSessionRecord): SessionSu
 		sessionActions: { queuedCount: 0, steering: [], followUps: [] },
 		created: saved.created.toISOString(),
 		modified: saved.modified.toISOString(),
+		lastActivityAt: saved.modified.toISOString(),
 		firstMessage: saved.firstMessage,
 		summary: saved.agentStatus?.summary,
 		taskState: saved.agentStatus?.taskState,
@@ -440,6 +444,24 @@ export function buildUnifiedSessionIndex(records: readonly UnifiedSessionRecord[
 		childrenByParent.set(parent, children);
 	}
 	return { byKey, childrenByParent };
+}
+
+/**
+ * Row identities flip when a session gains a sessionFile (active→persisted) or
+ * is re-attached; the old identity survives as an alias. Rewrite stale entries
+ * in a persisted identity set to the current record identity. Entries with no
+ * alias match are kept: their record may not have streamed in yet.
+ */
+export function migrateAgentsViewIdentitySet(
+	identities: Set<string>,
+	byKey: ReadonlyMap<string, UnifiedSessionRecord>,
+): void {
+	for (const identity of [...identities]) {
+		const record = byKey.get(identity);
+		if (!record || record.identity === identity) continue;
+		identities.delete(identity);
+		identities.add(record.identity);
+	}
 }
 
 function findScopeRecord(
@@ -753,7 +775,9 @@ export function buildAgentsViewRows(
 					}
 				}
 			} else {
-				flattened.push(createSubagentSummaryRow(needsInputRow, ordinaryChildren, depth + 1, childHasSpawnCode));
+				flattened.push(
+					createSubagentSummaryRow(needsInputRow, ordinaryChildren, depth + 1, childHasSpawnCode, false),
+				);
 			}
 			return;
 		}
@@ -762,26 +786,23 @@ export function buildAgentsViewRows(
 		const ordinaryChildren = children.filter(
 			(child) => child.section !== "needs-input" || hasOrdinaryDescendant(child),
 		);
-		if (ordinaryChildren.length === 0) {
-			return;
-		}
+		if (ordinaryChildren.length === 0) return;
 		const childHasSpawnCode = ordinaryChildren.some((child) => hasSpawnCode(child.summary));
-		if (expandedSubagentParents.has(row.identity)) {
-			const showProgram = programShownParents.has(row.identity);
-			const groups = groupChildrenBySpawnCode(ordinaryChildren.sort(compareAgentsViewRows));
-			for (const [groupIndex, group] of groups.entries()) {
-				if (showProgram && group.spawnCode) {
-					for (const codeRow of buildSpawnCodeRows(row, group.spawnCode, depth + 1, groupIndex)) {
-						flattened.push(codeRow);
-					}
-				}
-				for (const child of group.children) {
-					child.parentIdentity = row.identity;
-					emit(child, depth + 1);
+		const expanded = expandedSubagentParents.has(row.identity);
+		flattened.push(createSubagentSummaryRow(row, ordinaryChildren, depth + 1, childHasSpawnCode, expanded));
+		if (!expanded) return;
+		const showProgram = programShownParents.has(row.identity);
+		const groups = groupChildrenBySpawnCode(ordinaryChildren.sort(compareAgentsViewRows));
+		for (const [groupIndex, group] of groups.entries()) {
+			if (showProgram && group.spawnCode) {
+				for (const codeRow of buildSpawnCodeRows(row, group.spawnCode, depth + 1, groupIndex)) {
+					flattened.push(codeRow);
 				}
 			}
-		} else {
-			flattened.push(createSubagentSummaryRow(row, ordinaryChildren, depth + 1, childHasSpawnCode));
+			for (const child of group.children) {
+				child.parentIdentity = row.identity;
+				emit(child, depth + 1);
+			}
 		}
 	};
 	const visibleRoots = scopedRootRow ? roots.filter((row) => row !== scopedRootRow) : roots;
@@ -858,6 +879,7 @@ function createSubagentSummaryRow(
 	children: readonly AgentsViewRow[],
 	depth: number,
 	hasSpawnCode: boolean,
+	expanded: boolean,
 ): AgentsViewRow {
 	const totalCount = children.length;
 	const running = parent.runningSubagentCount;
@@ -887,6 +909,7 @@ function createSubagentSummaryRow(
 		identity: `subagents:${parent.identity}`,
 		parentIdentity: parent.identity,
 		hasSpawnCode,
+		expanded,
 	};
 }
 
@@ -957,6 +980,12 @@ function compareAgentsViewRows(a: AgentsViewRow, b: AgentsViewRow): number {
 	if (sectionDiff !== 0) {
 		return sectionDiff;
 	}
+	if (a.section !== "running") {
+		const activityDiff = getTimestamp(b.summary.lastActivityAt) - getTimestamp(a.summary.lastActivityAt);
+		if (activityDiff !== 0) {
+			return activityDiff;
+		}
+	}
 	const createdDiff = getTimestamp(b.summary.created) - getTimestamp(a.summary.created);
 	if (createdDiff !== 0) {
 		return createdDiff;
@@ -997,7 +1026,7 @@ function findParentRow(
 	return undefined;
 }
 
-function isSubagentSummary(summary: SessionSummary): boolean {
+export function isSubagentSummary(summary: SessionSummary): boolean {
 	if (summary.runtimeKind) {
 		return summary.runtimeKind === "subagent";
 	}

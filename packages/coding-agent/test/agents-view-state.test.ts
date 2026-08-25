@@ -415,7 +415,7 @@ describe("agents view state", () => {
 		expect(rows.map((row) => row.section)).toEqual(["running", "running", "running", "idle"]);
 	});
 
-	test("keeps row order stable when modification times and daemon input order change", () => {
+	test("keeps row order stable when activity and modification times and daemon input order change", () => {
 		const older = makeSummary({
 			id: "older",
 			sessionId: "older",
@@ -423,6 +423,7 @@ describe("agents view state", () => {
 			activity: "working",
 			created: "2026-01-01T00:00:00Z",
 			modified: "2026-01-04T00:00:00Z",
+			lastActivityAt: "2026-01-04T00:00:00Z",
 		});
 		const newer = makeSummary({
 			id: "newer",
@@ -431,12 +432,13 @@ describe("agents view state", () => {
 			activity: "working",
 			created: "2026-01-02T00:00:00Z",
 			modified: "2026-01-03T00:00:00Z",
+			lastActivityAt: "2026-01-03T00:00:00Z",
 		});
 
 		const initialOrder = buildAgentsViewRows([older, newer]).map((row) => row.summary.sessionId);
 		const refreshedOrder = buildAgentsViewRows([
-			{ ...newer, modified: "2026-01-05T00:00:00Z" },
-			{ ...older, modified: "2026-01-06T00:00:00Z" },
+			{ ...newer, modified: "2026-01-05T00:00:00Z", lastActivityAt: "2026-01-05T00:00:00Z" },
+			{ ...older, modified: "2026-01-06T00:00:00Z", lastActivityAt: "2026-01-06T00:00:00Z" },
 		]).map((row) => row.summary.sessionId);
 
 		expect(initialOrder).toEqual(["newer", "older"]);
@@ -451,6 +453,52 @@ describe("agents view state", () => {
 		]);
 
 		expect(rows.map((row) => row.summary.sessionId)).toEqual(["alpha", "beta-1", "beta-2"]);
+	});
+
+	test("sorts idle rows by last message activity, newest first", () => {
+		const rows = buildAgentsViewRows([
+			makeSummary({
+				id: "created-newest",
+				sessionId: "created-newest",
+				sessionName: "created newest",
+				activity: "idle",
+				created: "2026-01-03T00:00:00Z",
+				lastActivityAt: "2026-01-01T00:00:00Z",
+			}),
+			makeSummary({
+				id: "middle",
+				sessionId: "middle",
+				sessionName: "middle",
+				activity: "idle",
+				created: "2026-01-02T00:00:00Z",
+				lastActivityAt: "2026-01-02T00:00:00Z",
+			}),
+			makeSummary({
+				id: "active-newest",
+				sessionId: "active-newest",
+				sessionName: "active newest",
+				activity: "idle",
+				created: "2026-01-01T00:00:00Z",
+				lastActivityAt: "2026-01-03T00:00:00Z",
+			}),
+			makeSummary({
+				id: "running-oldest",
+				sessionId: "running-oldest",
+				sessionName: "running oldest",
+				activity: "working",
+				isStreaming: true,
+				created: "2025-12-31T00:00:00Z",
+				lastActivityAt: "2025-12-31T00:00:00Z",
+			}),
+		]);
+
+		expect(rows.map((row) => row.summary.sessionId)).toEqual([
+			"running-oldest",
+			"active-newest",
+			"middle",
+			"created-newest",
+		]);
+		expect(rows.map((row) => row.section)).toEqual(["running", "idle", "idle", "idle"]);
 	});
 
 	test("summarizes subagents on their parent and omits subagent rows", () => {
@@ -557,7 +605,8 @@ describe("agents view state", () => {
 			runningSubagentCount: 1,
 		});
 		const expanded = buildAgentsViewRows(summaries, new Set([collapsed[0]?.identity ?? ""]));
-		expect(expanded[1]).toMatchObject({
+		expect(expanded[1]).toMatchObject({ kind: "subagent-summary", expanded: true });
+		expect(expanded[2]).toMatchObject({
 			kind: "subagent",
 			section: "running",
 			statusLabel: "heartbeat active",
@@ -746,14 +795,17 @@ describe("agents view state", () => {
 		const collapsed = buildAgentsViewRows(summaries);
 		expect(collapsed.map((row) => row.kind)).toEqual(["agent", "subagent-summary"]);
 		expect(collapsed[1]?.title).toBe("1 subagent running");
+		expect(collapsed[1]?.expanded).toBe(false);
 
 		const parentIdentity = collapsed[0]?.identity;
 		const expanded = buildAgentsViewRows(summaries, new Set([parentIdentity ?? ""]));
 		expect(expanded.map((row) => [row.title, row.kind, row.depth])).toEqual([
 			["Parent", "agent", 0],
+			["1 subagent running", "subagent-summary", 1],
 			["Child", "subagent", 1],
 			["Completed child", "subagent", 1],
 		]);
+		expect(expanded[1]?.expanded).toBe(true);
 		expect(expanded.slice(1).every((row) => row.selectable && row.parentIdentity === parentIdentity)).toBe(true);
 	});
 
@@ -796,6 +848,7 @@ describe("agents view state", () => {
 		const oneLevel = buildAgentsViewRows(summaries, new Set([rootIdentity]));
 		expect(oneLevel.map((row) => [row.title, row.kind])).toEqual([
 			["Root", "agent"],
+			["1 subagent running", "subagent-summary"],
 			["Child", "subagent"],
 			["1 subagent running", "subagent-summary"],
 		]);
@@ -804,7 +857,9 @@ describe("agents view state", () => {
 		const twoLevel = buildAgentsViewRows(summaries, new Set([rootIdentity, childIdentity]));
 		expect(twoLevel.map((row) => [row.title, row.kind, row.depth])).toEqual([
 			["Root", "agent", 0],
+			["1 subagent running", "subagent-summary", 1],
 			["Child", "subagent", 1],
+			["1 subagent running", "subagent-summary", 2],
 			["Grandchild", "subagent", 2],
 		]);
 	});
@@ -928,14 +983,21 @@ describe("agents view state", () => {
 
 		const parentIdentity = collapsed[0]?.identity ?? "";
 		const expandedNoProgram = buildAgentsViewRows(summaries, new Set([parentIdentity]));
-		// Without the program toggle, only the grouped subagent rows render.
-		expect(expandedNoProgram.map((row) => row.kind)).toEqual(["agent", "subagent", "subagent", "subagent"]);
+		// Without the program toggle, only the summary and grouped subagent rows render.
+		expect(expandedNoProgram.map((row) => row.kind)).toEqual([
+			"agent",
+			"subagent-summary",
+			"subagent",
+			"subagent",
+			"subagent",
+		]);
 
 		const expanded = buildAgentsViewRows(summaries, new Set([parentIdentity]), new Set([parentIdentity]));
 		// Each spawn cell renders in full, once, directly above the subagents it
 		// launched — padded with a blank panel line above and below, no truncation.
 		expect(expanded.map((row) => [row.kind, row.code ?? row.title])).toEqual([
 			["agent", "Parent"],
+			["subagent-summary", "3 subagents"],
 			["subagent-code", ""],
 			["subagent-code", "task = sleep(60)"],
 			["subagent-code", "for i in range(2):"],
@@ -1219,7 +1281,9 @@ describe("agents view state", () => {
 		).toEqual([
 			["newer-session", 0],
 			["root-session", 0],
+			["root-session", 1],
 			["child-session", 1],
+			["child-session", 2],
 			["match-session", 2],
 		]);
 	});
@@ -1635,12 +1699,17 @@ describe("agents view state", () => {
 						id: "saved-child",
 						path: "/tmp/project/saved-child.jsonl",
 						parentSessionPath: "/tmp/project/missing-parent.jsonl",
+						modified: new Date("2026-01-04T00:00:00Z"),
 					}),
 				],
 			);
 
 			expect(buildAgentsViewRows([child!])).toMatchObject([
-				{ kind: "agent", depth: 0, summary: { sessionId: "saved-child" } },
+				{
+					kind: "agent",
+					depth: 0,
+					summary: { sessionId: "saved-child", lastActivityAt: "2026-01-04T00:00:00.000Z" },
+				},
 			]);
 		});
 
