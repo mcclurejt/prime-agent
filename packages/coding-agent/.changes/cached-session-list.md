@@ -1,0 +1,1 @@
+- Improved Session View responsiveness by serving cached live-session summaries and polling them twice per second.

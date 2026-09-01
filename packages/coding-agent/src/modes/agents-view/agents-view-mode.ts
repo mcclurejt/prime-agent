@@ -98,7 +98,7 @@ import {
 } from "./agents-view-state.js";
 import { matchesSearchText } from "./session-view-search.js";
 
-const POLL_INTERVAL_MS = 1000;
+export const AGENTS_VIEW_POLL_INTERVAL_MS = 500;
 const HEARTBEAT_POLL_INTERVAL_MS = 15000;
 const RECONNECT_TIMEOUT_MS = 120000;
 const RECONNECT_RETRY_MS = 1000;
@@ -865,7 +865,7 @@ export class AgentsViewMode implements Component, Focusable {
 		void this.refreshSavedSessions();
 		void this.refreshHeartbeats();
 		this.loadStartupNotices();
-		this.pollTimer = setInterval(() => this.pollSessions(), POLL_INTERVAL_MS);
+		this.pollTimer = setInterval(() => this.pollSessions(), AGENTS_VIEW_POLL_INTERVAL_MS);
 		this.pollTimer.unref?.();
 		this.heartbeatPollTimer = setInterval(() => void this.refreshHeartbeats(), HEARTBEAT_POLL_INTERVAL_MS);
 		this.heartbeatPollTimer.unref?.();

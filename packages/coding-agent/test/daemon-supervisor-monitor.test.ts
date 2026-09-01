@@ -1930,14 +1930,16 @@ describe("daemon worker supervisor monitoring", () => {
 		});
 		const liveWorker = makeWorker("worker-live");
 		const stoppingWorker = makeWorker("worker-stopping", new Date().toISOString());
+		const refreshWorkerSummaries = vi.fn(async () => {});
+		const syncAgentPeers = vi.fn(async () => {});
 		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
 			workers: new Map([
 				[liveWorker.descriptor.workerId, liveWorker],
 				[stoppingWorker.descriptor.workerId, stoppingWorker],
 			]),
 			clients: new Set(),
-			refreshWorkerSummaries: vi.fn(async () => {}),
-			syncAgentPeers: vi.fn(async () => {}),
+			refreshWorkerSummaries,
+			syncAgentPeers,
 			log: vi.fn(),
 		}) as {
 			handleList(
@@ -1957,6 +1959,8 @@ describe("daemon worker supervisor monitoring", () => {
 			["worker-live-active", "ready"],
 			["worker-stopping-active", "stopping"],
 		]);
+		expect(refreshWorkerSummaries).not.toHaveBeenCalled();
+		expect(syncAgentPeers).not.toHaveBeenCalled();
 	});
 
 	it("adopts a tombstoned worker through identity-aware stop handling", async () => {

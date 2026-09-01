@@ -2319,12 +2319,6 @@ export class DaemonSupervisor {
 		client: DaemonSocketClient,
 		command: Extract<DaemonCommand, { type: "list" }>,
 	): Promise<DaemonResponse> {
-		await Promise.all(
-			[...this.workers.values()]
-				.filter((worker) => !this.isWorkerStopping(worker))
-				.map((worker) => this.refreshWorkerSummaries(worker).catch(() => undefined)),
-		);
-		await this.syncAgentPeers().catch((error) => this.log(`Could not synchronize agent peers: ${String(error)}`));
 		const clientOwnedWorkers = [...this.workers.values()].filter((worker) => !this.isVisibleWorker(worker));
 		// Stopping workers stay listed (with an honest workerState) because this
 		// list also feeds busy-daemon safety checks in daemon-launch.

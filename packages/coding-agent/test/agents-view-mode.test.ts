@@ -6,6 +6,7 @@ import { SettingsManager } from "../src/core/settings-manager.js";
 import { DaemonAgentConnection } from "../src/modes/agent-connection/daemon-agent-connection.js";
 import type { AgentConnectionSavedSessionInfo } from "../src/modes/agent-connection/types.js";
 import {
+	AGENTS_VIEW_POLL_INTERVAL_MS,
 	AgentsViewMode,
 	type AgentsViewPersistentState,
 	combineAgentsViewStartupNotices,
@@ -92,6 +93,10 @@ const settingsManager = {
 describe("AgentsViewMode", () => {
 	beforeAll(() => setKeybindings(new KeybindingsManager()));
 	beforeEach(() => vi.clearAllMocks());
+
+	it("polls the cached session list twice per second", () => {
+		expect(AGENTS_VIEW_POLL_INTERVAL_MS).toBe(500);
+	});
 
 	it("keeps the selection chosen by row rebuilding when the query changes", () => {
 		const self = {
