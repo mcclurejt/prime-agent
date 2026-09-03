@@ -1,0 +1,1 @@
+- Fixed prompt caching for cache-capable Anthropic Claude models on Amazon Bedrock.

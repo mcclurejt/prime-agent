@@ -193,6 +193,15 @@ describe("Bedrock prompt caching", () => {
 		expectPromptCachePoints(await capturePromptCachingPayload(model));
 	});
 
+	it.each([
+		["Claude Fable 5", "global.anthropic.claude-fable-5"],
+		["Claude Sonnet 5", "global.anthropic.claude-sonnet-5"],
+	] as const)("adds both cache points for %s", async (_name, modelId) => {
+		const model = getModel("amazon-bedrock", modelId);
+
+		expectPromptCachePoints(await capturePromptCachingPayload(model));
+	});
+
 	it("adds both cache points when an application inference profile model.name identifies Claude Opus 5", async () => {
 		const baseModel = getModel("amazon-bedrock", "global.anthropic.claude-opus-5");
 		const model: Model<"bedrock-converse-stream"> = {

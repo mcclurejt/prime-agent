@@ -574,11 +574,9 @@ function isAnthropicClaudeModel(model: Model<"bedrock-converse-stream">): boolea
 }
 
 /**
- * Check if the model supports prompt caching.
- * Supported: Claude 3.5 Haiku, Claude 3.7 Sonnet, Claude 4.x models, and Claude Opus 5
- *
- * For base models and system-defined inference profiles the model ID / ARN
- * contains the model name, so we can decide locally.
+ * Check if an Anthropic Claude model supports explicit prompt caching.
+ * Built-in models use cache pricing as the capability signal so newly added Claude
+ * families do not also need to be added to a provider-specific allowlist.
  *
  * For application inference profiles (whose ARNs don't contain the model name),
  * also checks model.name which is user-controlled via models.json or registerProvider.
@@ -595,7 +593,9 @@ function supportsPromptCaching(model: Model<"bedrock-converse-stream">): boolean
 		if (typeof process !== "undefined" && process.env.AWS_BEDROCK_FORCE_CACHE === "1") return true;
 		return false;
 	}
-	// Claude 4.x models (opus-4, sonnet-4, haiku-4) and Claude Opus 5
+	// Cache pricing is the catalog's capability signal for current and future Claude models.
+	if (model.cost.cacheRead > 0 || model.cost.cacheWrite > 0) return true;
+	// Keep model-name fallbacks for custom models without configured cache pricing.
 	if (candidates.some((s) => s.includes("-4-") || s.includes("claude-opus-5"))) return true;
 	// Claude 3.7 Sonnet
 	if (candidates.some((s) => s.includes("claude-3-7-sonnet"))) return true;
