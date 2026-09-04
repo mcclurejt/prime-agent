@@ -2,6 +2,7 @@ import { registerApiProvider, unregisterApiProviders } from "../api-registry.js"
 import type {
 	AssistantMessage,
 	AssistantMessageEventStream,
+	CompactionContent,
 	Context,
 	ImageContent,
 	Message,
@@ -133,7 +134,7 @@ function randomId(prefix: string): string {
 	return `${prefix}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
 }
 
-function contentToText(content: string | Array<TextContent | ImageContent>): string {
+function contentToText(content: string | Array<TextContent | ImageContent | CompactionContent>): string {
 	if (typeof content === "string") {
 		return content;
 	}
@@ -141,6 +142,9 @@ function contentToText(content: string | Array<TextContent | ImageContent>): str
 		.map((block) => {
 			if (block.type === "text") {
 				return block.text;
+			}
+			if (block.type === "compaction") {
+				return `[compaction:${block.provider}:${block.encryptedContent.length}]`;
 			}
 			return `[image:${block.mimeType}:${block.data.length}]`;
 		})

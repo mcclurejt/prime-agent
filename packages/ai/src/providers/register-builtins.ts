@@ -3,6 +3,7 @@ import type {
 	Api,
 	AssistantMessage,
 	AssistantMessageEvent,
+	CompactFunction,
 	Context,
 	Model,
 	SimpleStreamOptions,
@@ -32,6 +33,7 @@ interface LazyProviderModule<
 		context: Context,
 		options?: TSimpleOptions,
 	) => AsyncIterable<AssistantMessageEvent>;
+	compact?: CompactFunction<TApi, TOptions>;
 }
 
 interface AnthropicProviderModule {
@@ -77,6 +79,7 @@ interface OpenAIResponsesProviderModule {
 interface BedrockMantleProviderModule {
 	streamBedrockMantle: StreamFunction<"bedrock-mantle-responses", BedrockMantleOptions>;
 	streamSimpleBedrockMantle: StreamFunction<"bedrock-mantle-responses", SimpleStreamOptions>;
+	compactBedrockMantle: CompactFunction<"bedrock-mantle-responses", BedrockMantleOptions>;
 }
 
 interface BedrockProviderModule {
@@ -139,6 +142,7 @@ export function setBedrockMantleProviderModule(module: BedrockMantleProviderModu
 	bedrockMantleProviderModuleOverride = {
 		stream: module.streamBedrockMantle,
 		streamSimple: module.streamSimpleBedrockMantle,
+		compact: module.compactBedrockMantle,
 	};
 }
 
@@ -213,6 +217,20 @@ function createLazySimpleStream<
 			});
 
 		return outer;
+	};
+}
+
+function createLazyCompact<
+	TApi extends Api,
+	TOptions extends StreamOptions,
+	TSimpleOptions extends SimpleStreamOptions,
+>(loadModule: () => Promise<LazyProviderModule<TApi, TOptions, TSimpleOptions>>): CompactFunction<TApi, TOptions> {
+	return async (model, context, options) => {
+		const module = await loadModule();
+		if (!module.compact) {
+			throw new Error(`API provider for api ${model.api} does not support server-side compaction`);
+		}
+		return module.compact(model, context, options);
 	};
 }
 
@@ -326,7 +344,11 @@ function loadBedrockMantleProviderModule(): Promise<
 	if (bedrockMantleProviderModuleOverride) return Promise.resolve(bedrockMantleProviderModuleOverride);
 	bedrockMantleProviderModulePromise ||= importNodeOnlyProvider("./amazon-bedrock-mantle.js").then((module) => {
 		const provider = module as BedrockMantleProviderModule;
-		return { stream: provider.streamBedrockMantle, streamSimple: provider.streamSimpleBedrockMantle };
+		return {
+			stream: provider.streamBedrockMantle,
+			streamSimple: provider.streamSimpleBedrockMantle,
+			compact: provider.compactBedrockMantle,
+		};
 	});
 	return bedrockMantleProviderModulePromise;
 }
@@ -367,6 +389,7 @@ const streamBedrockLazy = createLazyStream(loadBedrockProviderModule);
 const streamSimpleBedrockLazy = createLazySimpleStream(loadBedrockProviderModule);
 const streamBedrockMantleLazy = createLazyStream(loadBedrockMantleProviderModule);
 const streamSimpleBedrockMantleLazy = createLazySimpleStream(loadBedrockMantleProviderModule);
+const compactBedrockMantleLazy = createLazyCompact(loadBedrockMantleProviderModule);
 
 export function registerBuiltInApiProviders(): void {
 	registerApiProvider({
@@ -427,6 +450,7 @@ export function registerBuiltInApiProviders(): void {
 		api: "bedrock-mantle-responses",
 		stream: streamBedrockMantleLazy,
 		streamSimple: streamSimpleBedrockMantleLazy,
+		compact: compactBedrockMantleLazy,
 	});
 }
 

@@ -459,7 +459,14 @@ export function sessionEntryToContextMessages(entry: SessionEntry): AgentMessage
 	}
 	if (entry.type === "compaction") {
 		return [
-			createCompactionSummaryMessage(entry.summary, entry.tokensBefore, entry.timestamp, entry.customInstructions),
+			createCompactionSummaryMessage(
+				entry.summary,
+				entry.tokensBefore,
+				entry.timestamp,
+				entry.customInstructions,
+				undefined,
+				entry.details,
+			),
 		];
 	}
 	return [];
@@ -596,6 +603,7 @@ export function buildSessionContext(
 				compaction.timestamp,
 				compaction.customInstructions,
 				retainedMessages.length,
+				compaction.details,
 			),
 			...retainedMessages,
 		);

@@ -170,6 +170,23 @@ export type StreamFunction<TApi extends Api = Api, TOptions extends StreamOption
 	options?: TOptions,
 ) => AssistantMessageEventStream;
 
+/**
+ * Result of provider server-side context compaction: an ordered replacement
+ * for the compacted messages (plain retained text plus opaque encrypted
+ * compaction items) and the token usage of the compaction pass.
+ */
+export interface ServerCompactionResult {
+	items: (TextContent | CompactionContent)[];
+	usage: Usage;
+	responseId?: string;
+}
+
+export type CompactFunction<TApi extends Api = Api, TOptions extends StreamOptions = StreamOptions> = (
+	model: Model<TApi>,
+	context: Context,
+	options?: TOptions,
+) => Promise<ServerCompactionResult>;
+
 export interface TextSignatureV1 {
 	v: 1;
 	id: string;
@@ -196,6 +213,23 @@ export interface ImageContent {
 	type: "image";
 	data: string; // base64 encoded image data
 	mimeType: string; // e.g., "image/jpeg", "image/png"
+}
+
+/**
+ * Opaque server-side compaction payload produced by a provider's compaction
+ * endpoint (e.g. the OpenAI Responses `/responses/compact` API on Amazon
+ * Bedrock Mantle). Only requests to the same provider replay the encrypted
+ * payload; every other provider ignores the block and relies on the plain-text
+ * blocks that accompany it.
+ */
+export interface CompactionContent {
+	type: "compaction";
+	/** Provider that produced this compaction item. */
+	provider: Provider;
+	/** Encrypted compaction payload, opaque to everything but the producing provider. */
+	encryptedContent: string;
+	/** Provider-assigned compaction item id, when exposed. */
+	id?: string;
 }
 
 export interface ToolCall {
@@ -225,7 +259,7 @@ export type StopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
 
 export interface UserMessage {
 	role: "user";
-	content: string | (TextContent | ImageContent)[];
+	content: string | (TextContent | ImageContent | CompactionContent)[];
 	timestamp: number; // Unix timestamp in milliseconds
 }
 

@@ -28,11 +28,13 @@ import type {
 import {
 	clampThinkingLevel,
 	cleanupSessionResources,
+	getLogger,
 	getSupportedThinkingLevels,
 	isContextOverflow,
 	modelsAreEqual,
 	resetApiProviders,
 	supportsFastMode,
+	supportsServerCompaction,
 } from "@earendil-works/pi-ai";
 import { AWS_SSO_EXPIRED_ERROR_TYPE, isAwsSsoExpiryError } from "@earendil-works/pi-ai/aws-sso";
 import { theme } from "../modes/interactive/theme/theme.js";
@@ -104,6 +106,7 @@ import {
 	calculateContextTokens,
 	collectEntriesForBranchSummary,
 	compact,
+	compactServerSide,
 	estimateContextTokens,
 	generateBranchSummary,
 	prepareCompaction,
@@ -317,6 +320,8 @@ export interface RlmChildAgentSnapshot {
 	repliedSinceTask?: boolean;
 	error?: string;
 }
+
+const log = getLogger("coding-agent.agent-session");
 
 export type CompactionReason = "manual" | "threshold" | "overflow" | "requested";
 
@@ -7522,8 +7527,27 @@ export class AgentSession {
 			}
 		}
 
+		let serverSideCompaction: CompactionResult | undefined;
+		// Server-side compaction ignores custom instructions, so an instructed
+		// summary always goes through the client-side path that honors them.
+		if (!extensionCompaction && settings.serverSide && !customInstructions && supportsServerCompaction(model)) {
+			try {
+				serverSideCompaction = await compactServerSide(preparation, model, signal);
+			} catch (error) {
+				if (signal.aborted) {
+					throw new Error("Compaction cancelled");
+				}
+				log.warn("server-side compaction failed, falling back to client-side summary", {
+					model: model.id,
+					provider: model.provider,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
+
 		const { summary, firstKeptEntryId, tokensBefore, details } =
 			extensionCompaction ??
+			serverSideCompaction ??
 			(await compact(preparation, model, apiKey, headers, customInstructions, signal, this.thinkingLevel));
 
 		if (signal.aborted) {

@@ -226,14 +226,16 @@ function convertMessages(messages: Message[], isOAuth: boolean, _tools?: Tool[])
 					params.push({ role: "user", content: sanitizeSurrogates(msg.content) });
 				}
 			} else {
-				const blocks: ContentBlockParam[] = msg.content.map((item) =>
-					item.type === "text"
-						? { type: "text" as const, text: sanitizeSurrogates(item.text) }
-						: {
-								type: "image" as const,
-								source: { type: "base64" as const, media_type: item.mimeType as any, data: item.data },
-							},
-				);
+				const blocks: ContentBlockParam[] = msg.content
+					.filter((item) => item.type !== "compaction")
+					.map((item) =>
+						item.type === "text"
+							? { type: "text" as const, text: sanitizeSurrogates(item.text) }
+							: {
+									type: "image" as const,
+									source: { type: "base64" as const, media_type: item.mimeType as any, data: item.data },
+								},
+					);
 				if (blocks.length > 0) {
 					params.push({ role: "user", content: blocks });
 				}

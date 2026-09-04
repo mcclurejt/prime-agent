@@ -7,12 +7,14 @@
 
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, Model, Usage } from "@earendil-works/pi-ai";
-import { completeSimple } from "@earendil-works/pi-ai";
+import { compactContext, completeSimple } from "@earendil-works/pi-ai";
 import {
 	convertToLlm,
 	createBranchSummaryMessage,
 	createCompactionSummaryMessage,
 	createCustomMessage,
+	getServerCompactionDetails,
+	type ServerCompactionDetails,
 } from "../messages.js";
 import { buildSessionContext, type CompactionEntry, type SessionEntry } from "../session-manager.js";
 import {
@@ -28,6 +30,8 @@ import {
 export interface CompactionDetails {
 	readFiles: string[];
 	modifiedFiles: string[];
+	/** Present when the history was compacted server-side by the model provider. */
+	serverCompaction?: ServerCompactionDetails;
 }
 
 /**
@@ -79,6 +83,8 @@ function getMessageFromEntry(entry: SessionEntry): AgentMessage | undefined {
 			entry.tokensBefore,
 			entry.timestamp,
 			entry.customInstructions,
+			undefined,
+			entry.details,
 		);
 	}
 	return undefined;
@@ -105,12 +111,20 @@ export interface CompactionSettings {
 	enabled: boolean;
 	reserveTokens: number;
 	keepRecentTokens: number;
+	/**
+	 * Compact server-side via the model provider's compaction endpoint when the
+	 * current model supports it (currently Amazon Bedrock Mantle GPT models).
+	 * The compacted history is an encrypted provider payload: only the producing
+	 * provider can read it, so switching providers degrades to the plain note.
+	 */
+	serverSide: boolean;
 }
 
 export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 	enabled: true,
 	reserveTokens: 16384,
 	keepRecentTokens: 20000,
+	serverSide: false,
 };
 /**
  * Calculate total context tokens from usage.
@@ -570,6 +584,8 @@ export interface CompactionPreparation {
 	tokensBefore: number;
 	/** Summary from previous compaction, for iterative update */
 	previousSummary?: string;
+	/** CompactionEntry.details of the previous compaction (e.g. server-side payloads) */
+	previousDetails?: unknown;
 	/** File operations extracted from messagesToSummarize */
 	fileOps: FileOperations;
 	/** Compaction settions from settings.jsonl	*/
@@ -593,10 +609,12 @@ export function prepareCompaction(
 	}
 
 	let previousSummary: string | undefined;
+	let previousDetails: unknown;
 	let boundaryStart = 0;
 	if (prevCompactionIndex >= 0) {
 		const prevCompaction = pathEntries[prevCompactionIndex] as CompactionEntry;
 		previousSummary = prevCompaction.summary;
+		previousDetails = prevCompaction.details;
 		const firstKeptEntryIndex = pathEntries.findIndex((entry) => entry.id === prevCompaction.firstKeptEntryId);
 		boundaryStart = firstKeptEntryIndex >= 0 ? firstKeptEntryIndex : prevCompactionIndex + 1;
 	}
@@ -644,6 +662,7 @@ export function prepareCompaction(
 		isSplitTurn: cutPoint.isSplitTurn,
 		tokensBefore,
 		previousSummary,
+		previousDetails,
 		fileOps,
 		settings,
 	};
@@ -742,6 +761,70 @@ export async function compact(
 		firstKeptEntryId,
 		tokensBefore,
 		details: { readFiles, modifiedFiles } as CompactionDetails,
+	};
+}
+
+/**
+ * Compact history server-side via the model provider's compaction endpoint
+ * (currently the OpenAI Responses `/responses/compact` API on Amazon Bedrock
+ * Mantle). The provider returns opaque encrypted compaction items that replace
+ * the summarized history; only the producing provider can read them, so the
+ * stored summary is a plain note plus the locally computed file lists.
+ *
+ * @param compactFn - Injectable for tests; defaults to the pi-ai registry call.
+ */
+export async function compactServerSide(
+	preparation: CompactionPreparation,
+	model: Model<any>,
+	signal?: AbortSignal,
+	compactFn: typeof compactContext = compactContext,
+): Promise<CompactionResult> {
+	const {
+		firstKeptEntryId,
+		messagesToSummarize,
+		turnPrefixMessages,
+		tokensBefore,
+		previousSummary,
+		previousDetails,
+		fileOps,
+	} = preparation;
+
+	// Include the previous compaction (note + any encrypted payload) so iterative
+	// compaction folds it into the new compaction item instead of dropping it.
+	const history: AgentMessage[] = [];
+	if (previousSummary || getServerCompactionDetails(previousDetails)) {
+		history.push(
+			createCompactionSummaryMessage(
+				previousSummary ?? "",
+				tokensBefore,
+				new Date().toISOString(),
+				undefined,
+				undefined,
+				previousDetails,
+			),
+		);
+	}
+	history.push(...messagesToSummarize, ...turnPrefixMessages);
+
+	const result = await compactFn(model, { messages: convertToLlm(history) }, { signal });
+
+	const { readFiles, modifiedFiles } = computeFileLists(fileOps);
+	let summary =
+		`Earlier history was compacted server-side by ${model.id}. ` +
+		`The compacted context travels as an encrypted ${model.provider} compaction item alongside this note; ` +
+		`only ${model.provider} requests can read it, other providers see just this note.`;
+	summary += formatFileOperations(readFiles, modifiedFiles);
+
+	if (!firstKeptEntryId) {
+		throw new Error("First kept entry has no UUID - session may need migration");
+	}
+
+	const serverCompaction: ServerCompactionDetails = { modelId: model.id, items: result.items };
+	return {
+		summary,
+		firstKeptEntryId,
+		tokensBefore,
+		details: { readFiles, modifiedFiles, serverCompaction } as CompactionDetails,
 	};
 }
 

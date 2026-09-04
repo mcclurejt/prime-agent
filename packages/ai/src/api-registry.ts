@@ -1,8 +1,10 @@
 import type {
 	Api,
 	AssistantMessageEventStream,
+	CompactFunction,
 	Context,
 	Model,
+	ServerCompactionResult,
 	SimpleStreamOptions,
 	StreamFunction,
 	StreamOptions,
@@ -20,16 +22,25 @@ export type ApiStreamSimpleFunction = (
 	options?: SimpleStreamOptions,
 ) => AssistantMessageEventStream;
 
+export type ApiCompactFunction = (
+	model: Model<Api>,
+	context: Context,
+	options?: StreamOptions,
+) => Promise<ServerCompactionResult>;
+
 export interface ApiProvider<TApi extends Api = Api, TOptions extends StreamOptions = StreamOptions> {
 	api: TApi;
 	stream: StreamFunction<TApi, TOptions>;
 	streamSimple: StreamFunction<TApi, SimpleStreamOptions>;
+	/** Optional provider server-side context compaction (e.g. Responses `/responses/compact`). */
+	compact?: CompactFunction<TApi, TOptions>;
 }
 
 interface ApiProviderInternal {
 	api: Api;
 	stream: ApiStreamFunction;
 	streamSimple: ApiStreamSimpleFunction;
+	compact?: ApiCompactFunction;
 }
 
 type RegisteredApiProvider = {
@@ -63,6 +74,18 @@ function wrapStreamSimple<TApi extends Api>(
 	};
 }
 
+function wrapCompact<TApi extends Api, TOptions extends StreamOptions>(
+	api: TApi,
+	compact: CompactFunction<TApi, TOptions>,
+): ApiCompactFunction {
+	return (model, context, options) => {
+		if (model.api !== api) {
+			throw new Error(`Mismatched api: ${model.api} expected ${api}`);
+		}
+		return compact(model as Model<TApi>, context, options as TOptions);
+	};
+}
+
 export function registerApiProvider<TApi extends Api, TOptions extends StreamOptions>(
 	provider: ApiProvider<TApi, TOptions>,
 	sourceId?: string,
@@ -72,6 +95,7 @@ export function registerApiProvider<TApi extends Api, TOptions extends StreamOpt
 			api: provider.api,
 			stream: wrapStream(provider.api, provider.stream),
 			streamSimple: wrapStreamSimple(provider.api, provider.streamSimple),
+			...(provider.compact ? { compact: wrapCompact(provider.api, provider.compact) } : {}),
 		},
 		sourceId,
 	});

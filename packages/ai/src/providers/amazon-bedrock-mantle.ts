@@ -2,9 +2,20 @@ import { defaultProvider } from "@aws-sdk/credential-provider-node";
 import { loadConfig, NODE_REGION_CONFIG_OPTIONS } from "@smithy/core/config";
 import OpenAI from "openai";
 import { bedrock } from "openai/providers/bedrock/aws";
-import type { ResponseCreateParamsStreaming } from "openai/resources/responses/responses.js";
-import { clampThinkingLevel } from "../models.js";
-import type { Api, AssistantMessage, Model, SimpleStreamOptions, StreamFunction, StreamOptions } from "../types.js";
+import type { ResponseCompactParams, ResponseCreateParamsStreaming } from "openai/resources/responses/responses.js";
+import { calculateCost, clampThinkingLevel } from "../models.js";
+import type {
+	Api,
+	AssistantMessage,
+	CompactFunction,
+	CompactionContent,
+	Model,
+	SimpleStreamOptions,
+	StreamFunction,
+	StreamOptions,
+	TextContent,
+	Usage,
+} from "../types.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { headersToRecord } from "../utils/headers.js";
 import {
@@ -13,7 +24,7 @@ import {
 	streamFailureFromStopReason,
 } from "../utils/stream-failure.js";
 import { buildOpenAIResponsesParams, type OpenAIResponsesOptions } from "./openai-responses.js";
-import { processResponsesStream } from "./openai-responses-shared.js";
+import { convertResponsesMessages, processResponsesStream } from "./openai-responses-shared.js";
 import { buildBaseOptions } from "./simple-options.js";
 
 export interface BedrockMantleOptions extends StreamOptions {
@@ -131,4 +142,81 @@ export const streamSimpleBedrockMantle: StreamFunction<"bedrock-mantle-responses
 		...base,
 		reasoningEffort: reasoningEffort === "off" ? undefined : reasoningEffort,
 	});
+};
+
+const MANTLE_COMPACT_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode", "amazon-bedrock-mantle"]);
+
+/**
+ * Compact a conversation server-side via the OpenAI Responses
+ * `/responses/compact` endpoint on Amazon Bedrock Mantle. Returns the
+ * replacement context items: any plain user text the endpoint retains plus the
+ * encrypted compaction item, tagged with this provider so only Mantle requests
+ * replay it.
+ */
+export const compactBedrockMantle: CompactFunction<"bedrock-mantle-responses", BedrockMantleOptions> = async (
+	model,
+	context,
+	options = {},
+) => {
+	const region = await resolveBedrockMantleRegion(options);
+	const client = createClient(region, options.profile);
+	const input = convertResponsesMessages(
+		model as unknown as Model<"openai-responses">,
+		context,
+		MANTLE_COMPACT_TOOL_CALL_PROVIDERS,
+		{ includeSystemPrompt: false },
+	);
+	const params: ResponseCompactParams = {
+		model: model.id,
+		input,
+	};
+	if (context.systemPrompt) params.instructions = context.systemPrompt;
+	const response = await client.responses.compact(params, {
+		...(options.signal ? { signal: options.signal } : {}),
+		...(options.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
+		...(options.maxRetries !== undefined ? { maxRetries: options.maxRetries } : {}),
+	});
+
+	const items: (TextContent | CompactionContent)[] = [];
+	for (const item of response.output) {
+		if (item.type === "compaction") {
+			items.push({
+				type: "compaction",
+				provider: model.provider,
+				encryptedContent: item.encrypted_content,
+				...(item.id ? { id: item.id } : {}),
+			});
+		} else if (item.type === "message") {
+			// The endpoint may retain conversation messages verbatim ahead of the
+			// compaction item; keep their text so the replacement context stays whole.
+			const parts: string[] = [];
+			for (const part of item.content as Array<{ type: string; text?: string }>) {
+				if ((part.type === "output_text" || part.type === "input_text") && typeof part.text === "string") {
+					parts.push(part.text);
+				}
+			}
+			const text = parts.join("\n");
+			if (text.length > 0) items.push({ type: "text", text });
+		}
+	}
+	if (!items.some((item) => item.type === "compaction")) {
+		throw new Error("Amazon Bedrock Mantle compaction returned no compaction item");
+	}
+
+	const reportedCachedTokens = response.usage?.input_tokens_details?.cached_tokens || 0;
+	const cacheWriteTokens =
+		(response.usage?.input_tokens_details as { cache_write_tokens?: number } | undefined)?.cache_write_tokens || 0;
+	const cacheReadTokens =
+		cacheWriteTokens > 0 ? Math.max(0, reportedCachedTokens - cacheWriteTokens) : reportedCachedTokens;
+	const usage: Usage = {
+		input: Math.max(0, (response.usage?.input_tokens || 0) - cacheReadTokens - cacheWriteTokens),
+		output: response.usage?.output_tokens || 0,
+		cacheRead: cacheReadTokens,
+		cacheWrite: cacheWriteTokens,
+		totalTokens: response.usage?.total_tokens || 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+	calculateCost(model, usage);
+
+	return { items, usage, responseId: response.id };
 };

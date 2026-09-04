@@ -131,13 +131,15 @@ prime-agent --offline
 | `compaction.enabled` | boolean | `true` | Enable auto-compaction |
 | `compaction.reserveTokens` | number | `16384` | Tokens reserved for LLM response |
 | `compaction.keepRecentTokens` | number | `20000` | Recent tokens to keep (not summarized) |
+| `compaction.serverSide` | boolean | `false` | Compact via the provider's server-side compaction endpoint when the model supports it (currently Amazon Bedrock Mantle GPT models). The compacted history is an encrypted provider payload; only the producing provider can read it |
 
 ```json
 {
   "compaction": {
     "enabled": true,
     "reserveTokens": 16384,
-    "keepRecentTokens": 20000
+    "keepRecentTokens": 20000,
+    "serverSide": false
   }
 }
 ```

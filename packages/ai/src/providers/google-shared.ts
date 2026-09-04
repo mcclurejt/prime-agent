@@ -120,18 +120,20 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 					parts: [{ text: sanitizeSurrogates(msg.content) }],
 				});
 			} else {
-				const parts: Part[] = msg.content.map((item) => {
-					if (item.type === "text") {
-						return { text: sanitizeSurrogates(item.text) };
-					} else {
-						return {
-							inlineData: {
-								mimeType: item.mimeType,
-								data: item.data,
-							},
-						};
-					}
-				});
+				const parts: Part[] = msg.content
+					.filter((item): item is TextContent | ImageContent => item.type !== "compaction")
+					.map((item) => {
+						if (item.type === "text") {
+							return { text: sanitizeSurrogates(item.text) };
+						} else {
+							return {
+								inlineData: {
+									mimeType: item.mimeType,
+									data: item.data,
+								},
+							};
+						}
+					});
 				if (parts.length === 0) continue;
 				contents.push({
 					role: "user",

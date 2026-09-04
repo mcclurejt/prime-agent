@@ -1,0 +1,1 @@
+- Added server-side context compaction support: a `compaction` user-content block, a registry-level `compactContext()`/`supportsServerCompaction()` API, and `compactBedrockMantle()` calling the OpenAI Responses `/responses/compact` endpoint on Amazon Bedrock Mantle.

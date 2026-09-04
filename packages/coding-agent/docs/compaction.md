@@ -138,12 +138,23 @@ interface CompactionEntry<T = unknown> {
 interface CompactionDetails {
   readFiles: string[];
   modifiedFiles: string[];
+  serverCompaction?: ServerCompactionDetails; // present for server-side compaction
 }
 ```
 
 Extensions can store any JSON-serializable data in `details`. The default compaction tracks file operations, but custom extension implementations can use their own structure.
 
 See [`prepareCompaction()` and `compact()`](../src/core/compaction/compaction.ts) for the implementation.
+
+### Server-Side Compaction
+
+With `compaction.serverSide: true`, sessions on models whose provider supports server-side compaction (currently Amazon Bedrock Mantle GPT models via the OpenAI Responses `/responses/compact` endpoint) compact on the provider instead of generating a client-side summary:
+
+1. The messages that would have been summarized are sent to the provider's compaction endpoint
+2. The provider returns an opaque, encrypted compaction item (plus any retained plain text)
+3. The payload is stored in `CompactionEntry.details.serverCompaction` and replayed verbatim at the front of every later request to that provider
+
+Because the payload is encrypted, only the producing provider can read it. The stored `summary` is a plain note (plus the locally computed file lists); switching the session to another provider degrades to that note. Custom `/compact <instructions>` always use the client-side summary path, since the server endpoint does not accept instructions. If the server-side call fails, compaction falls back to the client-side summary automatically.
 
 ## Branch Summarization
 

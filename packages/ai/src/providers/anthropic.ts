@@ -1075,23 +1075,25 @@ function convertMessages(
 					});
 				}
 			} else {
-				const blocks: ContentBlockParam[] = msg.content.map((item) => {
-					if (item.type === "text") {
-						return {
-							type: "text",
-							text: sanitizeSurrogates(item.text),
-						};
-					} else {
-						return {
-							type: "image",
-							source: {
-								type: "base64",
-								media_type: item.mimeType as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
-								data: item.data,
-							},
-						};
-					}
-				});
+				const blocks: ContentBlockParam[] = msg.content
+					.filter((item): item is TextContent | ImageContent => item.type !== "compaction")
+					.map((item) => {
+						if (item.type === "text") {
+							return {
+								type: "text",
+								text: sanitizeSurrogates(item.text),
+							};
+						} else {
+							return {
+								type: "image",
+								source: {
+									type: "base64",
+									media_type: item.mimeType as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
+									data: item.data,
+								},
+							};
+						}
+					});
 				const filteredBlocks = blocks.filter((b) => {
 					if (b.type === "text") {
 						return b.text.trim().length > 0;

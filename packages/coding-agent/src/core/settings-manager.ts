@@ -15,6 +15,7 @@ export interface CompactionSettings {
 	reserveTokens?: number; // default: 16384
 	keepRecentTokens?: number; // default: 20000
 	agentCallable?: boolean; // default: true - expose the compact skill so the model can request compaction
+	serverSide?: boolean; // default: false - use the provider's server-side compaction endpoint when the model supports it
 }
 
 export interface BranchSummarySettings {
@@ -940,11 +941,16 @@ export class SettingsManager {
 		return this.settings.compaction?.agentCallable ?? true;
 	}
 
-	getCompactionSettings(): { enabled: boolean; reserveTokens: number; keepRecentTokens: number } {
+	getCompactionServerSide(): boolean {
+		return this.settings.compaction?.serverSide ?? false;
+	}
+
+	getCompactionSettings(): { enabled: boolean; reserveTokens: number; keepRecentTokens: number; serverSide: boolean } {
 		return {
 			enabled: this.getCompactionEnabled(),
 			reserveTokens: this.getCompactionReserveTokens(),
 			keepRecentTokens: this.getCompactionKeepRecentTokens(),
+			serverSide: this.getCompactionServerSide(),
 		};
 	}
 

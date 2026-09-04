@@ -1,6 +1,15 @@
 import { join } from "node:path";
 import { Agent, type AgentMessage, type ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { clampThinkingLevel, type Message, type Model, streamSimple, supportsFastMode } from "@earendil-works/pi-ai";
+import {
+	type CompactionContent,
+	clampThinkingLevel,
+	type ImageContent,
+	type Message,
+	type Model,
+	streamSimple,
+	supportsFastMode,
+	type TextContent,
+} from "@earendil-works/pi-ai";
 import { getAgentDir } from "../config.js";
 import { AgentSession } from "./agent-session.js";
 import type { AgentSessionCreationOptions } from "./agent-session-services.js";
@@ -260,34 +269,44 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 	let agent: Agent;
 
+	function replaceBlockedImages(content: (TextContent | ImageContent)[]): (TextContent | ImageContent)[];
+	function replaceBlockedImages(
+		content: (TextContent | ImageContent | CompactionContent)[],
+	): (TextContent | ImageContent | CompactionContent)[];
+	function replaceBlockedImages(
+		content: (TextContent | ImageContent | CompactionContent)[],
+	): (TextContent | ImageContent | CompactionContent)[] {
+		return content
+			.map((c) => (c.type === "image" ? { type: "text" as const, text: "Image reading is disabled." } : c))
+			.filter(
+				(c, i, arr) =>
+					!(
+						c.type === "text" &&
+						c.text === "Image reading is disabled." &&
+						i > 0 &&
+						arr[i - 1].type === "text" &&
+						(arr[i - 1] as { type: "text"; text: string }).text === "Image reading is disabled."
+					),
+			);
+	}
+
 	const convertToLlmWithBlockImages = (messages: AgentMessage[]): Message[] => {
 		const converted = convertToLlm(messages);
 		if (!settingsManager.getBlockImages()) {
 			return converted;
 		}
 		return converted.map((msg) => {
-			if (msg.role === "user" || msg.role === "toolResult") {
-				const content = msg.content;
-				if (Array.isArray(content)) {
-					const hasImages = content.some((c) => c.type === "image");
-					if (hasImages) {
-						const filteredContent = content
-							.map((c) =>
-								c.type === "image" ? { type: "text" as const, text: "Image reading is disabled." } : c,
-							)
-							.filter(
-								(c, i, arr) =>
-									!(
-										c.type === "text" &&
-										c.text === "Image reading is disabled." &&
-										i > 0 &&
-										arr[i - 1].type === "text" &&
-										(arr[i - 1] as { type: "text"; text: string }).text === "Image reading is disabled."
-									),
-							);
-						return { ...msg, content: filteredContent };
-					}
+			if (msg.role === "user") {
+				if (Array.isArray(msg.content) && msg.content.some((c) => c.type === "image")) {
+					return { ...msg, content: replaceBlockedImages(msg.content) };
 				}
+				return msg;
+			}
+			if (msg.role === "toolResult") {
+				if (msg.content.some((c) => c.type === "image")) {
+					return { ...msg, content: replaceBlockedImages(msg.content) };
+				}
+				return msg;
 			}
 			return msg;
 		});

@@ -1,0 +1,1 @@
+- Added opt-in server-side compaction (`compaction.serverSide`): sessions on Amazon Bedrock Mantle GPT models compact via the provider's encrypted compaction endpoint, with automatic fallback to client-side summaries.

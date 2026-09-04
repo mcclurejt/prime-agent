@@ -1,6 +1,7 @@
 import type {
 	Api,
 	AssistantMessage,
+	CompactionContent,
 	ImageContent,
 	Message,
 	Model,
@@ -12,8 +13,16 @@ import type {
 const NON_VISION_USER_IMAGE_PLACEHOLDER = "(image omitted: model does not support images)";
 const NON_VISION_TOOL_IMAGE_PLACEHOLDER = "(tool image omitted: model does not support images)";
 
-function replaceImagesWithPlaceholder(content: (TextContent | ImageContent)[], placeholder: string): TextContent[] {
-	const result: TextContent[] = [];
+function replaceImagesWithPlaceholder(content: (TextContent | ImageContent)[], placeholder: string): TextContent[];
+function replaceImagesWithPlaceholder(
+	content: (TextContent | ImageContent | CompactionContent)[],
+	placeholder: string,
+): (TextContent | CompactionContent)[];
+function replaceImagesWithPlaceholder(
+	content: (TextContent | ImageContent | CompactionContent)[],
+	placeholder: string,
+): (TextContent | CompactionContent)[] {
+	const result: (TextContent | CompactionContent)[] = [];
 	let previousWasPlaceholder = false;
 
 	for (const block of content) {
@@ -26,7 +35,7 @@ function replaceImagesWithPlaceholder(content: (TextContent | ImageContent)[], p
 		}
 
 		result.push(block);
-		previousWasPlaceholder = block.text === placeholder;
+		previousWasPlaceholder = block.type === "text" && block.text === placeholder;
 	}
 
 	return result;

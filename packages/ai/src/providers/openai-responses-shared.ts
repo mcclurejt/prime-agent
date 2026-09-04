@@ -133,24 +133,38 @@ export function convertResponsesMessages<TApi extends Api>(
 					content: [{ type: "input_text", text: sanitizeSurrogates(msg.content) }],
 				});
 			} else {
-				const content: ResponseInputContent[] = msg.content.map((item): ResponseInputContent => {
-					if (item.type === "text") {
-						return {
+				const content: ResponseInputContent[] = [];
+				const flushUserContent = () => {
+					if (content.length === 0) return;
+					messages.push({ role: "user", content: [...content] });
+					content.length = 0;
+				};
+				for (const item of msg.content) {
+					if (item.type === "compaction") {
+						// Encrypted compaction payloads are only valid for the provider
+						// that produced them; other providers rely on the plain-text
+						// blocks that accompany the compaction block.
+						if (item.provider !== model.provider) continue;
+						flushUserContent();
+						messages.push({
+							type: "compaction",
+							encrypted_content: item.encryptedContent,
+							...(item.id ? { id: item.id } : {}),
+						});
+					} else if (item.type === "text") {
+						content.push({
 							type: "input_text",
 							text: sanitizeSurrogates(item.text),
-						} satisfies ResponseInputText;
+						} satisfies ResponseInputText);
+					} else {
+						content.push({
+							type: "input_image",
+							detail: "auto",
+							image_url: `data:${item.mimeType};base64,${item.data}`,
+						} satisfies ResponseInputImage);
 					}
-					return {
-						type: "input_image",
-						detail: "auto",
-						image_url: `data:${item.mimeType};base64,${item.data}`,
-					} satisfies ResponseInputImage;
-				});
-				if (content.length === 0) continue;
-				messages.push({
-					role: "user",
-					content,
-				});
+				}
+				flushUserContent();
 			}
 		} else if (msg.role === "assistant") {
 			const output: ResponseInput = [];

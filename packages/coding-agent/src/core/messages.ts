@@ -6,7 +6,7 @@
  */
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { ImageContent, Message, TextContent } from "@earendil-works/pi-ai";
+import type { CompactionContent, ImageContent, Message, TextContent } from "@earendil-works/pi-ai";
 import type { AgentCronJob } from "./cron-jobs.js";
 import type { AppliedRefinementEdit, HarnessScope, RefinementResult } from "./refinement/refinement.js";
 import { isSessionSlashCommandName, parseSessionSlashCommand, type SessionSlashCommand } from "./slash-commands.js";
@@ -198,7 +198,29 @@ export interface CompactionSummaryMessage {
 	retainedMessageCount?: number;
 	/** User instructions that guided the summary (from `/compact <instructions>`) */
 	customInstructions?: string;
+	/** CompactionEntry.details, carried so provider-specific compaction payloads reach LLM context. */
+	details?: unknown;
 	timestamp: number;
+}
+
+/**
+ * Provider server-side compaction payload stored in CompactionEntry.details.
+ * `items` is the ordered replacement for the compacted history: retained plain
+ * text plus opaque encrypted compaction items tagged with their provider.
+ */
+export interface ServerCompactionDetails {
+	modelId: string;
+	items: (TextContent | CompactionContent)[];
+}
+
+/** Extract server-side compaction payloads from CompactionEntry.details, if present. */
+export function getServerCompactionDetails(details: unknown): ServerCompactionDetails | undefined {
+	if (typeof details !== "object" || details === null) return undefined;
+	const server = (details as { serverCompaction?: unknown }).serverCompaction;
+	if (typeof server !== "object" || server === null) return undefined;
+	const candidate = server as ServerCompactionDetails;
+	if (typeof candidate.modelId !== "string" || !Array.isArray(candidate.items)) return undefined;
+	return candidate;
 }
 
 declare module "@earendil-works/pi-agent-core" {
@@ -263,6 +285,7 @@ export function createCompactionSummaryMessage(
 	timestamp: string,
 	customInstructions?: string,
 	retainedMessageCount?: number,
+	details?: unknown,
 ): CompactionSummaryMessage {
 	return {
 		role: "compactionSummary",
@@ -270,6 +293,7 @@ export function createCompactionSummaryMessage(
 		tokensBefore,
 		retainedMessageCount,
 		customInstructions,
+		details,
 		timestamp: new Date(timestamp).getTime(),
 	};
 }
@@ -519,14 +543,20 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 						content: [{ type: "text" as const, text: BRANCH_SUMMARY_PREFIX + m.summary + BRANCH_SUMMARY_SUFFIX }],
 						timestamp: m.timestamp,
 					};
-				case "compactionSummary":
+				case "compactionSummary": {
+					// Server-side compaction payloads precede the summary note: they ARE the
+					// compacted history, while the note explains it (and is all that other
+					// providers can read).
+					const serverItems = getServerCompactionDetails(m.details)?.items ?? [];
 					return {
 						role: "user",
 						content: [
+							...serverItems,
 							{ type: "text" as const, text: COMPACTION_SUMMARY_PREFIX + m.summary + COMPACTION_SUMMARY_SUFFIX },
 						],
 						timestamp: m.timestamp,
 					};
+				}
 				case "user":
 				case "assistant":
 				case "toolResult":
