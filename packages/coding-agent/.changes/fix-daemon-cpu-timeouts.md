@@ -1,0 +1,3 @@
+- Fixed high CPU usage from repeated session-list refreshes while subagents stream responses.
+- Fixed daemon crashes when worker requests time out during blocked socket writes.
+- Fixed competing daemon replacement attempts during slow supervisor startup.

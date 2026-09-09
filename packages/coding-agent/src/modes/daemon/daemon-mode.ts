@@ -870,13 +870,17 @@ export class AgentDaemon {
 					if (code !== "EEXIST" && code !== "ENOTEMPTY") {
 						throw error;
 					}
-					let ownerPid: number | undefined;
+					let ownerPids: number[] = [];
 					try {
-						ownerPid = Number(readFileSync(join(lockDirectory, "pid"), "utf8").trim());
+						ownerPids = readFileSync(join(lockDirectory, "pid"), "utf8")
+							.trim()
+							.split(/\s+/)
+							.map(Number)
+							.filter((pid) => Number.isInteger(pid) && pid > 0);
 					} catch {
 						// An invalid owner is reclaimed atomically below.
 					}
-					if (ownerPid && this.isProcessAlive(ownerPid)) {
+					if (ownerPids.some((pid) => this.isProcessAlive(pid))) {
 						return;
 					}
 					const staleDirectory = `${lockDirectory}.stale-${process.pid}-${token}`;
@@ -915,14 +919,56 @@ export class AgentDaemon {
 				env: environment,
 				stdio: "ignore",
 			});
-			child.unref();
-			const deadline = Date.now() + 10_000;
-			while (!this.shuttingDown && Date.now() < deadline) {
-				if (await this.canConnectToSupervisor(supervisorSocketPath)) {
-					this.log(`launched replacement supervisor on ${supervisorSocketPath}`);
-					return;
+			if (child.pid !== undefined) {
+				const ownerPath = join(lockDirectory, "pid");
+				const candidateOwnerPath = `${ownerPath}.candidate-${process.pid}-${randomUUID()}`;
+				// The launcher prevents reclaim during local cleanup; the candidate
+				// preserves ownership if the detached launcher exits first.
+				writeFileSync(candidateOwnerPath, `${process.pid}\n${child.pid}\n`, { mode: 0o600 });
+				try {
+					renameSync(candidateOwnerPath, ownerPath);
+				} finally {
+					rmSync(candidateOwnerPath, { force: true });
 				}
-				await delay(50);
+			}
+			// Socket-lock retries can outlast a fixed readiness deadline or the
+			// launching worker, so keep ownership until this candidate is ready or terminates.
+			let candidateFinished = false;
+			let candidateFailure: Error | undefined;
+			let resolveCandidateCompletion: () => void = () => {};
+			const candidateCompletion = new Promise<void>((resolveCompletion) => {
+				resolveCandidateCompletion = resolveCompletion;
+			});
+			const finishCandidate = (error: Error) => {
+				if (candidateFinished) return;
+				candidateFinished = true;
+				candidateFailure = error;
+				resolveCandidateCompletion();
+			};
+			const onCandidateError = (error: Error) => finishCandidate(error);
+			const onCandidateExit = (code: number | null, signal: NodeJS.Signals | null) =>
+				finishCandidate(
+					new Error(
+						`Replacement supervisor exited before becoming ready (code=${String(code)}, signal=${String(signal)})`,
+					),
+				);
+			child.once("error", onCandidateError);
+			child.once("exit", onCandidateExit);
+			child.unref();
+			try {
+				while (!candidateFinished) {
+					if (await this.canConnectToSupervisor(supervisorSocketPath)) {
+						this.log(`launched replacement supervisor on ${supervisorSocketPath}`);
+						return;
+					}
+					if (!candidateFinished) {
+						await Promise.race([delay(50), candidateCompletion]);
+					}
+				}
+				if (candidateFailure) throw candidateFailure;
+			} finally {
+				child.off("error", onCandidateError);
+				child.off("exit", onCandidateExit);
 			}
 		} catch (error) {
 			this.log(`failed to launch replacement supervisor: ${String(error)}`);

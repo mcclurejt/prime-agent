@@ -131,31 +131,40 @@ export class DaemonWorkerClient {
 		this.socket = undefined;
 	}
 
-	private async requestWire(command: DaemonWorkerWireCommandBody, timeoutMs: number): Promise<DaemonResponse> {
-		if (!this.channel || !this.socket || this.socket.destroyed) {
-			throw new Error("Daemon worker client is not connected");
+	private requestWire(command: DaemonWorkerWireCommandBody, timeoutMs: number): Promise<DaemonResponse> {
+		const channel = this.channel;
+		if (!channel || !this.socket || this.socket.destroyed) {
+			return Promise.reject(new Error("Daemon worker client is not connected"));
 		}
 		const id = `worker_${++this.requestId}`;
-		const fullCommand = { ...command, id } as DaemonWorkerWireCommand;
+		let commandType: string;
+		let payload: Buffer;
+		try {
+			const fullCommand = { ...command, id } as DaemonWorkerWireCommand;
+			commandType = command.type;
+			payload = Buffer.from(serializeJsonLine(fullCommand));
+		} catch (error) {
+			return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+		}
 		const response = new Promise<DaemonResponse>((resolve, reject) => {
 			const timeout = setTimeout(() => {
 				this.pending.delete(id);
-				reject(new Error(`Timed out waiting for daemon worker response to ${command.type}`));
+				reject(new Error(`Timed out waiting for daemon worker response to ${commandType}`));
 			}, timeoutMs);
 			this.pending.set(id, { resolve, reject, timeout });
 		});
-		try {
-			await this.channel.send(
-				{ kind: "command", requestId: id, commandType: command.type },
-				Buffer.from(serializeJsonLine(fullCommand)),
-			);
-		} catch (error) {
+		const rejectPending = (error: unknown): void => {
 			const pending = this.pending.get(id);
 			if (pending) {
 				clearTimeout(pending.timeout);
 				this.pending.delete(id);
 				pending.reject(error instanceof Error ? error : new Error(String(error)));
 			}
+		};
+		try {
+			void channel.send({ kind: "command", requestId: id, commandType }, payload).catch(rejectPending);
+		} catch (error) {
+			rejectPending(error);
 		}
 		return response;
 	}

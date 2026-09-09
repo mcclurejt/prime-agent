@@ -144,6 +144,8 @@ interface DeferredRecoveryWorker {
 	transcriptCaches: Map<string, { markFailed(error: Error): void }>;
 	duplicateIncomingTranscriptChunkIndexes: Map<string, number>;
 	snapshotTransferFrames: Map<string, never>;
+	rlmChildRefreshStates: Map<string, never>;
+	summaryRefreshPending: boolean;
 	recovery?: Promise<void>;
 	deferredRecovery?: Promise<void>;
 	intentionalStop: boolean;
@@ -1111,6 +1113,8 @@ describe("daemon worker supervisor monitoring", () => {
 			transcriptCaches: new Map(),
 			duplicateIncomingTranscriptChunkIndexes: new Map(),
 			snapshotTransferFrames: new Map<string, never>(),
+			rlmChildRefreshStates: new Map<string, never>(),
+			summaryRefreshPending: false,
 			intentionalStop: false,
 			stopRevision: 0,
 		};
@@ -1170,6 +1174,8 @@ describe("daemon worker supervisor monitoring", () => {
 			transcriptCaches: new Map(),
 			duplicateIncomingTranscriptChunkIndexes: new Map(),
 			snapshotTransferFrames: new Map<string, never>(),
+			rlmChildRefreshStates: new Map<string, never>(),
+			summaryRefreshPending: false,
 			intentionalStop: false,
 			stopRevision: 0,
 		};
@@ -1243,6 +1249,8 @@ describe("daemon worker supervisor monitoring", () => {
 			transcriptCaches: new Map(),
 			duplicateIncomingTranscriptChunkIndexes: new Map(),
 			snapshotTransferFrames: new Map<string, never>(),
+			rlmChildRefreshStates: new Map<string, never>(),
+			summaryRefreshPending: false,
 			intentionalStop: false,
 			stopRevision: 0,
 		};
@@ -1295,6 +1303,8 @@ describe("daemon worker supervisor monitoring", () => {
 				transcriptCaches: new Map(),
 				duplicateIncomingTranscriptChunkIndexes: new Map(),
 				snapshotTransferFrames: new Map<string, never>(),
+				rlmChildRefreshStates: new Map<string, never>(),
+				summaryRefreshPending: false,
 				intentionalStop: false,
 				stopRevision: 0,
 			};

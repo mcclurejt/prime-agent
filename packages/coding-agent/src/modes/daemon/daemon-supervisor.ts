@@ -50,7 +50,7 @@ import { canonicalSessionPath, getProcessStartId, SessionAlreadyActiveError } fr
 import { getSessionArtifactPathForFile, readSessionInfo, type SessionInfo } from "../../core/session-manager.js";
 import { SettingsManager } from "../../core/settings-manager.js";
 import { isProcessAlive, processIdExists, signalProcessGroupOrProcess } from "../../utils/child-process.js";
-import type { AgentConnectionHeartbeat } from "../agent-connection/types.js";
+import type { AgentConnectionHeartbeat, AgentConnectionRlmChildAgentStatus } from "../agent-connection/types.js";
 import { attachJsonlLineReader, serializeJsonLine } from "../rpc/jsonl.js";
 import type { PrivateFrame } from "../session-worker/private-framing.js";
 import { createActiveSessionId, type DaemonSocketClient } from "./active-session-state.js";
@@ -158,6 +158,7 @@ const UPDATE_RESTART_WORKER_REQUEST_TIMEOUT_MS = 90_000;
 // an abandoned prepare leaves the daemon permanently fenced with workers stopped.
 const UPDATE_RESTART_PREPARE_DEADLINE_MS = 100_000;
 const WORKER_RETRY_DELAYS_MS = [250, 1000, 5000] as const;
+const WORKER_SUMMARY_REFRESH_RETRY_MS = 1000;
 const DEFERRED_RECOVERY_RECHECK_MS = 5000;
 const STOP_FINALIZATION_RECHECK_MS = 250;
 const STOP_FINALIZATION_SIGKILL_GRACE_MS = 5000;
@@ -172,6 +173,13 @@ const IDLE_EVICTION_MAX_SWEEP_INTERVAL_MS = 5 * 60_000;
 const IDLE_EVICTION_MIN_SWEEP_INTERVAL_MS = 60_000;
 const IDLE_EVICTION_DRAIN_TIMEOUT_MS = 5_000;
 const CHILD_PASSIVATION_PER_WORKER_CAP = 2;
+const RLM_CHILD_LIFECYCLE_STATUSES: ReadonlySet<AgentConnectionRlmChildAgentStatus> = new Set([
+	"queued",
+	"running",
+	"done",
+	"error",
+	"cancelled",
+]);
 const SUPERVISOR_CONFIG_FILE_NAME = "supervisor-config";
 const WORKER_STARTUP_GATE_FD = 3;
 
@@ -294,6 +302,13 @@ interface PendingLegacyQuestionnaireRequest {
 	responding?: boolean;
 }
 
+interface RlmChildSummaryRefreshState {
+	status: AgentConnectionRlmChildAgentStatus;
+	activeSessionId?: string;
+	parentId?: string;
+	sessionName?: string;
+}
+
 interface ResidentWorker {
 	descriptor: DaemonWorkerDescriptor;
 	descriptorPath: string;
@@ -305,6 +320,9 @@ interface ResidentWorker {
 	transcriptCaches: Map<string, SnapshotTranscriptCache>;
 	snapshotGenerations: Map<string, Map<string, SnapshotTranscriptGeneration>>;
 	snapshotLoads: Map<string, Promise<DaemonAttachResult>>;
+	rlmChildRefreshStates: Map<string, RlmChildSummaryRefreshState>;
+	summaryRefreshInFlight?: Promise<void>;
+	summaryRefreshPending: boolean;
 	recovery?: Promise<void>;
 	deferredRecovery?: Promise<void>;
 	intentionalStop: boolean;
@@ -1014,6 +1032,8 @@ export class DaemonSupervisor {
 					transcriptCaches: new Map(),
 					snapshotGenerations: new Map(),
 					snapshotLoads: new Map(),
+					rlmChildRefreshStates: new Map(),
+					summaryRefreshPending: false,
 					intentionalStop: durableDescriptor.stopRequestedAt !== undefined,
 					stopRevision: 0,
 					uiClientsSync: new SupervisorWorkerUiClientsSync(this.generation),
@@ -2656,6 +2676,8 @@ export class DaemonSupervisor {
 				transcriptCaches: new Map(),
 				snapshotGenerations: new Map(),
 				snapshotLoads: new Map(),
+				rlmChildRefreshStates: new Map(),
+				summaryRefreshPending: false,
 				intentionalStop: false,
 				stopRevision: 0,
 				launchEnv,
@@ -3130,6 +3152,8 @@ export class DaemonSupervisor {
 				client.onClose((error) => void this.handleWorkerClose(worker, client, error));
 				worker.client?.close();
 				worker.client = client;
+				worker.rlmChildRefreshStates.clear();
+				worker.summaryRefreshPending = false;
 				worker.uiClientsSync = new SupervisorWorkerUiClientsSync(this.generation);
 				worker.uiClientsSyncQueue = Promise.resolve();
 				worker.uiClientsNeedsFullSync = true;
@@ -3233,6 +3257,8 @@ export class DaemonSupervisor {
 			return;
 		}
 		worker.client = undefined;
+		worker.rlmChildRefreshStates.clear();
+		worker.summaryRefreshPending = false;
 		this.invalidateWorkerSessionInputPauses(worker, "Session worker disconnected while input was paused");
 		const interrupted = new Map<string, Set<string>>();
 		for (const [activeSessionId, generations] of worker.snapshotGenerations ?? []) {
@@ -3721,6 +3747,94 @@ export class DaemonSupervisor {
 				.map((record) => record.operation)
 				.join(", ")}`,
 		);
+	}
+
+	private rlmChildUpdateRequiresSummaryRefresh(worker: ResidentWorker, outbound: DaemonOutbound | undefined): boolean {
+		if (outbound?.type !== "session_event") {
+			return true;
+		}
+		const event: unknown = outbound.event;
+		if (typeof event !== "object" || event === null) {
+			return true;
+		}
+		const eventRecord = event as Record<string, unknown>;
+		const childValue = eventRecord.child;
+		if (eventRecord.type !== "rlm_child_update" || typeof childValue !== "object" || childValue === null) {
+			return true;
+		}
+		const child = childValue as Record<string, unknown>;
+		const { id, status, activeSessionId, parentId, sessionName } = child;
+		if (
+			typeof id !== "string" ||
+			typeof status !== "string" ||
+			!RLM_CHILD_LIFECYCLE_STATUSES.has(status as AgentConnectionRlmChildAgentStatus) ||
+			(activeSessionId !== undefined && typeof activeSessionId !== "string") ||
+			(parentId !== undefined && typeof parentId !== "string") ||
+			(sessionName !== undefined && typeof sessionName !== "string")
+		) {
+			return true;
+		}
+		const next: RlmChildSummaryRefreshState = {
+			status: status as AgentConnectionRlmChildAgentStatus,
+			activeSessionId,
+			parentId,
+			sessionName,
+		};
+		const previous = worker.rlmChildRefreshStates.get(id);
+		if (
+			previous?.status === next.status &&
+			previous.activeSessionId === next.activeSessionId &&
+			previous.parentId === next.parentId &&
+			previous.sessionName === next.sessionName
+		) {
+			return false;
+		}
+		worker.rlmChildRefreshStates.set(id, next);
+		return true;
+	}
+
+	private scheduleWorkerSummaryRefresh(worker: ResidentWorker): void {
+		worker.summaryRefreshPending = true;
+		if (worker.summaryRefreshInFlight) {
+			return;
+		}
+		if (!worker.client || this.isWorkerStopping(worker)) {
+			worker.summaryRefreshPending = false;
+			return;
+		}
+		const refresh = this.drainWorkerSummaryRefresh(worker);
+		worker.summaryRefreshInFlight = refresh;
+		void refresh
+			.finally(() => {
+				if (worker.summaryRefreshInFlight === refresh) {
+					worker.summaryRefreshInFlight = undefined;
+				}
+				if (worker.summaryRefreshPending) {
+					this.scheduleWorkerSummaryRefresh(worker);
+				}
+			})
+			.catch(() => undefined);
+	}
+
+	private async drainWorkerSummaryRefresh(worker: ResidentWorker): Promise<void> {
+		do {
+			worker.summaryRefreshPending = false;
+			try {
+				await this.refreshWorkerSummaries(worker);
+				await this.syncAgentPeers();
+			} catch {
+				if (!worker.client || this.isWorkerStopping(worker)) {
+					worker.summaryRefreshPending = false;
+					return;
+				}
+				worker.summaryRefreshPending = true;
+				await delay(WORKER_SUMMARY_REFRESH_RETRY_MS);
+			}
+			if (!worker.client || this.isWorkerStopping(worker)) {
+				worker.summaryRefreshPending = false;
+				return;
+			}
+		} while (worker.summaryRefreshPending);
 	}
 
 	private async refreshWorkerSummaries(worker: ResidentWorker, recovery = false): Promise<void> {
@@ -5017,6 +5131,7 @@ export class DaemonSupervisor {
 		} else if (
 			sessionEventType === "message_start" ||
 			sessionEventType === "message_end" ||
+			sessionEventType === "rlm_child_update" ||
 			outboundType === "session_status" ||
 			outboundType === "session_replaced" ||
 			outboundType === "session_resynced" ||
@@ -5078,18 +5193,16 @@ export class DaemonSupervisor {
 			}
 			this.writeSerialized(client, publicPayload);
 		}
-		if (outboundType === "session_replaced" || outboundType === "session_closed") {
-			void this.refreshWorkerSummaries(worker)
-				.then(() => this.syncAgentPeers())
-				.catch(() => undefined);
-		} else if (
+		const childUpdateRequiresSummaryRefresh =
+			sessionEventType === "rlm_child_update" && this.rlmChildUpdateRequiresSummaryRefresh(worker, decodedOutbound);
+		if (
+			outboundType === "session_replaced" ||
+			outboundType === "session_closed" ||
 			sessionEventType === "turn_start" ||
 			sessionEventType === "turn_end" ||
-			sessionEventType === "rlm_child_update"
+			childUpdateRequiresSummaryRefresh
 		) {
-			void this.refreshWorkerSummaries(worker)
-				.then(() => this.syncAgentPeers())
-				.catch(() => undefined);
+			this.scheduleWorkerSummaryRefresh(worker);
 		}
 		if (
 			decodedOutbound?.type === "session_closed" &&
