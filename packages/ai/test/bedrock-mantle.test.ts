@@ -29,6 +29,18 @@ describe("Amazon Bedrock Mantle", () => {
 			maxTokens: native.maxTokens,
 		});
 	});
+	it("preserves native Bedrock metadata for GPT-6 Astra and suppresses off", () => {
+		const mantle = getModel("amazon-bedrock-mantle", "openai.gpt-6-astra");
+		const native = getModel("amazon-bedrock", "openai.gpt-6-astra");
+		expect(mantle).toMatchObject({
+			provider: "amazon-bedrock-mantle",
+			api: "bedrock-mantle-responses",
+			cost: native.cost,
+			contextWindow: native.contextWindow,
+			maxTokens: native.maxTokens,
+		});
+		expect(mantle.thinkingLevelMap).toMatchObject({ off: null, minimal: null, xhigh: "xhigh", max: "max" });
+	});
 	const originalAwsRegion = process.env.AWS_REGION;
 	const originalAwsDefaultRegion = process.env.AWS_DEFAULT_REGION;
 	afterEach(() => {

@@ -1,0 +1,1 @@
+- Added GPT-6 Astra to the Amazon Bedrock Mantle provider and updated the GPT-5.6 Mantle rows to the 1,050,000-token context window Bedrock now reports.
